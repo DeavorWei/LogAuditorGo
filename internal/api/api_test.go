@@ -1,7 +1,11 @@
 package api_test
 
 import (
+	"archive/zip"
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -133,5 +137,309 @@ func TestAPIEndpoints(t *testing.T) {
 	router.ServeHTTP(w6, req6)
 	if w6.Code != http.StatusOK || !strings.Contains(w6.Body.String(), "<html") {
 		t.Errorf("expected 200 and html content for export, got %d", w6.Code)
+	}
+}
+
+func TestDocumentUploadAndConflict(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "doc_api_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 创建内存 Mock HDX zip
+	mockZipData := createMockHDXZip(t, "DOC_TEST_001", "TestSwitch", "V100R001C00")
+
+	// 1. 首次上传：覆盖/创建模式
+	bodyBuf := &strings.Builder{}
+	mpWriter := createMultipartUpload(bodyBuf, "test_doc.hdx", mockZipData, "overwrite")
+
+	req1, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(bodyBuf.String()))
+	req1.Header.Set("Content-Type", mpWriter)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200 for upload, got %d: %s", w1.Code, w1.Body.String())
+	}
+
+	var res1 struct {
+		Code int `json:"code"`
+		Data struct {
+			TotalDocuments       int      `json:"total_documents"`
+			LeafLogCount         int      `json:"leaf_log_count"`
+			UniqueKnowledgeAdded int      `json:"unique_knowledge_added"`
+			ImportedDocs         []string `json:"imported_docs"`
+			SkippedDocs          []string `json:"skipped_docs"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w1.Body.Bytes(), &res1)
+	if res1.Code != 0 || res1.Data.TotalDocuments < 1 {
+		t.Errorf("expected successful document import, got %+v", res1)
+	}
+
+	// 2. 二次上传同一文档，指定 conflict_mode = skip
+	bodyBuf2 := &strings.Builder{}
+	mpWriter2 := createMultipartUpload(bodyBuf2, "test_doc.hdx", mockZipData, "skip")
+
+	req2, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(bodyBuf2.String()))
+	req2.Header.Set("Content-Type", mpWriter2)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for skip upload, got %d: %s", w2.Code, w2.Body.String())
+	}
+
+	var res2 struct {
+		Code int `json:"code"`
+		Data struct {
+			SkippedDocs []string `json:"skipped_docs"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w2.Body.Bytes(), &res2)
+	if len(res2.Data.SkippedDocs) != 1 {
+		t.Errorf("expected 1 skipped doc, got %+v", res2)
+	}
+
+	// 3. 验证文档列表与删除
+	req3, _ := http.NewRequest("GET", "/api/v1/documents", nil)
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+
+	var res3 struct {
+		Code int `json:"code"`
+		Data []struct {
+			ID    uint   `json:"id"`
+			LibID string `json:"lib_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w3.Body.Bytes(), &res3)
+	if len(res3.Data) != 1 {
+		t.Fatalf("expected 1 document in list, got %d", len(res3.Data))
+	}
+
+	// 4. 删除文档
+	docID := res3.Data[0].ID
+	req4, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/documents/%d", docID), nil)
+	w4 := httptest.NewRecorder()
+	router.ServeHTTP(w4, req4)
+	if w4.Code != http.StatusOK {
+		t.Errorf("expected 200 for delete document, got %d", w4.Code)
+	}
+}
+
+func createMockHDXZip(t *testing.T, libID, productType, productVer string) []byte {
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	// 1. profile.xml
+	profileContent := fmt.Sprintf(`<?xml version="1.0" encoding="utf-8"?>
+<profile>
+  <libId>%s</libId>
+  <libVersion>01</libVersion>
+  <libName>Test %s Document</libName>
+  <productType>%s</productType>
+  <productVersion>%s</productVersion>
+  <issueDate>2026-04-15</issueDate>
+  <topicNumber>1</topicNumber>
+  <navi>resources/navi.xml</navi>
+</profile>`, libID, productType, productType, productVer)
+
+	pw, err := zw.Create("profile.xml")
+	if err != nil {
+		t.Fatalf("create profile.xml in zip failed: %v", err)
+	}
+	pw.Write([]byte(profileContent))
+
+	// 2. resources/navi.xml
+	naviContent := `<?xml version="1.0" encoding="utf-8"?>
+<topics>
+  <topic id="root_01" txt="日志信息参考" url="">
+    <topic id="topic_01" txt="IFNET/4/IF_DOWN" url="resources/test_log.html"/>
+  </topic>
+</topics>`
+	nw, err := zw.Create("resources/navi.xml")
+	if err != nil {
+		t.Fatalf("create navi.xml in zip failed: %v", err)
+	}
+	nw.Write([]byte(naviContent))
+
+	// 3. resources/test_log.html
+	htmlContent := `<html>
+<head><title>IFNET/4/IF_DOWN</title></head>
+<body>
+  <div id="body">
+    <h2>日志信息</h2>
+    <p>%%01IFNET/4/IF_DOWN: Interface state turned to DOWN.</p>
+    <h2>日志含义</h2>
+    <p>接口状态转为Down</p>
+    <h2>可能原因</h2>
+    <p>链路断开或对端关闭</p>
+    <h2>处理步骤</h2>
+    <p>检查物理网线及对端端口配置</p>
+  </div>
+</body>
+</html>`
+	hw, err := zw.Create("resources/test_log.html")
+	if err != nil {
+		t.Fatalf("create html in zip failed: %v", err)
+	}
+	hw.Write([]byte(htmlContent))
+
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip failed: %v", err)
+	}
+
+	return buf.Bytes()
+}
+
+func createMultipartUpload(bodyBuf *strings.Builder, filename string, data []byte, conflictMode string) string {
+	b := &bytes.Buffer{}
+	w := multipart.NewWriter(b)
+
+	if conflictMode != "" {
+		_ = w.WriteField("conflict_mode", conflictMode)
+	}
+
+	part, _ := w.CreateFormFile("files", filename)
+	part.Write(data)
+	w.Close()
+
+	bodyBuf.Reset()
+	bodyBuf.WriteString(b.String())
+	return w.FormDataContentType()
+}
+
+func TestFolderWithMultipleHDXZipsUpload(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "doc_folder_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 创建两个不同的 Mock HDX zip 数据包（使用 .hdx 后缀）
+	zip1 := createMockHDXZip(t, "DOC_MULTI_01", "Switch-A", "V100R001C00")
+	zip2 := createMockHDXZip(t, "DOC_MULTI_02", "Firewall-B", "V200R002C00")
+
+	// 模拟在浏览器中选中一个包含多个 .hdx 文件的文件夹
+	b := &bytes.Buffer{}
+	w := multipart.NewWriter(b)
+	_ = w.WriteField("conflict_mode", "overwrite")
+
+	// 第一个文件位于 my_hdx_folder/doc1.hdx
+	part1, _ := w.CreateFormFile("files", "my_hdx_folder/doc1.hdx")
+	part1.Write(zip1)
+
+	// 第二个文件位于 my_hdx_folder/sub/doc2.hdx
+	part2, _ := w.CreateFormFile("files", "my_hdx_folder/sub/doc2.hdx")
+	part2.Write(zip2)
+
+	// 第三个是已解压的散装 HDX 目录结构 (profile.xml + navi.xml)
+	p3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/profile.xml")
+	p3.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+<profile>
+  <libId>DOC_UNZIPPED_03</libId>
+  <libVersion>01</libVersion>
+  <libName>Unzipped Document 03</libName>
+  <productType>Router-C</productType>
+  <productVersion>V300R003C00</productVersion>
+  <issueDate>2026-04-15</issueDate>
+  <topicNumber>1</topicNumber>
+  <navi>resources/navi.xml</navi>
+</profile>`))
+	n3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/resources/navi.xml")
+	n3.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+<topics>
+  <topic id="r_03" txt="日志" url="">
+    <topic id="top_03" txt="BGP/2/DOWN" url="resources/log3.html"/>
+  </topic>
+</topics>`))
+	h3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/resources/log3.html")
+	h3.Write([]byte(`<html><body><h2>日志信息</h2><p>BGP down</p></body></html>`))
+
+	w.Close()
+
+	req, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b.String()))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for folder with multiple HDX files, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			TotalDocuments int      `json:"total_documents"`
+			ImportedDocs   []string `json:"imported_docs"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &res)
+	if res.Code != 0 || len(res.Data.ImportedDocs) != 3 {
+		t.Fatalf("expected 3 imported documents (2 .hdx archives + 1 unzipped directory), got %+v", res)
 	}
 }

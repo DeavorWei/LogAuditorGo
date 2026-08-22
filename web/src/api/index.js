@@ -32,8 +32,8 @@ export default {
   getDocuments() {
     return request.get('/documents')
   },
-  importDir(dirPath) {
-    return request.post('/documents/import-dir', { dir_path: dirPath })
+  importDir(dirPath, conflictMode = 'overwrite') {
+    return request.post('/documents/import-dir', { dir_path: dirPath, conflict_mode: conflictMode })
   },
   uploadHDX(formData) {
     return request.post('/documents/upload', formData, {

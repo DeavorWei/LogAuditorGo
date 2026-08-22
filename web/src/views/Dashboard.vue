@@ -71,7 +71,7 @@
               <el-icon class="action-icon" style="color: #10b981;"><FolderAdd /></el-icon>
               <div>
                 <div class="action-title">导入华为 HDX 产品文档</div>
-                <div class="action-desc">导入官方 HDX 文档压缩包或本地目录以扩充故障知识库</div>
+                <div class="action-desc">导入官方 HDX 文档压缩包或本地文件夹以扩充故障知识库</div>
               </div>
             </div>
             <div class="action-item" @click="$router.push('/knowledge')">

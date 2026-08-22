@@ -28,7 +28,9 @@ type ImportStats struct {
 	VersionMappingsAdded int           `json:"version_mappings_added"`
 	Duration             time.Duration `json:"duration"`
 	ImportedDocs         []string      `json:"imported_docs,omitempty"`
+	SkippedDocs          []string      `json:"skipped_docs,omitempty"`
 	FailedDocs           []string      `json:"failed_docs,omitempty"`
+	Skipped              bool          `json:"skipped,omitempty"`
 }
 
 type Service struct {
@@ -51,7 +53,13 @@ func (s *Service) SetIndexer(indexer *search.Indexer) {
 
 // ImportDocumentFromDir 从本地目录导入 HDX 知识库
 // 支持直接指定单个文档目录，或指定包含多个文档包的父级目录（程序自动递归发现所有文档并批量导入）
-func (s *Service) ImportDocumentFromDir(dirPath string) (*ImportStats, error) {
+// conflictMode 支持 "overwrite"（覆盖/更新，默认）或 "skip"（跳过已存在文档）
+func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) (*ImportStats, error) {
+	mode := "overwrite"
+	if len(conflictMode) > 0 && conflictMode[0] != "" {
+		mode = conflictMode[0]
+	}
+
 	s.importMu.Lock()
 	defer s.importMu.Unlock()
 
@@ -65,6 +73,8 @@ func (s *Service) ImportDocumentFromDir(dirPath string) (*ImportStats, error) {
 	totalStats := &ImportStats{
 		TotalDocuments: len(docDirs),
 		ImportedDocs:   make([]string, 0, len(docDirs)),
+		SkippedDocs:    make([]string, 0),
+		FailedDocs:     make([]string, 0),
 	}
 
 	var firstDocID uint
@@ -73,11 +83,17 @@ func (s *Service) ImportDocumentFromDir(dirPath string) (*ImportStats, error) {
 	successCount := 0
 
 	for _, docDir := range docDirs {
-		st, err := s.importSingleDocUnlocked(docDir)
+		st, err := s.importSingleDocUnlocked(docDir, mode)
 		if err != nil {
 			logger.Log.Errorf("[Knowledge Service] Failed to import document at %s: %v", docDir, err)
 			totalStats.FailedDocs = append(totalStats.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(docDir), err))
 			lastErr = err
+			continue
+		}
+
+		if st.Skipped {
+			docLabel := fmt.Sprintf("%s (%s %s)", st.LibID, st.ProductType, st.ProductVersion)
+			totalStats.SkippedDocs = append(totalStats.SkippedDocs, docLabel)
 			continue
 		}
 
@@ -98,7 +114,7 @@ func (s *Service) ImportDocumentFromDir(dirPath string) (*ImportStats, error) {
 		totalStats.VersionMappingsAdded += st.VersionMappingsAdded
 	}
 
-	if successCount == 0 && lastErr != nil {
+	if successCount == 0 && len(totalStats.SkippedDocs) == 0 && lastErr != nil {
 		return nil, fmt.Errorf("failed to import any documents: %w", lastErr)
 	}
 
@@ -107,25 +123,43 @@ func (s *Service) ImportDocumentFromDir(dirPath string) (*ImportStats, error) {
 		totalStats.LibID = firstLibID
 		totalStats.ProductType = firstProductType
 		totalStats.ProductVersion = firstProductVersion
-	} else {
+	} else if successCount > 1 {
 		totalStats.LibID = fmt.Sprintf("Batch (%d docs)", successCount)
+	} else if len(totalStats.SkippedDocs) > 0 {
+		totalStats.LibID = fmt.Sprintf("Skipped (%d docs)", len(totalStats.SkippedDocs))
 	}
 
 	totalStats.Duration = time.Since(startTime)
-	logger.Log.Infof("Completed batch import of %d/%d documents from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
-		successCount, len(docDirs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
+	logger.Log.Infof("Completed batch import of %d/%d documents (%d skipped) from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
+		successCount, len(docDirs), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
 
 	return totalStats, nil
 }
 
 // importSingleDocUnlocked 执行单个 HDX 文档目录的解析与入库（内部调用，需持有 importMu 锁）
-func (s *Service) importSingleDocUnlocked(docRootDir string) (*ImportStats, error) {
+func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string) (*ImportStats, error) {
 	startTime := time.Now()
 
 	// 1. 解析 profile.xml
 	doc, naviRelPath, err := hdx.ParseProfileXML(docRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("parse profile.xml failed: %w", err)
+	}
+
+	// 检查冲突策略：如果为 skip 且该文档已存在，则直接跳过，避免耗时的并发 HTML 解析
+	if conflictMode == "skip" {
+		var existingDoc model.Document
+		if err := s.db.Where("lib_id = ?", doc.LibID).First(&existingDoc).Error; err == nil {
+			logger.Log.Infof("[Knowledge Service] Skipping already existing document: LibID=%s, Product=%s %s", doc.LibID, doc.ProductType, doc.ProductVersion)
+			return &ImportStats{
+				TotalDocuments: 1,
+				DocumentID:     existingDoc.ID,
+				LibID:          doc.LibID,
+				ProductType:    doc.ProductType,
+				ProductVersion: doc.ProductVersion,
+				Skipped:        true,
+			}, nil
+		}
 	}
 
 	// 2. 解析 navi.xml 提取所有叶子节点
