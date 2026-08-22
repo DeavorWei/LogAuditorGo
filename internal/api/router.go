@@ -50,11 +50,17 @@ func SetupRouter(
 	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer)
 	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
 	statsHandler := NewStatsHandler(globalDB)
+	systemHandler := NewSystemHandler()
 
 	v1 := r.Group("/api/v1")
 	{
-		// 系统统计
+		// 系统统计与系统配置
 		v1.GET("/system/stats", statsHandler.GetSystemStats)
+		v1.GET("/system/config", systemHandler.GetConfig)
+		v1.PUT("/system/config/log", systemHandler.UpdateLogConfig)
+		v1.POST("/system/config/log", systemHandler.UpdateLogConfig)
+		v1.GET("/system/logs", systemHandler.GetLogs)
+		v1.POST("/system/logs/clean", systemHandler.CleanLogs)
 
 		// 文档管理
 		v1.POST("/documents/import-dir", docHandler.ImportDir)

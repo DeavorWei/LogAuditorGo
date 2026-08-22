@@ -1,0 +1,15 @@
+server:
+  port: 8080
+  mode: test
+storage:
+  data_dir: "C:\\Users\\DEAVOR~1\\AppData\\Local\\Temp\\api_test_632899531"
+  knowledge_db: "C:\\Users\\DEAVOR~1\\AppData\\Local\\Temp\\api_test_632899531\\knowledge.db"
+  bleve_index: "C:\\Users\\DEAVOR~1\\AppData\\Local\\Temp\\api_test_632899531\\bleve.index"
+  task_dir: "C:\\Users\\DEAVOR~1\\AppData\\Local\\Temp\\api_test_632899531\\tasks"
+  upload_dir: "C:\\Users\\DEAVOR~1\\AppData\\Local\\Temp\\api_test_632899531\\uploads"
+log:
+  level: info
+  format: console
+  dir: ""
+  max_size_mb: 512
+  max_days: 90

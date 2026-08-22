@@ -24,9 +24,21 @@ request.interceptors.response.use(
 )
 
 export default {
-  // 系统统计
+  // 系统统计与配置
   getStats() {
     return request.get('/system/stats')
+  },
+  getSystemConfig() {
+    return request.get('/system/config')
+  },
+  updateLogConfig(data) {
+    return request.put('/system/config/log', data)
+  },
+  getSystemLogs() {
+    return request.get('/system/logs')
+  },
+  cleanSystemLogs() {
+    return request.post('/system/logs/clean')
   },
   // 文档管理
   getDocuments() {

@@ -24,8 +24,15 @@ func main() {
 	}
 
 	// 2. 初始化日志记录器
-	log := logger.Init(cfg.Log.Level, cfg.Log.Format)
+	log := logger.InitWithConfig(logger.Config{
+		Level:     cfg.Log.Level,
+		Format:    cfg.Log.Format,
+		Dir:       cfg.Log.Dir,
+		MaxSizeMB: cfg.Log.MaxSizeMB,
+		MaxDays:   cfg.Log.MaxDays,
+	})
 	log.Infof("Starting LogAuditorGo server on port %d...", cfg.Server.Port)
+	log.Infof("File logging active at dir: %s (Max: %dMB, Retain: %ddays)", cfg.Log.Dir, cfg.Log.MaxSizeMB, cfg.Log.MaxDays)
 
 	// 3. 初始化全局知识库 SQLite
 	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)

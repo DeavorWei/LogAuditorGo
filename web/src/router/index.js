@@ -30,6 +30,11 @@ const routes = [
     path: '/tasks',
     name: 'Tasks',
     component: () => import('@/views/Tasks.vue')
+  },
+  {
+    path: '/settings',
+    name: 'Settings',
+    component: () => import('@/views/Settings.vue')
   }
 ]
 

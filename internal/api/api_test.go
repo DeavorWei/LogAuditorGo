@@ -138,6 +138,41 @@ func TestAPIEndpoints(t *testing.T) {
 	if w6.Code != http.StatusOK || !strings.Contains(w6.Body.String(), "<html") {
 		t.Errorf("expected 200 and html content for export, got %d", w6.Code)
 	}
+
+	// 7. 测试 GET /api/v1/system/config
+	config.GlobalConfig = cfg
+	req7, _ := http.NewRequest("GET", "/api/v1/system/config", nil)
+	w7 := httptest.NewRecorder()
+	router.ServeHTTP(w7, req7)
+	if w7.Code != http.StatusOK {
+		t.Errorf("expected 200 for /system/config, got %d", w7.Code)
+	}
+
+	// 8. 测试 PUT /api/v1/system/config/log
+	updateLogPayload := `{"max_size_mb": 512, "max_days": 90, "level": "info", "format": "console"}`
+	req8, _ := http.NewRequest("PUT", "/api/v1/system/config/log", strings.NewReader(updateLogPayload))
+	req8.Header.Set("Content-Type", "application/json")
+	w8 := httptest.NewRecorder()
+	router.ServeHTTP(w8, req8)
+	if w8.Code != http.StatusOK {
+		t.Errorf("expected 200 for PUT /system/config/log, got %d: %s", w8.Code, w8.Body.String())
+	}
+
+	// 9. 测试 GET /api/v1/system/logs
+	req9, _ := http.NewRequest("GET", "/api/v1/system/logs", nil)
+	w9 := httptest.NewRecorder()
+	router.ServeHTTP(w9, req9)
+	if w9.Code != http.StatusOK {
+		t.Errorf("expected 200 for /system/logs, got %d", w9.Code)
+	}
+
+	// 10. 测试 POST /api/v1/system/logs/clean
+	req10, _ := http.NewRequest("POST", "/api/v1/system/logs/clean", nil)
+	w10 := httptest.NewRecorder()
+	router.ServeHTTP(w10, req10)
+	if w10.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /system/logs/clean, got %d", w10.Code)
+	}
 }
 
 func TestDocumentUploadAndConflict(t *testing.T) {

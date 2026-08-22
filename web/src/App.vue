@@ -35,6 +35,10 @@
           <el-icon><FolderOpened /></el-icon>
           <span>产品文档管理</span>
         </el-menu-item>
+        <el-menu-item index="/settings">
+          <el-icon><Setting /></el-icon>
+          <span>系统设置</span>
+        </el-menu-item>
       </el-menu>
     </el-header>
 

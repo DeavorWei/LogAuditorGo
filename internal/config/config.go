@@ -4,35 +4,45 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
+	"github.com/goccy/go-yaml"
 	"github.com/spf13/viper"
+	"logauditorgo/pkg/logger"
 )
 
 type Config struct {
-	Server  ServerConfig  `mapstructure:"server"`
-	Storage StorageConfig `mapstructure:"storage"`
-	Log     LogConfig     `mapstructure:"log"`
+	Server  ServerConfig  `mapstructure:"server" json:"server" yaml:"server"`
+	Storage StorageConfig `mapstructure:"storage" json:"storage" yaml:"storage"`
+	Log     LogConfig     `mapstructure:"log" json:"log" yaml:"log"`
 }
 
 type ServerConfig struct {
-	Port int    `mapstructure:"port"`
-	Mode string `mapstructure:"mode"`
+	Port int    `mapstructure:"port" json:"port" yaml:"port"`
+	Mode string `mapstructure:"mode" json:"mode" yaml:"mode"`
 }
 
 type StorageConfig struct {
-	DataDir     string `mapstructure:"data_dir"`
-	KnowledgeDB string `mapstructure:"knowledge_db"`
-	BleveIndex  string `mapstructure:"bleve_index"`
-	TaskDir     string `mapstructure:"task_dir"`
-	UploadDir   string `mapstructure:"upload_dir"`
+	DataDir     string `mapstructure:"data_dir" json:"data_dir" yaml:"data_dir"`
+	KnowledgeDB string `mapstructure:"knowledge_db" json:"knowledge_db" yaml:"knowledge_db"`
+	BleveIndex  string `mapstructure:"bleve_index" json:"bleve_index" yaml:"bleve_index"`
+	TaskDir     string `mapstructure:"task_dir" json:"task_dir" yaml:"task_dir"`
+	UploadDir   string `mapstructure:"upload_dir" json:"upload_dir" yaml:"upload_dir"`
 }
 
 type LogConfig struct {
-	Level  string `mapstructure:"level"`
-	Format string `mapstructure:"format"`
+	Level     string `mapstructure:"level" json:"level" yaml:"level"`
+	Format    string `mapstructure:"format" json:"format" yaml:"format"`
+	Dir       string `mapstructure:"dir" json:"dir" yaml:"dir"`
+	MaxSizeMB int    `mapstructure:"max_size_mb" json:"max_size_mb" yaml:"max_size_mb"`
+	MaxDays   int    `mapstructure:"max_days" json:"max_days" yaml:"max_days"`
 }
 
-var GlobalConfig *Config
+var (
+	GlobalConfig   *Config
+	ConfigFileUsed string
+	configMu       sync.RWMutex
+)
 
 const DefaultDataDir = "LogAuditorGoData"
 
@@ -50,11 +60,17 @@ storage:
   upload_dir: "LogAuditorGoData/uploads"               # 临时上传目录
 
 log:
-  level: debug      # 日志级别: debug, info, warn, error
-  format: console   # 日志格式: console 或 json
+  level: debug               # 日志级别: debug, info, warn, error
+  format: console            # 日志格式: console 或 json
+  dir: "LogAuditorGoData/log" # 日志存放目录
+  max_size_mb: 1024          # 日志最大保留总大小(MB), 默认 1024 (1GB)
+  max_days: 180              # 日志最大保留天数(天), 默认 180
 `
 
 func Load(configPath string) (*Config, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+
 	v := viper.New()
 
 	// 默认值
@@ -67,6 +83,9 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("storage.upload_dir", filepath.Join(DefaultDataDir, "uploads"))
 	v.SetDefault("log.level", "debug")
 	v.SetDefault("log.format", "console")
+	v.SetDefault("log.dir", filepath.Join(DefaultDataDir, "log"))
+	v.SetDefault("log.max_size_mb", 1024)
+	v.SetDefault("log.max_days", 180)
 
 	targetConfigFile := configPath
 	if targetConfigFile == "" {
@@ -83,7 +102,6 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	v.SetConfigFile(targetConfigFile)
-	configFileUsed := targetConfigFile
 	if err := v.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("read config failed: %w", err)
 	}
@@ -93,6 +111,17 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
+	// 确保必要字段不为空
+	if cfg.Log.Dir == "" {
+		cfg.Log.Dir = filepath.Join(cfg.Storage.DataDir, "log")
+	}
+	if cfg.Log.MaxSizeMB <= 0 {
+		cfg.Log.MaxSizeMB = 1024
+	}
+	if cfg.Log.MaxDays <= 0 {
+		cfg.Log.MaxDays = 180
+	}
+
 	// 确保存储目录存在
 	dirs := []string{
 		cfg.Storage.DataDir,
@@ -100,6 +129,7 @@ func Load(configPath string) (*Config, error) {
 		filepath.Dir(cfg.Storage.BleveIndex),
 		cfg.Storage.TaskDir,
 		cfg.Storage.UploadDir,
+		cfg.Log.Dir,
 	}
 	for _, d := range dirs {
 		if d != "" && d != "." {
@@ -109,10 +139,81 @@ func Load(configPath string) (*Config, error) {
 		}
 	}
 
+	ConfigFileUsed = targetConfigFile
 	GlobalConfig = &cfg
-	if configFileUsed != "" {
-		fmt.Printf("[Config] Loaded configuration from: %s\n", configFileUsed)
-	}
 	return &cfg, nil
 }
 
+// Save 将当前全局配置持久化保存至配置文件
+func Save(configPath string) error {
+	configMu.RLock()
+	defer configMu.RUnlock()
+
+	if GlobalConfig == nil {
+		return fmt.Errorf("global config is nil")
+	}
+
+	targetPath := configPath
+	if targetPath == "" {
+		targetPath = ConfigFileUsed
+	}
+	if targetPath == "" {
+		targetPath = filepath.Join(DefaultDataDir, "config.yaml")
+	}
+
+	dir := filepath.Dir(targetPath)
+	if dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("create config dir %s failed: %w", dir, err)
+		}
+	}
+
+	data, err := yaml.Marshal(GlobalConfig)
+	if err != nil {
+		return fmt.Errorf("marshal config to yaml failed: %w", err)
+	}
+
+	if err := os.WriteFile(targetPath, data, 0644); err != nil {
+		return fmt.Errorf("write config file %s failed: %w", targetPath, err)
+	}
+
+	return nil
+}
+
+// UpdateLogConfig 动态更新日志配置，同步至运行期 Logger 并持久化保存到配置文件
+func UpdateLogConfig(maxSizeMB, maxDays int, level, format string) (*LogConfig, error) {
+	configMu.Lock()
+	if GlobalConfig == nil {
+		configMu.Unlock()
+		return nil, fmt.Errorf("global config not initialized")
+	}
+
+	if maxSizeMB > 0 {
+		GlobalConfig.Log.MaxSizeMB = maxSizeMB
+	}
+	if maxDays > 0 {
+		GlobalConfig.Log.MaxDays = maxDays
+	}
+	if level != "" {
+		GlobalConfig.Log.Level = level
+	}
+	if format != "" {
+		GlobalConfig.Log.Format = format
+	}
+
+	currentLogCfg := GlobalConfig.Log
+	configMu.Unlock()
+
+	// 同步更新底层 logger
+	logger.UpdatePolicy(currentLogCfg.MaxSizeMB, currentLogCfg.MaxDays)
+	if currentLogCfg.Level != "" {
+		logger.SetLevel(currentLogCfg.Level)
+	}
+
+	// 持久化保存
+	if err := Save(""); err != nil {
+		return nil, fmt.Errorf("persist config failed: %w", err)
+	}
+
+	return &currentLogCfg, nil
+}
