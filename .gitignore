@@ -2,3 +2,6 @@
 *.log
 *.db
 /原始产品文档/
+/web/node_modules
+/web/dist
+/data

@@ -1,0 +1,227 @@
+package knowledge_test
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"logauditorgo/internal/hdx"
+	"logauditorgo/internal/knowledge"
+	"logauditorgo/internal/model"
+	"logauditorgo/internal/storage"
+	"logauditorgo/pkg/logger"
+)
+
+func TestRealHDXImportAndDeduplication(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "knowledge_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_knowledge.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	service := knowledge.NewService(db)
+
+	// 1. 测试真实 USG6000F/G 文档导入
+	usgDir := filepath.FromSlash("../../原始产品文档/HiSecEngine USG6000F, USG6000G_V600R025C10_01_zh_AZQ01091")
+	if _, err := os.Stat(usgDir); os.IsNotExist(err) {
+		t.Skipf("sample doc dir not found at %s, skipping test", usgDir)
+	}
+
+	stats1, err := service.ImportDocumentFromDir(usgDir)
+	if err != nil {
+		t.Fatalf("import USG doc failed: %v", err)
+	}
+	t.Logf("USG6000F/G Stats: Leaf Logs=%d, Leaf Alarms=%d, Unique Knowledge=%d, Duration=%v",
+		stats1.LeafLogCount, stats1.LeafAlarmCount, stats1.UniqueKnowledgeAdded, stats1.Duration)
+
+	if stats1.LeafLogCount < 2000 {
+		t.Errorf("expected > 2000 leaf logs for USG6000F/G, got %d", stats1.LeafLogCount)
+	}
+	if stats1.LeafAlarmCount < 1000 {
+		t.Errorf("expected > 1000 leaf alarms for USG6000F/G, got %d", stats1.LeafAlarmCount)
+	}
+	if stats1.UniqueKnowledgeAdded == 0 {
+		t.Errorf("expected > 0 unique knowledge added")
+	}
+
+	// 2. 测试第二个文档导入并验证去重 (CloudEngine 16800 V200R025C00)
+	ceDir := filepath.FromSlash("../../原始产品文档/CloudEngine 16800_V200R025C00_05_zh_AZP10147")
+	if _, err := os.Stat(ceDir); err == nil {
+		stats2, err := service.ImportDocumentFromDir(ceDir)
+		if err != nil {
+			t.Fatalf("import CE doc failed: %v", err)
+		}
+		t.Logf("CE 16800 Stats: Leaf Logs=%d, Leaf Alarms=%d, Unique Knowledge=%d, Duration=%v",
+			stats2.LeafLogCount, stats2.LeafAlarmCount, stats2.UniqueKnowledgeAdded, stats2.Duration)
+
+		if stats2.LeafLogCount < 1400 {
+			t.Errorf("expected > 1400 leaf logs for CE16800, got %d", stats2.LeafLogCount)
+		}
+	}
+
+	// 3. 验证文档列表查询
+	docs, err := service.GetDocumentList()
+	if err != nil {
+		t.Fatalf("get doc list failed: %v", err)
+	}
+	if len(docs) < 1 {
+		t.Errorf("expected at least 1 doc, got %d", len(docs))
+	}
+}
+
+func TestNaviParsingEdgeCases(t *testing.T) {
+	// 测试 GBK 转码
+	gbkText := []byte{0xC4, 0xE3, 0xBA, 0xC3} // "你好" in GBK
+	utf8Text, err := hdx.DecodeGBK(gbkText)
+	if err != nil {
+		t.Fatalf("decode gbk failed: %v", err)
+	}
+	if utf8Text != "你好" {
+		t.Errorf("expected '你好', got '%s'", utf8Text)
+	}
+}
+
+func TestCalculateContentHash(t *testing.T) {
+	// 1. nil 防御
+	if hash := knowledge.CalculateContentHash(nil); hash != "" {
+		t.Errorf("expected empty string for nil knowledge, got %s", hash)
+	}
+
+	// 2. 确定性与空白符修剪
+	k1 := &model.Knowledge{
+		EntryType: model.EntryTypeLog,
+		Module:    "BGP",
+		Brief:     "BGP_AUTH_FAILED",
+		Message:   "BGP authentication failed.",
+		Cause:     "Password mismatch",
+		Action:    "Check passwords",
+	}
+	k2 := &model.Knowledge{
+		EntryType: model.EntryTypeLog,
+		Module:    " BGP ",
+		Brief:     "BGP_AUTH_FAILED ",
+		Message:   "BGP authentication failed.",
+		Cause:     "Password mismatch",
+		Action:    "Check passwords",
+	}
+
+	h1 := knowledge.CalculateContentHash(k1)
+	h2 := knowledge.CalculateContentHash(k2)
+	if h1 == "" || h1 != h2 {
+		t.Errorf("expected matching hash for trimmed fields, got h1=%s, h2=%s", h1, h2)
+	}
+}
+
+func TestFindBestKnowledgeMatch(t *testing.T) {
+	service := knowledge.NewService(nil)
+
+	candidates := []model.Knowledge{
+		{
+			ID: 1,
+			Versions: []model.KnowledgeVersionMapping{
+				{ProductType: "CloudEngine 16800", ProductVersion: "V200R024C00"},
+			},
+		},
+		{
+			ID: 2,
+			Versions: []model.KnowledgeVersionMapping{
+				{ProductType: "CloudEngine 16800", ProductVersion: "V200R025C00"},
+			},
+		},
+		{
+			ID: 3,
+			Versions: []model.KnowledgeVersionMapping{
+				{ProductType: "HiSecEngine USG6000F", ProductVersion: "V600R025C10"},
+			},
+		},
+	}
+
+	// 1. 完全精确命中 (Product + Version)
+	match := service.FindBestKnowledgeMatch(candidates, "CloudEngine 16800", "V200R025C00")
+	if match == nil || match.ID != 2 {
+		t.Fatalf("expected candidate ID 2 for exact match, got %+v", match)
+	}
+
+	// 2. 同型号降级命中 (Product 命中，Version 不匹配)
+	match2 := service.FindBestKnowledgeMatch(candidates, "CloudEngine 16800", "V200R020C00")
+	if match2 == nil || (match2.ID != 1 && match2.ID != 2) {
+		t.Fatalf("expected candidate ID 1 or 2 for model match, got %+v", match2)
+	}
+
+	// 3. 同产品族相近系列匹配
+	match3 := service.FindBestKnowledgeMatch(candidates, "CloudEngine 6800", "V200R025C00")
+	if match3 == nil || (match3.ID != 1 && match3.ID != 2) {
+		t.Fatalf("expected CloudEngine family match, got %+v", match3)
+	}
+
+	// 4. 空候选
+	if matchNil := service.FindBestKnowledgeMatch(nil, "CE16800", "V200"); matchNil != nil {
+		t.Errorf("expected nil for empty candidates, got %+v", matchNil)
+	}
+}
+
+func TestBatchDirectoryImport(t *testing.T) {
+	logger.Init("debug", "console")
+
+	docRoot := filepath.FromSlash("../../原始产品文档")
+	if _, err := os.Stat(docRoot); os.IsNotExist(err) {
+		t.Skipf("sample doc root not found at %s, skipping test", docRoot)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "knowledge_batch_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "batch_knowledge.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	service := knowledge.NewService(db)
+
+	// 传入包含 10 个 HDX 子文档的父级目录
+	stats, err := service.ImportDocumentFromDir(docRoot)
+	if err != nil {
+		t.Fatalf("ImportDocumentFromDir failed on parent dir: %v", err)
+	}
+
+	t.Logf("Batch Import Stats: TotalDocs=%d, LeafLogs=%d, LeafAlarms=%d, UniqueKnowledge=%d, VersionMappings=%d, Duration=%v",
+		stats.TotalDocuments, stats.LeafLogCount, stats.LeafAlarmCount, stats.UniqueKnowledgeAdded, stats.VersionMappingsAdded, stats.Duration)
+
+	if stats.TotalDocuments != 10 {
+		t.Errorf("expected 10 documents imported, got %d", stats.TotalDocuments)
+	}
+	if stats.LeafLogCount <= 0 {
+		t.Errorf("expected > 0 leaf logs")
+	}
+	if stats.LeafAlarmCount <= 0 {
+		t.Errorf("expected > 0 leaf alarms")
+	}
+	if stats.UniqueKnowledgeAdded <= 0 {
+		t.Errorf("expected > 0 unique knowledge added")
+	}
+	if len(stats.ImportedDocs) != 10 {
+		t.Errorf("expected 10 imported docs in list, got %d", len(stats.ImportedDocs))
+	}
+
+	// 验证所有 10 个文档已写入 Document 列表
+	docs, err := service.GetDocumentList()
+	if err != nil {
+		t.Fatalf("GetDocumentList failed: %v", err)
+	}
+	if len(docs) != 10 {
+		t.Errorf("expected 10 documents in db, got %d", len(docs))
+	}
+}
+
