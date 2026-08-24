@@ -1,8 +1,9 @@
 package api
 
 import (
+	"io"
 	"net/http"
-	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -11,6 +12,7 @@ import (
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/task"
+	"logauditorgo/web"
 )
 
 // SetupRouter 组装 Gin 路由与中间件
@@ -84,21 +86,57 @@ func SetupRouter(
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
 	}
 
-	// 静态前端文件托管 (如果 web/dist 存在)
-	if _, err := os.Stat("web/dist"); err == nil {
-		r.Static("/assets", "web/dist/assets")
-		r.NoRoute(func(c *gin.Context) {
-			c.File("web/dist/index.html")
-		})
-	} else {
-		r.GET("/", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{
-				"name":    "LogAuditorGo API Server",
-				"status":  "running",
-				"version": "v1.0.0",
-			})
-		})
+	// 静态前端资源与 SPA 路由托管 (基于 Go embed.FS 纯单二进制打包)
+	distFS := web.DistFS()
+	fileServer := http.FileServer(http.FS(distFS))
+
+	indexFile, err := distFS.Open("index.html")
+	var indexContent []byte
+	if err == nil {
+		indexContent, _ = io.ReadAll(indexFile)
+		_ = indexFile.Close()
 	}
+
+	r.NoRoute(func(c *gin.Context) {
+		path := c.Request.URL.Path
+
+		// 如果是 API 请求，返回 404 JSON
+		if strings.HasPrefix(path, "/api/") {
+			c.JSON(http.StatusNotFound, gin.H{
+				"code":    404,
+				"message": "API endpoint not found",
+			})
+			return
+		}
+
+		// 检查是否是请求具体的静态资源文件 (例如 /assets/xxx.js, /favicon.ico 等)
+		cleanPath := strings.TrimPrefix(path, "/")
+		if cleanPath != "" {
+			f, err := distFS.Open(cleanPath)
+			if err == nil {
+				stat, err := f.Stat()
+				_ = f.Close()
+				if err == nil && !stat.IsDir() {
+					fileServer.ServeHTTP(c.Writer, c.Request)
+					return
+				}
+			}
+		}
+
+		// 如果请求根路径或前端路由 (如 /workbench, /tasks 等)，且存在打包的 index.html，则返回 SPA 页面
+		if len(indexContent) > 0 {
+			c.Data(http.StatusOK, "text/html; charset=utf-8", indexContent)
+			return
+		}
+
+		// 降级提示（若未打包前端）
+		c.JSON(http.StatusOK, gin.H{
+			"name":    "LogAuditorGo API Server",
+			"status":  "running",
+			"version": "v1.0.0",
+			"hint":    "Frontend static files not found. Please build web project before compiling.",
+		})
+	})
 
 	return r
 }

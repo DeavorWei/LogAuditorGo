@@ -478,3 +478,75 @@ func TestFolderWithMultipleHDXZipsUpload(t *testing.T) {
 		t.Fatalf("expected 3 imported documents (2 .hdx archives + 1 unzipped directory), got %+v", res)
 	}
 }
+
+func TestStaticFrontendAndSPARouting(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "static_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. 测试访问根路由 / 返回 index.html
+	req1, _ := http.NewRequest("GET", "/", nil)
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Errorf("expected 200 for /, got %d", w1.Code)
+	}
+	if !strings.Contains(w1.Body.String(), "<!DOCTYPE html>") {
+		t.Errorf("expected html doctype in index.html response, got: %s", w1.Body.String())
+	}
+
+	// 2. 测试访问 SPA 前端路由（例如 /workbench, /documents 等）正常返回 index.html
+	req2, _ := http.NewRequest("GET", "/workbench", nil)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+	if w2.Code != http.StatusOK {
+		t.Errorf("expected 200 for /workbench SPA route, got %d", w2.Code)
+	}
+	if !strings.Contains(w2.Body.String(), "<div id=\"app\"></div>") {
+		t.Errorf("expected SPA index.html for /workbench, got: %s", w2.Body.String())
+	}
+
+	// 3. 测试不存在的 API 路由返回 JSON 404
+	req3, _ := http.NewRequest("GET", "/api/v1/not-found-endpoint", nil)
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+	if w3.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for unknown api route, got %d", w3.Code)
+	}
+	if !strings.Contains(w3.Body.String(), "API endpoint not found") {
+		t.Errorf("expected json error message, got: %s", w3.Body.String())
+	}
+}

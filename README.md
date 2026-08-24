@@ -145,28 +145,34 @@ git clone <repository_url>
 cd LogAuditorGo
 ```
 
-#### 3. 构建前端
+#### 3. 构建前端并打包为纯单二进制（推荐）
+
+##### Windows 环境：
+直接运行根目录下的 `build.bat` 脚本，将自动完成前端构建并将 `web/dist` 通过 Go `embed.FS` 嵌入二进制：
+```cmd
+build.bat
+```
+
+##### Linux / macOS 环境：
 ```bash
+chmod +x build.sh
+./build.sh
+```
+
+##### 手动逐步构建：
+```bash
+# 1. 编译前端
 cd web
 npm install
 npm run build
 cd ..
+
+# 2. 编译 Go 纯单二进制（会自动将 web/dist 嵌入可执行文件中）
+go build -ldflags="-s -w" -o build/LogAuditorGo.exe cmd/LogAuditorGo/main.go
 ```
-> 前端编译生成的文件将自动输出至 `web/dist`，后端服务启动时会自动静态托管。
+> 💡 **说明**：通过 Go 标准库 `embed.FS` 机制，前端 Vite 构建产物已被完整嵌入 `LogAuditorGo.exe` 中，生成的可执行文件为**真正的独立单二进制文件**，可直接拷贝至任意机器或目录独立运行，无需携带额外的 `web/` 或前端文件。
 
-#### 4. 运行与编译后端
-```bash
-# 下载依赖
-go mod tidy
-
-# 本地直接运行
-go run cmd/LogAuditorGo/main.go
-
-# 或者编译生成二进制
-go build -o build/LogAuditorGo.exe cmd/LogAuditorGo/main.go
-```
-
-#### 5. 访问系统
+#### 4. 访问系统
 服务默认监听 `8080` 端口，打开浏览器访问：
 ```text
 http://localhost:8080
