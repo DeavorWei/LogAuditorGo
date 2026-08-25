@@ -64,6 +64,12 @@ func TestUpdateAndSaveConfig(t *testing.T) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	origWd, _ := os.Getwd()
+	defer os.Chdir(origWd)
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("chdir failed: %v", err)
+	}
+
 	configFile := filepath.Join(tmpDir, "test_config.yaml")
 	_, err = config.Load(configFile)
 	if err != nil {

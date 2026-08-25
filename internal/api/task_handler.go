@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,6 +13,7 @@ import (
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
 
 type TaskHandler struct {
@@ -26,11 +28,12 @@ func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *Tas
 	}
 }
 
-// CreateTask 创建日志审计任务（支持空任务创建、多文件上传或文本直接提交）
+// CreateTask 创建日志审计任务（支持空任务创建、多文件上传或文本直接提交，支持全流程阶段进度实时追踪）
 func (h *TaskHandler) CreateTask(c *gin.Context) {
 	taskName := c.PostForm("task_name")
 	deviceType := c.PostForm("device_type")
 	logContent := c.PostForm("content")
+	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
 	var items []task.FileUploadItem
 
@@ -71,10 +74,14 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			TaskName   string `json:"task_name"`
 			DeviceType string `json:"device_type"`
 			Content    string `json:"content"`
+			Async      bool   `json:"async"`
 		}
 		if err := c.ShouldBindJSON(&req); err == nil {
 			taskName = req.TaskName
 			deviceType = req.DeviceType
+			if req.Async {
+				isAsync = true
+			}
 			if req.Content != "" {
 				items = append(items, task.FileUploadItem{
 					FileName: "manual_input.txt",
@@ -100,14 +107,37 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		return
 	}
 
-	// 2. 如果包含日志，先创建任务再导入日志并分析
+	// 2. 如果包含日志，先创建任务再启动分析
 	taskInfo, err := h.taskSvc.CreateEmptyTask(taskName, deviceType)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Create task failed: "+err.Error())
 		return
 	}
 
-	updatedInfo, err := h.taskSvc.ImportLogs(taskInfo.TaskID, items, "overwrite")
+	tracker := progress.GetHub().RegisterJob(taskInfo.TaskID, taskInfo.TaskID, "log", task.LogAuditStages)
+	tracker.AddLog("info", "任务 '%s' 创建成功 (ID: %s)，已接收 %d 个日志待分析", taskName, taskInfo.TaskID, len(items))
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in task analysis: %v", r))
+				}
+			}()
+			_, _ = h.taskSvc.ImportLogs(taskInfo.TaskID, items, "overwrite", tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"task_id":  taskInfo.TaskID,
+			"task":     taskInfo,
+			"job_id":   tracker.JobID(),
+			"is_async": true,
+		}, "Task created and analysis started")
+		return
+	}
+
+	// 同步模式
+	updatedInfo, err := h.taskSvc.ImportLogs(taskInfo.TaskID, items, "overwrite", tracker)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Run task failed: "+err.Error())
 		return
@@ -116,13 +146,14 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	SuccessResponse(c, updatedInfo, "Task created and analyzed successfully")
 }
 
-// ImportLogs 导入/补充导入日志文件（支持多文件上传或文本提交，支持覆盖/跳过冲突模式）
+// ImportLogs 导入/补充导入日志文件（支持多文件上传或文本提交，支持覆盖/跳过冲突模式，支持进度追踪及异步模式）
 func (h *TaskHandler) ImportLogs(c *gin.Context) {
 	taskID := c.Param("id")
 	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
 	if conflictMode == "" {
 		conflictMode = "overwrite"
 	}
+	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
 	var items []task.FileUploadItem
 
@@ -163,6 +194,7 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 			Content      string `json:"content"`
 			FileName     string `json:"file_name"`
 			ConflictMode string `json:"conflict_mode"`
+			Async        bool   `json:"async"`
 		}
 		if err := c.ShouldBindJSON(&req); err == nil && req.Content != "" {
 			fileName := req.FileName
@@ -171,6 +203,9 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 			}
 			if req.ConflictMode != "" {
 				conflictMode = req.ConflictMode
+			}
+			if req.Async {
+				isAsync = true
 			}
 			items = append(items, task.FileUploadItem{
 				FileName: fileName,
@@ -187,7 +222,29 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 
 	logger.Log.Debugf("[API Tasks] Importing %d items into task %s (conflictMode: %s)", len(items), taskID, conflictMode)
 
-	taskInfo, err := h.taskSvc.ImportLogs(taskID, items, conflictMode)
+	tracker := progress.GetHub().NewJob("log", taskID, task.LogAuditStages)
+	tracker.AddLog("info", "开始向任务 %s 导入 %d 个日志文件 (策略: %s)", taskID, len(items), conflictMode)
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in import logs: %v", r))
+				}
+			}()
+			_, _ = h.taskSvc.ImportLogs(taskID, items, conflictMode, tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"task_id":  taskID,
+			"job_id":   tracker.JobID(),
+			"is_async": true,
+		}, "Log import and analysis job started")
+		return
+	}
+
+	// 同步模式
+	taskInfo, err := h.taskSvc.ImportLogs(taskID, items, conflictMode, tracker)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Import logs failed: "+err.Error())
 		return
@@ -380,4 +437,3 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 
 	SuccessResponse(c, nil, "Task deleted successfully")
 }
-

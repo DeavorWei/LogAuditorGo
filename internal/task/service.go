@@ -16,7 +16,18 @@ import (
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/storage"
 	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
+
+// LogAuditStages 日志导入与审计分析全流程预设阶段
+var LogAuditStages = []progress.StageDef{
+	{Key: "RECEIVE", Name: "日志文件预处理"},
+	{Key: "PARSE_NORM", Name: "分行解析与参数提取"},
+	{Key: "MATCH_KB", Name: "知识库多级智能匹配"},
+	{Key: "SAVE_DB", Name: "任务独立数据库持久化"},
+	{Key: "RCA_ANALYSIS", Name: "RCA 根因拓扑与传播链分析"},
+	{Key: "COMPLETE", Name: "审计分析完成"},
+}
 
 type FileUploadItem struct {
 	FileName string
@@ -108,15 +119,30 @@ func (s *Service) GetTaskFiles(taskID string) ([]model.TaskFile, error) {
 	return files, err
 }
 
-// ImportLogs 导入/补充导入日志文件，支持同名文件冲突模式（"overwrite" 或 "skip"）
-func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode string) (*model.TaskInfo, error) {
+// ImportLogs 导入/补充导入日志文件，支持全流程阶段进度实时追踪
+func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
+	var tr *progress.JobTracker
+	if len(tracker) > 0 && tracker[0] != nil {
+		tr = tracker[0]
+	}
+
+	if tr != nil {
+		tr.SetStage("RECEIVE", "正在加载并预处理待导入日志文件...")
+	}
+
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
+		if tr != nil {
+			tr.Fail(err, "无法打开任务独立数据库")
+		}
 		return nil, fmt.Errorf("open task db failed: %w", err)
 	}
 
 	var taskInfo model.TaskInfo
 	if err := taskDB.First(&taskInfo, "task_id = ?", taskID).Error; err != nil {
+		if tr != nil {
+			tr.Fail(err, "任务未找到")
+		}
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
@@ -136,6 +162,9 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 			taskInfo.ErrorMessage = errStr
 			s.globalDB.Save(&taskInfo)
 			taskDB.Save(&taskInfo)
+			if tr != nil {
+				tr.Fail(fmt.Errorf("%s", errStr), "日志处理异常中断")
+			}
 		}
 	}()
 
@@ -147,7 +176,15 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		existingMap[f.FileName] = f
 	}
 
-	var allNewLogRecords []model.LogRecord
+	// 预估所有文件的有效行数
+	type fileLineBundle struct {
+		item      FileUploadItem
+		cleanName string
+		lines     []string
+	}
+
+	var bundles []fileLineBundle
+	var totalValidLines int64 = 0
 
 	for _, item := range items {
 		cleanName := filepath.Base(strings.TrimSpace(item.FileName))
@@ -158,26 +195,54 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		if _, exists := existingMap[cleanName]; exists {
 			if conflictMode == "skip" {
 				logger.Log.Infof("[Task Service] Skipping existing file %s for task %s", cleanName, taskID)
+				if tr != nil {
+					tr.AddLog("warning", "跳过已存在的同名文件: %s", cleanName)
+				}
 				continue
 			} else if conflictMode == "overwrite" {
 				logger.Log.Infof("[Task Service] Overwriting existing file %s for task %s", cleanName, taskID)
-				// 删除旧的日志记录与文件记录
+				if tr != nil {
+					tr.AddLog("info", "清理覆盖旧同名文件数据: %s", cleanName)
+				}
 				taskDB.Where("source_file = ?", cleanName).Delete(&model.LogRecord{})
 				taskDB.Where("task_id = ? AND file_name = ?", taskID, cleanName).Delete(&model.TaskFile{})
 			}
 		}
 
-		// 按行解析日志
-		lines := strings.Split(strings.ReplaceAll(item.Content, "\r\n", "\n"), "\n")
+		rawLines := strings.Split(strings.ReplaceAll(item.Content, "\r\n", "\n"), "\n")
+		var validLines []string
+		for _, l := range rawLines {
+			l = strings.TrimSpace(l)
+			if l != "" {
+				validLines = append(validLines, l)
+			}
+		}
+
+		totalValidLines += int64(len(validLines))
+		bundles = append(bundles, fileLineBundle{
+			item:      item,
+			cleanName: cleanName,
+			lines:     validLines,
+		})
+	}
+
+	if tr != nil {
+		tr.AddLog("info", "待处理有效日志文件 %d 个，总计 %d 行日志", len(bundles), totalValidLines)
+		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在对 %d 行日志进行分词与标准化解析...", totalValidLines))
+		tr.UpdateProgress(0, totalValidLines, fmt.Sprintf("已解析 0 / %d 行", totalValidLines))
+	}
+
+	var allNewLogRecords []model.LogRecord
+	var processedCount int64 = 0
+	var matchedCountSoFar int64 = 0
+
+	for _, bundle := range bundles {
+		cleanName := bundle.cleanName
+		lines := bundle.lines
 		var fileRecords []model.LogRecord
-		validLineCount := 0
 
 		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			validLineCount++
+			processedCount++
 
 			norm, err := logparser.ParseLine(line)
 			if err != nil {
@@ -195,6 +260,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 				norm.KnowledgeID = k.ID
 				norm.MatchTier = tier
 				norm.MatchConfidence = conf
+				matchedCountSoFar++
 			} else {
 				norm.MatchTier = matcher.TierUnmatch
 				norm.MatchConfidence = 0.0
@@ -218,14 +284,19 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 			}
 
 			fileRecords = append(fileRecords, rec)
+
+			if tr != nil && (processedCount%200 == 0 || processedCount == totalValidLines) {
+				tr.UpdateProgress(processedCount, totalValidLines,
+					fmt.Sprintf("正在解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalValidLines, matchedCountSoFar))
+			}
 		}
 
 		// 插入或更新 TaskFile 记录
 		taskFile := model.TaskFile{
 			TaskID:    taskID,
 			FileName:  cleanName,
-			FileSize:  item.FileSize,
-			LineCount: validLineCount,
+			FileSize:  bundle.item.FileSize,
+			LineCount: len(lines),
 			CreatedAt: time.Now(),
 		}
 		if err := taskDB.Create(&taskFile).Error; err != nil {
@@ -235,12 +306,22 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		allNewLogRecords = append(allNewLogRecords, fileRecords...)
 	}
 
+	if tr != nil {
+		tr.SetStage("SAVE_DB", fmt.Sprintf("正在将 %d 条解析日志批量写入任务隔离数据库...", len(allNewLogRecords)))
+		tr.AddLog("info", "日志分行与匹配完成，开始批量持久化落盘 (%d 条)...", len(allNewLogRecords))
+	}
+
 	// 批量插入新增日志记录
 	if len(allNewLogRecords) > 0 {
 		logger.Log.Debugf("[Task Service] Inserting %d new log records for task %s...", len(allNewLogRecords), taskID)
-		if err := taskDB.CreateInBatches(&allNewLogRecords, 100).Error; err != nil {
+		if err := taskDB.CreateInBatches(&allNewLogRecords, 200).Error; err != nil {
 			logger.Log.Errorf("batch insert log records failed: %v", err)
 		}
+	}
+
+	if tr != nil {
+		tr.SetStage("RCA_ANALYSIS", "正在基于时序关联与故障传播模型执行全量 RCA 根因拓扑分析...")
+		tr.AddLog("info", "开始 RCA 根因分析计算...")
 	}
 
 	// 全量重新聚合并执行 RCA 根因拓扑分析
@@ -302,6 +383,13 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 
 	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched, %d rca events",
 		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
+
+	if tr != nil {
+		tr.AddLog("info", "RCA 拓扑分析就绪: 发现 %d 个根因故障事件", len(rcaEvents))
+		tr.SetStage("COMPLETE", "日志审计分析已全部完成")
+		tr.Complete(&taskInfo, fmt.Sprintf("分析就绪！共处理 %d 行日志，命中知识库 %d 条，识别出 %d 个 RCA 根因事件",
+			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount))
+	}
 
 	return &taskInfo, nil
 }
@@ -429,4 +517,3 @@ func (s *Service) DeleteTask(taskID string) error {
 	_ = s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskInfo{})
 	return storage.DeleteTaskDB(s.taskDir, taskID)
 }
-

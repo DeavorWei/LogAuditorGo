@@ -44,6 +44,9 @@ func TestAPIEndpoints(t *testing.T) {
 		},
 	}
 
+	config.ConfigFileUsed = filepath.Join(tmpDir, "config.yaml")
+	config.GlobalConfig = cfg
+
 	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
 	if err != nil {
 		t.Fatalf("init db failed: %v", err)

@@ -203,6 +203,14 @@
       </template>
     </el-dialog>
 
+    <!-- 全流程阶段进度实时追踪弹窗 -->
+    <ImportProgressModal
+      v-model="showProgressModal"
+      :job-id="currentJobId"
+      title="华为官方 HDX 产品文档知识库导入流水线"
+      @completed="handleImportCompleted"
+    />
+
     <!-- 隐藏的全局文件输入框（用于引导区域快捷触发） -->
     <input ref="guideFilesInputRef" type="file" multiple accept=".hdx" style="display: none;" @change="handleGuideFilesSelected" />
     <input ref="guideDirInputRef" type="file" webkitdirectory directory multiple style="display: none;" @change="handleGuideDirSelected" />
@@ -214,6 +222,7 @@ import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { FolderOpened, Files, FolderAdd, UploadFilled, Close, Search, Refresh, Upload } from '@element-plus/icons-vue'
 import api from '@/api'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const loading = ref(false)
 const docList = ref([])
@@ -224,6 +233,10 @@ const showImportDialog = ref(false)
 const importTab = ref('files')
 const selectedPendingFiles = ref([])
 const submitting = ref(false)
+
+// 进度追踪相关
+const showProgressModal = ref(false)
+const currentJobId = ref('')
 
 const filesInputRef = ref(null)
 const dirInputRef = ref(null)
@@ -383,16 +396,29 @@ const executeImportWithConflict = async (conflictMode) => {
       formData.append('files', f, relPath)
     }
 
-    const res = await api.uploadHDX(formData)
+    const res = await api.uploadHDX(formData, true)
     if (res.code === 0) {
-      showImportSuccessFeedback(res.data)
       showImportDialog.value = false
       selectedPendingFiles.value = []
-      await fetchDocs()
+
+      // 开启全流程阶段进度实时追踪
+      if (res.data?.job_id) {
+        currentJobId.value = res.data.job_id
+        showProgressModal.value = true
+      } else {
+        showImportSuccessFeedback(res.data)
+        await fetchDocs()
+      }
     }
   } finally {
     submitting.value = false
   }
+}
+
+// 导入完成回调，平滑刷新列表
+const handleImportCompleted = (result) => {
+  showImportSuccessFeedback(result)
+  fetchDocs()
 }
 
 const showImportSuccessFeedback = (stats) => {

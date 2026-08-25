@@ -58,7 +58,7 @@ func TestEndToEndSystemIntegration(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	// 1. 真实文档导入测试
+	// 1. 真实文档导入测试（若本地存在外部文档则导入，否则初始化测试知识库）
 	usgDir := filepath.FromSlash("../../原始产品文档/HiSecEngine USG6000F, USG6000G_V600R025C10_01_zh_AZQ01091")
 	if _, err := os.Stat(usgDir); err == nil {
 		stats, err := knowledgeSvc.ImportDocumentFromDir(usgDir)
@@ -75,6 +75,34 @@ func TestEndToEndSystemIntegration(t *testing.T) {
 			t.Fatalf("index knowledge to Bleve failed: %v", err)
 		}
 		t.Logf("E2E: Indexed %d knowledge items into Bleve", len(allKnowledge))
+	} else {
+		// Mock 知识库条目
+		mockKnowledges := []struct {
+			k       model.Knowledge
+			product string
+		}{
+			{k: model.Knowledge{Module: "IFNET", Brief: "IF_DOWN", Severity: 4, Message: "Interface state turned to DOWN", Description: "接口物理链路断开", Action: "检查光模块和光纤", ContentHash: "mock_hash_01"}, product: "CloudEngine"},
+			{k: model.Knowledge{Module: "BFD", Brief: "BFD_SESS_DOWN", Severity: 2, Message: "BFD session state changed to DOWN", Description: "BFD会话断开", Action: "检查对端BFD状态", ContentHash: "mock_hash_02"}, product: "CloudEngine"},
+			{k: model.Knowledge{Module: "BGP", Brief: "PEER_BACKWARD", Severity: 2, Message: "The BGP peer went down", Description: "BGP邻居断开", Action: "排查网络连通性", ContentHash: "mock_hash_03"}, product: "CloudEngine"},
+			{k: model.Knowledge{Module: "BGP", Brief: "BGP_AUTH_FAILED", Severity: 4, Message: "BGP session authentication failed", Description: "BGP认证失败", Action: "检查BGP认证密码", ContentHash: "mock_hash_04"}, product: "CloudEngine"},
+			{k: model.Knowledge{Module: "AAA", Brief: "hwRadiusAuthServerDown_active", Severity: 4, Message: "The communication with the RADIUS authentication server fails", Description: "RADIUS服务器无响应", Action: "检查RADIUS服务器", ContentHash: "mock_hash_05"}, product: "HiSecEngine"},
+			{k: model.Knowledge{Module: "AAA", Brief: "USER_AUTH_FAIL", Severity: 4, Message: "User authentication failed", Description: "用户认证失败", Action: "核对用户凭据", ContentHash: "mock_hash_06"}, product: "HiSecEngine"},
+		}
+		var knowList []model.Knowledge
+		for i := range mockKnowledges {
+			item := mockKnowledges[i].k
+			globalDB.Create(&item)
+			globalDB.Create(&model.KnowledgeVersionMapping{
+				KnowledgeID:    item.ID,
+				ProductType:    mockKnowledges[i].product,
+				ProductVersion: "V100R001C00",
+			})
+			item.Versions = []model.KnowledgeVersionMapping{
+				{KnowledgeID: item.ID, ProductType: mockKnowledges[i].product, ProductVersion: "V100R001C00"},
+			}
+			knowList = append(knowList, item)
+		}
+		_ = indexer.IndexKnowledge(knowList)
 	}
 
 	// 2. 模拟包含真实场景的 Syslog 报文序列

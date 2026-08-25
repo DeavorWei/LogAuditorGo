@@ -53,9 +53,14 @@ func SetupRouter(
 	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
 	statsHandler := NewStatsHandler(globalDB)
 	systemHandler := NewSystemHandler()
+	progressHandler := NewProgressHandler()
 
 	v1 := r.Group("/api/v1")
 	{
+		// 全流程阶段进度实时追踪 (SSE 流与 HTTP 轮询)
+		v1.GET("/progress/:job_id", progressHandler.GetProgress)
+		v1.GET("/progress/:job_id/stream", progressHandler.StreamProgress)
+
 		// 系统统计与系统配置
 		v1.GET("/system/stats", statsHandler.GetSystemStats)
 		v1.GET("/system/config", systemHandler.GetConfig)

@@ -16,6 +16,7 @@ import (
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
 
 type DocumentHandler struct {
@@ -30,11 +31,12 @@ func NewDocumentHandler(knowledgeSvc *knowledge.Service, uploadDir string) *Docu
 	}
 }
 
-// ImportDir 从本地目录导入 HDX 文档
+// ImportDir 从本地目录导入 HDX 文档（支持全流程阶段进度实时追踪及异步模式）
 func (h *DocumentHandler) ImportDir(c *gin.Context) {
 	var req struct {
 		DirPath      string `json:"dir_path" binding:"required"`
 		ConflictMode string `json:"conflict_mode"`
+		Async        bool   `json:"async"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request: "+err.Error())
@@ -46,8 +48,30 @@ func (h *DocumentHandler) ImportDir(c *gin.Context) {
 		conflictMode = "overwrite"
 	}
 
-	logger.Log.Debugf("[API Documents] Triggered ImportDir from: %s (conflictMode: %s)", req.DirPath, conflictMode)
-	stats, err := h.knowledgeSvc.ImportDocumentFromDir(req.DirPath, conflictMode)
+	isAsync := req.Async || c.Query("async") == "true" || c.GetHeader("X-Async") == "true"
+
+	tracker := progress.GetHub().NewJob("hdx", "", knowledge.HDXImportStages)
+	tracker.AddLog("info", "接收到本地目录导入请求: %s (策略: %s)", req.DirPath, conflictMode)
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in HDX import: %v", r))
+				}
+			}()
+			_, _ = h.knowledgeSvc.ImportDocumentFromDir(req.DirPath, conflictMode, tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"job_id":   tracker.JobID(),
+			"is_async": true,
+		}, "HDX 文档导入任务已在后台启动")
+		return
+	}
+
+	// 同步模式（兼容单测与同步请求）
+	stats, err := h.knowledgeSvc.ImportDocumentFromDir(req.DirPath, conflictMode, tracker)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Import failed: "+err.Error())
 		return
@@ -56,12 +80,14 @@ func (h *DocumentHandler) ImportDir(c *gin.Context) {
 	SuccessResponse(c, stats, "Import completed successfully")
 }
 
-// UploadHDX 上传 HDX 压缩包或目录文件并自动解压导入（支持批量多文件、目录上传及冲突策略）
+// UploadHDX 上传 HDX 压缩包或目录文件并自动解压导入（支持全流程阶段进度追踪及异步模式）
 func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
 	if conflictMode == "" {
 		conflictMode = "overwrite"
 	}
+
+	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
 	form, err := c.MultipartForm()
 	if err != nil || form == nil || len(form.File) == 0 {
@@ -75,7 +101,6 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Create temp dir failed: "+err.Error())
 		return
 	}
-	defer os.RemoveAll(batchTempDir)
 
 	fileCount := 0
 	for _, fileHeaders := range form.File {
@@ -108,18 +133,53 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 	}
 
 	if fileCount == 0 {
+		_ = os.RemoveAll(batchTempDir)
 		ErrorResponse(c, http.StatusBadRequest, -1, "No valid files saved")
 		return
 	}
 
-	// 递归解压所有 .hdx 压缩包（已解压的目录保持原样，直接由 FindHDXDocDirs 发现）
-	if err := extractAllHDXArchives(batchTempDir); err != nil {
+	tracker := progress.GetHub().NewJob("hdx", "", knowledge.HDXImportStages)
+	tracker.SetStage("UPLOAD", fmt.Sprintf("已成功接收并保存 %d 个上传文件，准备解压...", fileCount))
+	tracker.AddLog("info", "已接收 %d 个上传文件至临时工作目录", fileCount)
+
+	if isAsync {
+		// 异步模式：立即返回 job_id，后台 goroutine 执行
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in upload HDX process: %v", r))
+				}
+				time.Sleep(2 * time.Second)
+				_ = os.RemoveAll(batchTempDir)
+			}()
+
+			tracker.AddLog("info", "开始检查并解压所有 .hdx 官方压缩包...")
+			if err := extractAllHDXArchivesWithTracker(batchTempDir, tracker); err != nil {
+				logger.Log.Warnf("[API Documents] Extract HDX archives warning: %v", err)
+				tracker.AddLog("warning", "解压警告: %v", err)
+			}
+
+			_, _ = h.knowledgeSvc.ImportDocumentFromDir(batchTempDir, conflictMode, tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"job_id":     tracker.JobID(),
+			"file_count": fileCount,
+			"is_async":   true,
+		}, "HDX 文档上传成功，后台导入已启动")
+		return
+	}
+
+	// 同步模式（兼容旧单测和直接调用）
+	defer os.RemoveAll(batchTempDir)
+
+	if err := extractAllHDXArchivesWithTracker(batchTempDir, tracker); err != nil {
 		logger.Log.Warnf("[API Documents] Extract HDX archives warning: %v", err)
 	}
 
 	logger.Log.Debugf("[API Documents] Triggered UploadHDX with %d files in %s (conflictMode: %s)", fileCount, batchTempDir, conflictMode)
 
-	stats, err := h.knowledgeSvc.ImportDocumentFromDir(batchTempDir, conflictMode)
+	stats, err := h.knowledgeSvc.ImportDocumentFromDir(batchTempDir, conflictMode, tracker)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Import extracted documents failed: "+err.Error())
 		return
@@ -156,8 +216,8 @@ func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
 	SuccessResponse(c, nil, "Document deleted successfully")
 }
 
-// extractAllHDXArchives 递归查找并解压目录下所有的 .hdx 压缩文件
-func extractAllHDXArchives(dir string) error {
+// extractAllHDXArchivesWithTracker 递归查找并解压目录下所有的 .hdx 压缩文件并向 Tracker 上报日志
+func extractAllHDXArchivesWithTracker(dir string, tr *progress.JobTracker) error {
 	var hdxFiles []string
 	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d == nil || d.IsDir() {
@@ -170,10 +230,20 @@ func extractAllHDXArchives(dir string) error {
 		return nil
 	})
 
+	if len(hdxFiles) > 0 && tr != nil {
+		tr.AddLog("info", "发现 %d 个 HDX 压缩包，正在解压...", len(hdxFiles))
+	}
+
 	for _, h := range hdxFiles {
 		destDir := filepath.Join(filepath.Dir(h), "extracted_"+strings.TrimSuffix(filepath.Base(h), filepath.Ext(h)))
+		if tr != nil {
+			tr.AddLog("info", "正在解压: %s", filepath.Base(h))
+		}
 		if err := unzipFile(h, destDir); err != nil {
 			logger.Log.Warnf("[API Documents] Failed to unzip HDX archive %s: %v", h, err)
+			if tr != nil {
+				tr.AddLog("warning", "解压 %s 失败: %v", filepath.Base(h), err)
+			}
 			continue
 		}
 		_ = os.Remove(h)

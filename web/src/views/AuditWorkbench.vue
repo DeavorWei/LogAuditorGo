@@ -429,6 +429,14 @@
       </template>
     </el-dialog>
 
+    <!-- 全流程阶段进度实时追踪弹窗 -->
+    <ImportProgressModal
+      v-model="showProgressModal"
+      :job-id="currentJobId"
+      title="日志智能审计与 RCA 根因分析流水线"
+      @completed="handleLogImportCompleted"
+    />
+
     <!-- 隐藏的全局文件输入框（用于引导区域快捷触发） -->
     <input ref="guideFilesInputRef" type="file" multiple style="display: none;" @change="handleGuideFilesSelected" />
     <input ref="guideDirInputRef" type="file" webkitdirectory directory multiple style="display: none;" @change="handleGuideDirSelected" />
@@ -442,6 +450,7 @@ import { ElMessage } from 'element-plus'
 import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -482,6 +491,10 @@ const importTab = ref('files')
 const manualFileName = ref('')
 const manualLogText = ref('')
 const selectedPendingFiles = ref([])
+
+// 进度追踪相关
+const showProgressModal = ref(false)
+const currentJobId = ref('')
 
 const filesInputRef = ref(null)
 const dirInputRef = ref(null)
@@ -786,17 +799,35 @@ const executeImportWithConflict = async (conflictMode) => {
       }
     }
 
-    const res = await api.importTaskLogs(currentTaskId.value, formData)
+    const res = await api.importTaskLogs(currentTaskId.value, formData, true)
     if (res.code === 0) {
-      ElMessage.success(`导入成功！共解析日志 ${res.data.log_count} 条，匹配知识 ${res.data.matched_count} 条，关联 RCA ${res.data.rca_count} 条`)
       showImportDialog.value = false
       selectedPendingFiles.value = []
       manualLogText.value = ''
-      await fetchTasks()
-      handleTaskChange(currentTaskId.value)
+      manualFileName.value = ''
+
+      // 启动阶段进度追踪弹窗
+      if (res.data?.job_id) {
+        currentJobId.value = res.data.job_id
+        showProgressModal.value = true
+      } else {
+        await handleLogImportCompleted(res.data)
+      }
     }
   } finally {
     submitting.value = false
+  }
+}
+
+// 日志导入完成回调：自动刷新并无缝载入审计工作台
+const handleLogImportCompleted = async (result) => {
+  ElMessage.success({
+    message: `🎉 日志审计分析完成！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条，识别出 ${result?.rca_count || 0} 个 RCA 根因事件`,
+    duration: 4000
+  })
+  await fetchTasks()
+  if (currentTaskId.value) {
+    await handleTaskChange(currentTaskId.value)
   }
 }
 

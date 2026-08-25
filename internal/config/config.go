@@ -111,6 +111,25 @@ func Load(configPath string) (*Config, error) {
 		return nil, fmt.Errorf("unmarshal config failed: %w", err)
 	}
 
+	// 当 DataDir 被显式指定为非默认路径时（如测试环境临时目录），自动将所有未覆盖的默认子路径收敛到该 DataDir 下
+	if cfg.Storage.DataDir != "" && cfg.Storage.DataDir != DefaultDataDir {
+		if cfg.Storage.KnowledgeDB == filepath.Join(DefaultDataDir, "knowledge.db") {
+			cfg.Storage.KnowledgeDB = filepath.Join(cfg.Storage.DataDir, "knowledge.db")
+		}
+		if cfg.Storage.BleveIndex == filepath.Join(DefaultDataDir, "bleve", "knowledge.bleve") {
+			cfg.Storage.BleveIndex = filepath.Join(cfg.Storage.DataDir, "bleve", "knowledge.bleve")
+		}
+		if cfg.Storage.TaskDir == filepath.Join(DefaultDataDir, "tasks") {
+			cfg.Storage.TaskDir = filepath.Join(cfg.Storage.DataDir, "tasks")
+		}
+		if cfg.Storage.UploadDir == filepath.Join(DefaultDataDir, "uploads") {
+			cfg.Storage.UploadDir = filepath.Join(cfg.Storage.DataDir, "uploads")
+		}
+		if cfg.Log.Dir == filepath.Join(DefaultDataDir, "log") || cfg.Log.Dir == "" {
+			cfg.Log.Dir = filepath.Join(cfg.Storage.DataDir, "log")
+		}
+	}
+
 	// 确保必要字段不为空
 	if cfg.Log.Dir == "" {
 		cfg.Log.Dir = filepath.Join(cfg.Storage.DataDir, "log")
@@ -158,7 +177,11 @@ func Save(configPath string) error {
 		targetPath = ConfigFileUsed
 	}
 	if targetPath == "" {
-		targetPath = filepath.Join(DefaultDataDir, "config.yaml")
+		if GlobalConfig.Storage.DataDir != "" {
+			targetPath = filepath.Join(GlobalConfig.Storage.DataDir, "config.yaml")
+		} else {
+			targetPath = filepath.Join(DefaultDataDir, "config.yaml")
+		}
 	}
 
 	dir := filepath.Dir(targetPath)

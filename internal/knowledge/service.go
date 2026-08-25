@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
@@ -13,7 +14,19 @@ import (
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/search"
 	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
+
+// HDXImportStages HDX 产品文档知识库导入全流程预设阶段
+var HDXImportStages = []progress.StageDef{
+	{Key: "UPLOAD", Name: "文件接收与解压"},
+	{Key: "SCAN", Name: "扫描文档结构"},
+	{Key: "META", Name: "解析导航与元数据"},
+	{Key: "HTML_PARSE", Name: "并发解析知识条目"},
+	{Key: "PERSIST", Name: "去重与数据库写入"},
+	{Key: "INDEX", Name: "构建全文检索索引"},
+	{Key: "COMPLETE", Name: "导入完成"},
+}
 
 type ImportStats struct {
 	TotalDocuments       int           `json:"total_documents"`
@@ -51,13 +64,19 @@ func (s *Service) SetIndexer(indexer *search.Indexer) {
 	s.indexer = indexer
 }
 
-// ImportDocumentFromDir 从本地目录导入 HDX 知识库
+// ImportDocumentFromDir 从本地目录导入 HDX 知识库（支持进度追踪 Tracker 回调）
 // 支持直接指定单个文档目录，或指定包含多个文档包的父级目录（程序自动递归发现所有文档并批量导入）
-// conflictMode 支持 "overwrite"（覆盖/更新，默认）或 "skip"（跳过已存在文档）
-func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) (*ImportStats, error) {
+// 参数 options 可选传入 conflictMode string（"overwrite" 或 "skip"）以及 tracker *progress.JobTracker
+func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) (*ImportStats, error) {
+	var tr *progress.JobTracker
 	mode := "overwrite"
-	if len(conflictMode) > 0 && conflictMode[0] != "" {
-		mode = conflictMode[0]
+
+	for _, opt := range options {
+		if str, ok := opt.(string); ok && str != "" {
+			mode = str
+		} else if tracker, ok := opt.(*progress.JobTracker); ok {
+			tr = tracker
+		}
 	}
 
 	s.importMu.Lock()
@@ -65,9 +84,20 @@ func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) 
 
 	startTime := time.Now()
 
+	if tr != nil {
+		tr.SetStage("SCAN", "正在递归扫描发现 HDX 知识库文档目录...")
+	}
+
 	docDirs, err := hdx.FindHDXDocDirs(dirPath)
 	if err != nil {
+		if tr != nil {
+			tr.Fail(err, fmt.Sprintf("扫描 HDX 文档目录失败: %v", err))
+		}
 		return nil, err
+	}
+
+	if tr != nil {
+		tr.AddLog("info", "发现 %d 个 HDX 官方文档目录", len(docDirs))
 	}
 
 	totalStats := &ImportStats{
@@ -82,18 +112,28 @@ func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) 
 	var lastErr error
 	successCount := 0
 
-	for _, docDir := range docDirs {
-		st, err := s.importSingleDocUnlocked(docDir, mode)
+	for docIdx, docDir := range docDirs {
+		if tr != nil {
+			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(docDirs), filepath.Base(docDir))
+		}
+
+		st, err := s.importSingleDocUnlocked(docDir, mode, tr)
 		if err != nil {
 			logger.Log.Errorf("[Knowledge Service] Failed to import document at %s: %v", docDir, err)
 			totalStats.FailedDocs = append(totalStats.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(docDir), err))
 			lastErr = err
+			if tr != nil {
+				tr.AddLog("error", "文档包 %s 解析失败: %v", filepath.Base(docDir), err)
+			}
 			continue
 		}
 
 		if st.Skipped {
 			docLabel := fmt.Sprintf("%s (%s %s)", st.LibID, st.ProductType, st.ProductVersion)
 			totalStats.SkippedDocs = append(totalStats.SkippedDocs, docLabel)
+			if tr != nil {
+				tr.AddLog("warning", "已跳过已存在的文档包: %s", docLabel)
+			}
 			continue
 		}
 
@@ -115,6 +155,9 @@ func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) 
 	}
 
 	if successCount == 0 && len(totalStats.SkippedDocs) == 0 && lastErr != nil {
+		if tr != nil {
+			tr.Fail(lastErr, fmt.Sprintf("未能成功导入任何文档: %v", lastErr))
+		}
 		return nil, fmt.Errorf("failed to import any documents: %w", lastErr)
 	}
 
@@ -133,17 +176,31 @@ func (s *Service) ImportDocumentFromDir(dirPath string, conflictMode ...string) 
 	logger.Log.Infof("Completed batch import of %d/%d documents (%d skipped) from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
 		successCount, len(docDirs), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
 
+	if tr != nil {
+		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
+		tr.Complete(totalStats, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
+			successCount, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded))
+	}
+
 	return totalStats, nil
 }
 
 // importSingleDocUnlocked 执行单个 HDX 文档目录的解析与入库（内部调用，需持有 importMu 锁）
-func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string) (*ImportStats, error) {
+func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string, tr *progress.JobTracker) (*ImportStats, error) {
 	startTime := time.Now()
+
+	if tr != nil {
+		tr.SetStage("META", fmt.Sprintf("正在解析 %s 的 profile.xml 与 navi.xml 元数据...", filepath.Base(docRootDir)))
+	}
 
 	// 1. 解析 profile.xml
 	doc, naviRelPath, err := hdx.ParseProfileXML(docRootDir)
 	if err != nil {
 		return nil, fmt.Errorf("parse profile.xml failed: %w", err)
+	}
+
+	if tr != nil {
+		tr.AddLog("info", "已识别文档: LibID=%s, 产品=%s, 版本=%s, 主题数=%d", doc.LibID, doc.ProductType, doc.ProductVersion, doc.TopicNumber)
 	}
 
 	// 检查冲突策略：如果为 skip 且该文档已存在，则直接跳过，避免耗时的并发 HTML 解析
@@ -185,6 +242,12 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 		}
 	}
 
+	if tr != nil {
+		tr.AddLog("info", "导航树提取完成: 共 %d 个叶子条目 (日志 %d 条, 告警 %d 条)", len(leafItems), stats.LeafLogCount, stats.LeafAlarmCount)
+		tr.SetStage("HTML_PARSE", fmt.Sprintf("正在并发解析 %d 个 HTML 知识页面...", len(leafItems)))
+		tr.UpdateProgress(0, int64(len(leafItems)), fmt.Sprintf("已解析 0 / %d 个知识页面", len(leafItems)))
+	}
+
 	// 3. 并发解析 HTML 文件
 	type parsedResult struct {
 		knowledge *model.Knowledge
@@ -195,6 +258,9 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 	workerNum := 16
 	jobs := make(chan hdx.LeafNaviItem, len(leafItems))
 	results := make(chan parsedResult, len(leafItems))
+
+	var doneCount int64
+	totalLeafCount := int64(len(leafItems))
 
 	var wg sync.WaitGroup
 	for i := 0; i < workerNum; i++ {
@@ -209,6 +275,13 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 			for item := range jobs {
 				k, err := hdx.ParseHTMLKnowledge(docRootDir, item)
 				results <- parsedResult{knowledge: k, item: item, err: err}
+
+				if tr != nil {
+					cur := atomic.AddInt64(&doneCount, 1)
+					if cur%20 == 0 || cur == totalLeafCount {
+						tr.UpdateProgress(cur, totalLeafCount, fmt.Sprintf("已并发提取 HTML 知识条目: %d / %d", cur, totalLeafCount))
+					}
+				}
 			}
 		}()
 	}
@@ -233,6 +306,11 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 		k.ContentHash = hash
 		resList = append(resList, res)
 		hashes = append(hashes, hash)
+	}
+
+	if tr != nil {
+		tr.SetStage("PERSIST", fmt.Sprintf("正在对 %d 个条目进行全局去重与数据库事务持久化...", len(resList)))
+		tr.AddLog("info", "HTML 知识页面解析完成，有效条目 %d，开始事务入库...", len(resList))
 	}
 
 	// 4. 批量去重与原子事务入库
@@ -335,6 +413,11 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 		return nil, fmt.Errorf("commit transaction failed: %w", err)
 	}
 
+	if tr != nil {
+		tr.AddLog("info", "数据库入库成功: 新增唯一知识 %d 条, 版本映射 %d 条", uniqueAdded, mappingsAdded)
+		tr.SetStage("INDEX", fmt.Sprintf("正在为 %d 条新增知识构建 Bleve 全文检索索引...", len(newKnowledges)))
+	}
+
 	// 5. 自动同步建立全文检索索引 (Bleve Index)
 	if s.indexer != nil && len(newKnowledges) > 0 {
 		itemsToIndex := make([]model.Knowledge, 0, len(newKnowledges))
@@ -349,8 +432,14 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 		}
 		if err := s.indexer.IndexKnowledge(itemsToIndex); err != nil {
 			logger.Log.Warnf("[Knowledge Service] Auto-indexing into Bleve failed: %v", err)
+			if tr != nil {
+				tr.AddLog("warning", "全文检索索引构建告警: %v", err)
+			}
 		} else {
 			logger.Log.Debugf("[Knowledge Service] Auto-indexed %d new knowledge items to Bleve", len(itemsToIndex))
+			if tr != nil {
+				tr.AddLog("info", "Bleve 全文检索索引构建完成 (%d 条)", len(itemsToIndex))
+			}
 		}
 	}
 
@@ -363,7 +452,6 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 
 	return stats, nil
 }
-
 
 // GetDocumentList 获取所有已导入的文档
 func (s *Service) GetDocumentList() ([]model.Document, error) {
