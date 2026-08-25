@@ -60,7 +60,7 @@ storage:
   upload_dir: "LogAuditorGoData/uploads"               # 临时上传目录
 
 log:
-  level: debug               # 日志级别: debug, info, warn, error
+  level: info                # 日志级别: debug, info, warn, error
   format: console            # 日志格式: console 或 json
   dir: "LogAuditorGoData/log" # 日志存放目录
   max_size_mb: 1024          # 日志最大保留总大小(MB), 默认 1024 (1GB)
@@ -81,7 +81,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("storage.bleve_index", filepath.Join(DefaultDataDir, "bleve", "knowledge.bleve"))
 	v.SetDefault("storage.task_dir", filepath.Join(DefaultDataDir, "tasks"))
 	v.SetDefault("storage.upload_dir", filepath.Join(DefaultDataDir, "uploads"))
-	v.SetDefault("log.level", "debug")
+	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "console")
 	v.SetDefault("log.dir", filepath.Join(DefaultDataDir, "log"))
 	v.SetDefault("log.max_size_mb", 1024)

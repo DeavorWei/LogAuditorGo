@@ -3,6 +3,7 @@ package knowledge
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -248,14 +249,19 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 		tr.UpdateProgress(0, int64(len(leafItems)), fmt.Sprintf("已解析 0 / %d 个知识页面", len(leafItems)))
 	}
 
-	// 3. 并发解析 HTML 文件
+	// 3. 并发解析 HTML 文件（根据 CPU 核心数动态自适应协程池）
 	type parsedResult struct {
 		knowledge *model.Knowledge
 		item      hdx.LeafNaviItem
 		err       error
 	}
 
-	workerNum := 16
+	workerNum := runtime.NumCPU() * 2
+	if workerNum < 4 {
+		workerNum = 4
+	} else if workerNum > 32 {
+		workerNum = 32
+	}
 	jobs := make(chan hdx.LeafNaviItem, len(leafItems))
 	results := make(chan parsedResult, len(leafItems))
 

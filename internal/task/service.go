@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -228,93 +231,157 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 
 	if tr != nil {
 		tr.AddLog("info", "待处理有效日志文件 %d 个，总计 %d 行日志", len(bundles), totalValidLines)
-		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在对 %d 行日志进行分词与标准化解析...", totalValidLines))
+		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在并发分词与标准化解析 %d 行日志...", totalValidLines))
 		tr.UpdateProgress(0, totalValidLines, fmt.Sprintf("已解析 0 / %d 行", totalValidLines))
 	}
 
-	var allNewLogRecords []model.LogRecord
+	// 多协程并发流水线设计
+	type logParseJob struct {
+		index     int
+		cleanName string
+		line      string
+	}
+
+	type logParseResult struct {
+		index   int
+		record  model.LogRecord
+		matched bool
+	}
+
+	allNewLogRecords := make([]model.LogRecord, totalValidLines)
 	var processedCount int64 = 0
 	var matchedCountSoFar int64 = 0
 
-	for _, bundle := range bundles {
-		cleanName := bundle.cleanName
-		lines := bundle.lines
-		var fileRecords []model.LogRecord
+	if totalValidLines > 0 {
+		workerNum := runtime.NumCPU()
+		if workerNum < 2 {
+			workerNum = 2
+		} else if workerNum > 32 {
+			workerNum = 32
+		}
 
-		for _, line := range lines {
-			processedCount++
+		jobs := make(chan logParseJob, 1024)
+		results := make(chan logParseResult, 1024)
 
-			norm, err := logparser.ParseLine(line)
-			if err != nil {
-				norm = &model.NormalizedLog{
-					RawLog:      line,
-					Timestamp:   time.Now(),
-					MessageBody: line,
+		// 结果收集协程
+		collectDone := make(chan struct{})
+		go func() {
+			defer close(collectDone)
+			for res := range results {
+				allNewLogRecords[res.index] = res.record
+				if res.matched {
+					atomic.AddInt64(&matchedCountSoFar, 1)
+				}
+				cur := atomic.AddInt64(&processedCount, 1)
+				if tr != nil && (cur%200 == 0 || cur == totalValidLines) {
+					curMatched := atomic.LoadInt64(&matchedCountSoFar)
+					tr.UpdateProgress(cur, totalValidLines,
+						fmt.Sprintf("正在并发解析与匹配: %d / %d 行 (命中知识库 %d 条)", cur, totalValidLines, curMatched))
 				}
 			}
-			norm.SourceFile = cleanName
+		}()
 
-			// 知识库多级匹配
-			k, tier, conf := s.matchEngine.Match(norm, taskInfo.DeviceType, "")
-			if k != nil && k.ID > 0 {
-				norm.KnowledgeID = k.ID
-				norm.MatchTier = tier
-				norm.MatchConfidence = conf
-				matchedCountSoFar++
-			} else {
-				norm.MatchTier = matcher.TierUnmatch
-				norm.MatchConfidence = 0.0
+		// 启动并发 Worker 协程池
+		var wg sync.WaitGroup
+		for i := 0; i < workerNum; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Log.Errorf("Recovered in log parse worker: %v", r)
+					}
+				}()
+
+				for job := range jobs {
+					norm, err := logparser.ParseLine(job.line)
+					if err != nil {
+						norm = &model.NormalizedLog{
+							RawLog:      job.line,
+							Timestamp:   time.Now(),
+							MessageBody: job.line,
+						}
+					}
+					norm.SourceFile = job.cleanName
+
+					// 知识库多级匹配
+					k, tier, conf := s.matchEngine.Match(norm, taskInfo.DeviceType, "")
+					matched := false
+					if k != nil && k.ID > 0 {
+						norm.KnowledgeID = k.ID
+						norm.MatchTier = tier
+						norm.MatchConfidence = conf
+						matched = true
+					} else {
+						norm.MatchTier = matcher.TierUnmatch
+						norm.MatchConfidence = 0.0
+					}
+
+					paramJSON, _ := json.Marshal(norm.Parameters)
+					rec := model.LogRecord{
+						Timestamp:       norm.Timestamp,
+						Hostname:        norm.Hostname,
+						Module:          norm.Module,
+						Severity:        norm.Severity,
+						Brief:           norm.Brief,
+						SlotInfo:        norm.SlotInfo,
+						SourceFile:      job.cleanName,
+						RawLog:          norm.RawLog,
+						MessageBody:     norm.MessageBody,
+						ParametersJSON:  string(paramJSON),
+						KnowledgeID:     norm.KnowledgeID,
+						MatchTier:       norm.MatchTier,
+						MatchConfidence: norm.MatchConfidence,
+					}
+
+					results <- logParseResult{
+						index:   job.index,
+						record:  rec,
+						matched: matched,
+					}
+				}
+			}()
+		}
+
+		// 分发待解析任务并保存 TaskFile 记录
+		lineIdx := 0
+		for _, bundle := range bundles {
+			taskFile := model.TaskFile{
+				TaskID:    taskID,
+				FileName:  bundle.cleanName,
+				FileSize:  bundle.item.FileSize,
+				LineCount: len(bundle.lines),
+				CreatedAt: time.Now(),
+			}
+			if err := taskDB.Create(&taskFile).Error; err != nil {
+				logger.Log.Errorf("create task file record failed: %v", err)
 			}
 
-			paramJSON, _ := json.Marshal(norm.Parameters)
-			rec := model.LogRecord{
-				Timestamp:       norm.Timestamp,
-				Hostname:        norm.Hostname,
-				Module:          norm.Module,
-				Severity:        norm.Severity,
-				Brief:           norm.Brief,
-				SlotInfo:        norm.SlotInfo,
-				SourceFile:      cleanName,
-				RawLog:          norm.RawLog,
-				MessageBody:     norm.MessageBody,
-				ParametersJSON:  string(paramJSON),
-				KnowledgeID:     norm.KnowledgeID,
-				MatchTier:       norm.MatchTier,
-				MatchConfidence: norm.MatchConfidence,
-			}
-
-			fileRecords = append(fileRecords, rec)
-
-			if tr != nil && (processedCount%200 == 0 || processedCount == totalValidLines) {
-				tr.UpdateProgress(processedCount, totalValidLines,
-					fmt.Sprintf("正在解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalValidLines, matchedCountSoFar))
+			for _, line := range bundle.lines {
+				jobs <- logParseJob{
+					index:     lineIdx,
+					cleanName: bundle.cleanName,
+					line:      line,
+				}
+				lineIdx++
 			}
 		}
 
-		// 插入或更新 TaskFile 记录
-		taskFile := model.TaskFile{
-			TaskID:    taskID,
-			FileName:  cleanName,
-			FileSize:  bundle.item.FileSize,
-			LineCount: len(lines),
-			CreatedAt: time.Now(),
-		}
-		if err := taskDB.Create(&taskFile).Error; err != nil {
-			logger.Log.Errorf("create task file record failed: %v", err)
-		}
-
-		allNewLogRecords = append(allNewLogRecords, fileRecords...)
+		close(jobs)
+		wg.Wait()
+		close(results)
+		<-collectDone
 	}
 
 	if tr != nil {
 		tr.SetStage("SAVE_DB", fmt.Sprintf("正在将 %d 条解析日志批量写入任务隔离数据库...", len(allNewLogRecords)))
-		tr.AddLog("info", "日志分行与匹配完成，开始批量持久化落盘 (%d 条)...", len(allNewLogRecords))
+		tr.AddLog("info", "并发日志分行与匹配完成，开始批量持久化落盘 (%d 条)...", len(allNewLogRecords))
 	}
 
 	// 批量插入新增日志记录
 	if len(allNewLogRecords) > 0 {
 		logger.Log.Debugf("[Task Service] Inserting %d new log records for task %s...", len(allNewLogRecords), taskID)
-		if err := taskDB.CreateInBatches(&allNewLogRecords, 200).Error; err != nil {
+		if err := taskDB.CreateInBatches(&allNewLogRecords, 500).Error; err != nil {
 			logger.Log.Errorf("batch insert log records failed: %v", err)
 		}
 	}
