@@ -300,6 +300,9 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 							RawLog:      job.line,
 							Timestamp:   time.Now(),
 							MessageBody: job.line,
+							Module:      "UNKNOWN",
+							Brief:       "UNPARSED",
+							Severity:    8, // 解析失败的日志等级设为最低级 (8)
 						}
 					}
 					norm.SourceFile = job.cleanName
@@ -313,8 +316,16 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 						norm.MatchConfidence = conf
 						matched = true
 					} else {
+						norm.KnowledgeID = 0
 						norm.MatchTier = matcher.TierUnmatch
 						norm.MatchConfidence = 0.0
+						// 无法匹配知识库的日志，等级调整为最低级 (8)
+						norm.Severity = 8
+					}
+
+					// 兜底保障：若 Severity 缺失或不在 1~8 范围内，默认设为最低级 8
+					if norm.Severity < 1 || norm.Severity > 8 {
+						norm.Severity = 8
 					}
 
 					paramJSON, _ := json.Marshal(norm.Parameters)
