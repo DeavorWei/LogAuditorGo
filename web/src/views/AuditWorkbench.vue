@@ -50,47 +50,91 @@
       </div>
     </div>
 
-    <!-- 空任务（PENDING 状态）引导卡片 -->
-    <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
-      <el-card shadow="never" class="guide-card">
-        <div class="guide-header">
-          <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
-          <h3>任务「{{ currentTask.task_name }}」尚未导入日志数据</h3>
-          <p>请选择以下方式之一，直接将本地日志导入到本任务中开始智能审计与 RCA 根因分析：</p>
-        </div>
-
-        <div class="guide-actions">
-          <div class="action-tile" @click="triggerGuideFilesSelect">
-            <el-icon size="32" color="#0284c7"><Files /></el-icon>
-            <h4>多选日志文件上传</h4>
-            <p>支持多选 .log, .txt, .syslog 等多个日志文件同时上传</p>
-            <el-button type="primary" size="small">选择多个文件</el-button>
-          </div>
-
-          <div class="action-tile" @click="triggerGuideDirSelect">
-            <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-            <h4>选择本地日志文件夹</h4>
-            <p>浏览器直接选择文件夹，自动检索并批量上传全部日志文件</p>
-            <el-button type="success" size="small">选择日志目录</el-button>
-          </div>
-
-          <div class="action-tile" @click="openImportTextTab">
-            <el-icon size="32" color="#ea580c"><DocumentCopy /></el-icon>
-            <h4>粘贴 Syslog 日志文本</h4>
-            <p>直接在网页中粘贴 syslog 报文文本开始分析</p>
-            <el-button type="warning" size="small">粘贴日志文本</el-button>
-          </div>
-        </div>
-      </el-card>
+    <!-- 功能视图切换导航 -->
+    <div v-if="currentTaskId" class="workbench-nav-bar">
+      <el-radio-group v-model="currentViewMode" size="default">
+        <el-radio-button label="workbench">
+          <el-icon style="margin-right: 4px; vertical-align: middle;"><Document /></el-icon>
+          <span>日志审计工作台</span>
+        </el-radio-button>
+        <el-radio-button label="devices">
+          <el-icon style="margin-right: 4px; vertical-align: middle;"><Monitor /></el-icon>
+          <span>设备管理</span>
+          <el-badge v-if="currentTask && currentTask.device_count" :value="currentTask.device_count" type="primary" style="margin-left: 6px;" />
+        </el-radio-button>
+        <el-radio-button label="multi-timeline">
+          <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
+          <span>多设备协同时间线</span>
+        </el-radio-button>
+        <el-radio-button label="multi-report">
+          <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
+          <span>多设备对比诊断报告</span>
+        </el-radio-button>
+      </el-radio-group>
     </div>
 
-    <!-- 核心三栏交互工作台 (任务就绪时展示) -->
-    <div v-else class="workbench-body">
-      <!-- 左栏：日志流与动态筛选过滤 (28%) -->
-      <div class="col-left">
-        <div class="filter-panel">
-          <div class="filter-row">
-            <el-input
+    <!-- 视图 1：设备管理视图 -->
+    <div v-if="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
+      <DeviceManager
+        :task-id="currentTaskId"
+        @device-updated="handleDeviceUpdated"
+        @open-progress="openProgressModalWithId"
+      />
+    </div>
+
+    <!-- 视图 2：多设备时间线视图 -->
+    <div v-else-if="currentTaskId && currentViewMode === 'multi-timeline'" class="workbench-sub-view">
+      <MultiDeviceTimeline :task-id="currentTaskId" />
+    </div>
+
+    <!-- 视图 3：多设备对比诊断报告视图 -->
+    <div v-else-if="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
+      <MultiDeviceReport :task-id="currentTaskId" />
+    </div>
+
+    <!-- 视图 4：经典日志审计工作台视图 -->
+    <template v-else>
+      <!-- 空任务（PENDING 状态）引导卡片 -->
+      <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
+        <el-card shadow="never" class="guide-card">
+          <div class="guide-header">
+            <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
+            <h3>任务「{{ currentTask.task_name }}」尚未导入日志数据</h3>
+            <p>请选择以下方式之一，直接将本地日志导入到本任务中开始智能审计与 RCA 根因分析：</p>
+          </div>
+
+          <div class="guide-actions">
+            <div class="action-tile" @click="triggerGuideFilesSelect">
+              <el-icon size="32" color="#0284c7"><Files /></el-icon>
+              <h4>多选日志文件上传</h4>
+              <p>支持多选 .log, .txt, .syslog 等多个日志文件同时上传</p>
+              <el-button type="primary" size="small">选择多个文件</el-button>
+            </div>
+
+            <div class="action-tile" @click="triggerGuideDirSelect">
+              <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
+              <h4>选择本地日志文件夹</h4>
+              <p>浏览器直接选择文件夹，自动检索并批量上传全部日志文件</p>
+              <el-button type="success" size="small">选择日志目录</el-button>
+            </div>
+
+            <div class="action-tile" @click="openImportTextTab">
+              <el-icon size="32" color="#ea580c"><DocumentCopy /></el-icon>
+              <h4>粘贴 Syslog 日志文本</h4>
+              <p>直接在网页中粘贴 syslog 报文文本开始分析</p>
+              <el-button type="warning" size="small">粘贴日志文本</el-button>
+            </div>
+          </div>
+        </el-card>
+      </div>
+
+      <!-- 核心三栏交互工作台 (任务就绪时展示) -->
+      <div v-else class="workbench-body">
+        <!-- 左栏：日志流与动态筛选过滤 (28%) -->
+        <div class="col-left">
+          <div class="filter-panel">
+            <div class="filter-row">
+              <el-input
               v-model="filter.keyword"
               placeholder="搜索报文/简名..."
               prefix-icon="Search"
@@ -356,6 +400,7 @@
         </div>
       </div>
     </div>
+    </template>
 
     <!-- 已导入日志文件抽屉 -->
     <el-drawer v-model="showFilesDrawer" title="已导入日志文件清单" size="480px">
@@ -525,10 +570,13 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import DeviceManager from '@/components/DeviceManager.vue'
+import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
+import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -536,8 +584,20 @@ const router = useRouter()
 const taskList = ref([])
 const currentTaskId = ref('')
 const currentTask = ref(null)
+const currentViewMode = ref('workbench')
 const taskFiles = ref([])
 const showFilesDrawer = ref(false)
+
+const handleDeviceUpdated = (devices) => {
+  if (currentTask.value) {
+    currentTask.value.device_count = devices.length
+  }
+}
+
+const openProgressModalWithId = (jobId) => {
+  currentJobId.value = jobId
+  showProgressModal.value = true
+}
 
 const logRecords = ref([])
 const totalLogs = ref(0)
@@ -1733,5 +1793,20 @@ onMounted(() => {
 .conflict-item {
   font-size: 12px;
   color: #9a3412;
+}
+
+.workbench-nav-bar {
+  display: flex;
+  justify-content: flex-start;
+  align-items: center;
+  background: #ffffff;
+  padding: 8px 16px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+}
+
+.workbench-sub-view {
+  min-height: calc(100vh - 180px);
 }
 </style>

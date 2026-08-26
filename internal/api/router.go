@@ -97,6 +97,21 @@ func SetupRouter(
 		v1.GET("/tasks/:id/rca", taskHandler.GetRCA)
 		v1.GET("/tasks/:id/export", taskHandler.ExportReport)
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
+
+		// 设备管理
+		v1.POST("/tasks/:id/devices", taskHandler.CreateDevice)
+		v1.GET("/tasks/:id/devices", taskHandler.ListDevices)
+		v1.GET("/tasks/:id/devices/:device_id", taskHandler.GetDevice)
+		v1.PUT("/tasks/:id/devices/:device_id", taskHandler.UpdateDevice)
+		v1.DELETE("/tasks/:id/devices/:device_id", taskHandler.DeleteDevice)
+		v1.POST("/tasks/:id/devices/:device_id/import", taskHandler.ImportLogsToDevice)
+		v1.POST("/tasks/:id/devices/auto-assign", taskHandler.AutoAssignDevices)
+
+		// 多设备时间线与协同分析
+		v1.POST("/tasks/:id/multi-device/logs", taskHandler.QueryMultiDeviceLogs)
+		v1.POST("/tasks/:id/multi-device/timeline", taskHandler.GetDeviceTimeline)
+		v1.POST("/tasks/:id/multi-device/report", taskHandler.GetMultiDeviceReport)
+		v1.GET("/tasks/:id/multi-device/export", taskHandler.ExportMultiDeviceReport)
 	}
 
 	// 静态前端资源与 SPA 路由托管 (基于 Go embed.FS 纯单二进制打包)

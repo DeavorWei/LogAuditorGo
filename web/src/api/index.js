@@ -141,5 +141,51 @@ export default {
   },
   deleteTask(taskId) {
     return request.delete(`/tasks/${taskId}`)
+  },
+
+  // 设备管理
+  createDevice(taskId, data) {
+    return request.post(`/tasks/${taskId}/devices`, data)
+  },
+  getDevices(taskId) {
+    return request.get(`/tasks/${taskId}/devices`)
+  },
+  getDevice(taskId, deviceId) {
+    return request.get(`/tasks/${taskId}/devices/${deviceId}`)
+  },
+  updateDevice(taskId, deviceId, data) {
+    return request.put(`/tasks/${taskId}/devices/${deviceId}`, data)
+  },
+  deleteDevice(taskId, deviceId) {
+    return request.delete(`/tasks/${taskId}/devices/${deviceId}`)
+  },
+  importDeviceLogs(taskId, deviceId, formDataOrJson, isAsync = true) {
+    if (formDataOrJson instanceof FormData) {
+      if (isAsync && !formDataOrJson.has('async')) {
+        formDataOrJson.append('async', 'true')
+      }
+      return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, formDataOrJson, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        params: isAsync ? { async: 'true' } : {}
+      })
+    }
+    const payload = typeof formDataOrJson === 'object' ? { ...formDataOrJson, async: isAsync } : formDataOrJson
+    return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, payload, {
+      params: isAsync ? { async: 'true' } : {}
+    })
+  },
+  autoAssignDevices(taskId) {
+    return request.post(`/tasks/${taskId}/devices/auto-assign`)
+  },
+
+  // 多设备时间线与协同分析
+  queryMultiDeviceLogs(taskId, filter) {
+    return request.post(`/tasks/${taskId}/multi-device/logs`, filter)
+  },
+  getDeviceTimeline(taskId, filter) {
+    return request.post(`/tasks/${taskId}/multi-device/timeline`, filter)
+  },
+  getMultiDeviceReport(taskId, deviceIds = []) {
+    return request.post(`/tasks/${taskId}/multi-device/report`, { device_ids: deviceIds })
   }
 }

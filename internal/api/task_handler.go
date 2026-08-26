@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -434,9 +435,18 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		}
 	}
 
+	var devIDPtr *uint
+	if dStr := c.Query("device_id"); dStr != "" {
+		if d, err := strconv.ParseUint(dStr, 10, 32); err == nil {
+			ud := uint(d)
+			devIDPtr = &ud
+		}
+	}
+
 	filter := model.LogQueryFilter{
 		Page:       page,
 		PageSize:   pageSize,
+		DeviceID:   devIDPtr,
 		Module:     module,
 		Severity:   sevPtr,
 		Brief:      brief,
@@ -528,3 +538,367 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 
 	SuccessResponse(c, nil, "Task deleted successfully")
 }
+
+// CreateDevice 在任务中创建新设备
+func (h *TaskHandler) CreateDevice(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req model.Device
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
+		return
+	}
+
+	dev, err := h.taskSvc.CreateDevice(taskID, &req)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, dev, "Device created successfully")
+}
+
+// ListDevices 获取指定任务下的所有设备列表
+func (h *TaskHandler) ListDevices(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	devices, err := h.taskSvc.ListDevices(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, devices)
+}
+
+// GetDevice 获取单个设备详情
+func (h *TaskHandler) GetDevice(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	deviceID, err := strconv.ParseUint(c.Param("device_id"), 10, 32)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid device ID")
+		return
+	}
+
+	dev, err := h.taskSvc.GetDevice(taskID, uint(deviceID))
+	if err != nil {
+		ErrorResponse(c, http.StatusNotFound, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, dev)
+}
+
+// UpdateDevice 更新设备属性
+func (h *TaskHandler) UpdateDevice(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	deviceID, err := strconv.ParseUint(c.Param("device_id"), 10, 32)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid device ID")
+		return
+	}
+
+	var updates map[string]interface{}
+	if err := c.ShouldBindJSON(&updates); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
+		return
+	}
+
+	dev, err := h.taskSvc.UpdateDevice(taskID, uint(deviceID), updates)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, dev, "Device updated successfully")
+}
+
+// DeleteDevice 删除设备
+func (h *TaskHandler) DeleteDevice(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	deviceID, err := strconv.ParseUint(c.Param("device_id"), 10, 32)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid device ID")
+		return
+	}
+
+	if err := h.taskSvc.DeleteDevice(taskID, uint(deviceID)); err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, nil, "Device deleted successfully")
+}
+
+// ImportLogsToDevice 向指定设备导入日志文件或文本
+func (h *TaskHandler) ImportLogsToDevice(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	deviceID, err := strconv.ParseUint(c.Param("device_id"), 10, 32)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid device ID")
+		return
+	}
+
+	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
+	if conflictMode == "" {
+		conflictMode = "overwrite"
+	}
+	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
+
+	var items []task.FileUploadItem
+
+	form, err := c.MultipartForm()
+	if err == nil && form != nil {
+		uploadDir := h.getUploadDir()
+		_ = os.MkdirAll(uploadDir, 0755)
+
+		for _, fileHeaders := range form.File {
+			for _, fh := range fileHeaders {
+				cleanBase := filepath.Base(fh.Filename)
+				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
+					cleanBase = "uploaded_log.txt"
+				}
+				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
+				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
+					f, err := fh.Open()
+					if err != nil {
+						continue
+					}
+					items = append(items, task.FileUploadItem{
+						FileName: fh.Filename,
+						FileSize: fh.Size,
+						Reader:   f,
+					})
+					continue
+				}
+				items = append(items, task.FileUploadItem{
+					FileName: fh.Filename,
+					FileSize: fh.Size,
+					FilePath: tempPath,
+					TempFile: true,
+				})
+			}
+		}
+	}
+
+	if textContent := c.PostForm("content"); textContent != "" {
+		fileName := c.DefaultPostForm("file_name", "manual_input.txt")
+		items = append(items, task.FileUploadItem{
+			FileName: fileName,
+			FileSize: int64(len(textContent)),
+			Content:  textContent,
+		})
+	}
+
+	if len(items) == 0 {
+		var req struct {
+			Content      string `json:"content"`
+			FileName     string `json:"file_name"`
+			ConflictMode string `json:"conflict_mode"`
+			Async        bool   `json:"async"`
+		}
+		if err := c.ShouldBindJSON(&req); err == nil && req.Content != "" {
+			fileName := req.FileName
+			if fileName == "" {
+				fileName = "manual_input.txt"
+			}
+			if req.ConflictMode != "" {
+				conflictMode = req.ConflictMode
+			}
+			if req.Async {
+				isAsync = true
+			}
+			items = append(items, task.FileUploadItem{
+				FileName: fileName,
+				FileSize: int64(len(req.Content)),
+				Content:  req.Content,
+			})
+		}
+	}
+
+	if len(items) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "No log files or content provided")
+		return
+	}
+
+	tracker := progress.GetHub().NewJob("log", taskID, task.LogAuditStages)
+	tracker.AddLog("info", "开始向设备 (ID: %d) 导入 %d 个日志文件 (策略: %s)", deviceID, len(items), conflictMode)
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in import logs: %v", r))
+				}
+			}()
+			_, _ = h.taskSvc.ImportLogsToDevice(taskID, uint(deviceID), items, conflictMode, tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"task_id":   taskID,
+			"device_id": deviceID,
+			"job_id":    tracker.JobID(),
+			"is_async":  true,
+		}, "Device log import job started")
+		return
+	}
+
+	taskInfo, err := h.taskSvc.ImportLogsToDevice(taskID, uint(deviceID), items, conflictMode, tracker)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Import logs to device failed: "+err.Error())
+		return
+	}
+
+	SuccessResponse(c, taskInfo, "Logs imported to device successfully")
+}
+
+// AutoAssignDevices 根据日志 Hostname 自动创建设备并关联绑定
+func (h *TaskHandler) AutoAssignDevices(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	devices, err := h.taskSvc.AutoAssignDevices(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Auto assign devices failed: "+err.Error())
+		return
+	}
+
+	SuccessResponse(c, devices, fmt.Sprintf("Successfully auto-assigned %d devices", len(devices)))
+}
+
+// QueryMultiDeviceLogs 多设备联合日志查询与时序筛选
+func (h *TaskHandler) QueryMultiDeviceLogs(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var filter model.MultiDeviceLogFilter
+	if err := c.ShouldBindJSON(&filter); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid filter JSON: "+err.Error())
+		return
+	}
+
+	events, total, err := h.taskSvc.QueryMultiDeviceLogs(taskID, filter)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, gin.H{
+		"total":     total,
+		"page":      filter.Page,
+		"page_size": filter.PageSize,
+		"events":    events,
+	})
+}
+
+// GetDeviceTimeline 获取多设备统一时间线数据
+func (h *TaskHandler) GetDeviceTimeline(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var filter model.MultiDeviceLogFilter
+	_ = c.ShouldBindJSON(&filter)
+
+	events, err := h.taskSvc.GetDeviceTimeline(taskID, filter)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, events)
+}
+
+// GetMultiDeviceReport 获取多设备协同诊断与对比报告数据
+func (h *TaskHandler) GetMultiDeviceReport(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req struct {
+		DeviceIDs []uint `json:"device_ids"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	report, err := h.taskSvc.GetMultiDeviceReport(taskID, req.DeviceIDs)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, report)
+}
+
+// ExportMultiDeviceReport 导出多设备分析 HTML 离线报告
+func (h *TaskHandler) ExportMultiDeviceReport(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var deviceIDs []uint
+	if devStr := c.Query("device_ids"); devStr != "" {
+		for _, s := range strings.Split(devStr, ",") {
+			if id, err := strconv.ParseUint(strings.TrimSpace(s), 10, 32); err == nil {
+				deviceIDs = append(deviceIDs, uint(id))
+			}
+		}
+	}
+
+	format := c.DefaultQuery("format", "html")
+	if format == "json" {
+		report, err := h.taskSvc.GetMultiDeviceReport(taskID, deviceIDs)
+		if err != nil {
+			ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+			return
+		}
+		c.JSON(http.StatusOK, report)
+		return
+	}
+
+	htmlContent, err := h.taskSvc.ExportMultiDeviceHTML(taskID, deviceIDs)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	c.Header("Content-Type", "text/html; charset=utf-8")
+	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=multi_device_report_%s.html", taskID))
+	c.String(http.StatusOK, htmlContent)
+}
+

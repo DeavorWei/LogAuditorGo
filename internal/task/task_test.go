@@ -590,5 +590,187 @@ func TestGenerateHTMLReportDetailed(t *testing.T) {
 	}
 }
 
+func TestDeviceManagementAndMultiDeviceAnalysis(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "device_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	indexPath := filepath.Join(tmpDir, "test.bleve")
+	indexer, _ := search.InitIndexer(indexPath)
+	defer indexer.Close()
+
+	// 注入 OSPF 知识
+	kOSPF := model.Knowledge{
+		ID:          10,
+		Module:      "OSPF",
+		Brief:       "OSPF_NBR_CHG",
+		Message:     "Neighbor status changed.",
+		Description: "OSPF 邻居状态变化",
+		Cause:       "链路震荡或 Timer 超时",
+		Action:      "排查链路",
+		ContentHash: "hash_ospf_nbr_chg",
+	}
+	globalDB.Create(&kOSPF)
+
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	// 1. 创建空任务
+	taskInfo, err := svc.CreateEmptyTask("Multi-Router-OSPF-Audit", "NetEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+
+	// 2. 创建 3 台路由器设备
+	dev1, err := svc.CreateDevice(taskInfo.TaskID, &model.Device{
+		DeviceName:   "Router-Core-01",
+		DeviceType:   "NetEngine",
+		Hostname:     "Router-Core-01",
+		ManagementIP: "10.0.0.1",
+		Color:        "#3B82F6",
+	})
+	if err != nil {
+		t.Fatalf("CreateDevice dev1 failed: %v", err)
+	}
+
+	dev2, err := svc.CreateDevice(taskInfo.TaskID, &model.Device{
+		DeviceName:   "Router-Edge-02",
+		DeviceType:   "NetEngine",
+		Hostname:     "Router-Edge-02",
+		ManagementIP: "10.0.0.2",
+		Color:        "#10B981",
+	})
+	if err != nil {
+		t.Fatalf("CreateDevice dev2 failed: %v", err)
+	}
+
+	dev3, err := svc.CreateDevice(taskInfo.TaskID, &model.Device{
+		DeviceName:   "Router-Branch-03",
+		DeviceType:   "NetEngine",
+		Hostname:     "Router-Branch-03",
+		ManagementIP: "10.0.0.3",
+		Color:        "#F59E0B",
+	})
+	if err != nil {
+		t.Fatalf("CreateDevice dev3 failed: %v", err)
+	}
+
+	// 检查设备列表
+	devs, err := svc.ListDevices(taskInfo.TaskID)
+	if err != nil || len(devs) != 3 {
+		t.Fatalf("ListDevices failed, expected 3, got %d (err: %v)", len(devs), err)
+	}
+
+	// 3. 分别向各设备导入时序日志 (模拟 OSPF 邻居状态变化)
+	logRouter1 := `
+Apr 15 2026 10:00:00 Router-Core-01 %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF 1 Neighbor 10.0.0.2 changed state from FULL to DOWN. (NbrIP=10.0.0.2)
+Apr 15 2026 10:00:02 Router-Core-01 %%01OSPF/4/OSPF_NBR_CHG(l)[2]: OSPF 1 Neighbor 10.0.0.3 changed state from FULL to DOWN. (NbrIP=10.0.0.3)
+`
+	logRouter2 := `
+Apr 15 2026 10:00:05 Router-Edge-02 %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF 1 Neighbor 10.0.0.1 changed state from FULL to INIT. (NbrIP=10.0.0.1)
+Apr 15 2026 10:00:15 Router-Edge-02 %%01OSPF/4/OSPF_NBR_CHG(l)[2]: OSPF 1 Neighbor 10.0.0.1 changed state from INIT to DOWN. (NbrIP=10.0.0.1)
+`
+	logRouter3 := `
+Apr 15 2026 10:00:10 Router-Branch-03 %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF 1 Neighbor 10.0.0.1 changed state from FULL to DOWN. (NbrIP=10.0.0.1)
+`
+
+	_, err = svc.ImportLogsToDevice(taskInfo.TaskID, dev1.ID, []task.FileUploadItem{
+		{FileName: "router1.log", Content: logRouter1, FileSize: int64(len(logRouter1))},
+	}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogsToDevice dev1 failed: %v", err)
+	}
+
+	_, err = svc.ImportLogsToDevice(taskInfo.TaskID, dev2.ID, []task.FileUploadItem{
+		{FileName: "router2.log", Content: logRouter2, FileSize: int64(len(logRouter2))},
+	}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogsToDevice dev2 failed: %v", err)
+	}
+
+	_, err = svc.ImportLogsToDevice(taskInfo.TaskID, dev3.ID, []task.FileUploadItem{
+		{FileName: "router3.log", Content: logRouter3, FileSize: int64(len(logRouter3))},
+	}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogsToDevice dev3 failed: %v", err)
+	}
+
+	// 4. 测试单设备查询过滤
+	dev1Logs, total1, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{
+		DeviceID: &dev1.ID,
+	})
+	if err != nil || total1 != 2 || len(dev1Logs) != 2 {
+		t.Fatalf("QueryTaskLogs for dev1 failed, expected 2 logs, got %d (err: %v)", total1, err)
+	}
+
+	// 5. 测试多设备联合时间线查询 (按时间升序)
+	timelineEvents, totalAll, err := svc.QueryMultiDeviceLogs(taskInfo.TaskID, model.MultiDeviceLogFilter{
+		DeviceIDs: []uint{dev1.ID, dev2.ID, dev3.ID},
+		Modules:   []string{"OSPF"},
+		AscOrder:  true,
+	})
+	if err != nil || totalAll != 5 || len(timelineEvents) != 5 {
+		t.Fatalf("QueryMultiDeviceLogs failed, expected 5 events, got %d (err: %v)", totalAll, err)
+	}
+
+	// 验证时间线升序顺序: 10:00:00(R1), 10:00:02(R1), 10:00:05(R2), 10:00:10(R3), 10:00:15(R2)
+	if timelineEvents[0].DeviceName != "Router-Core-01" || timelineEvents[2].DeviceName != "Router-Edge-02" || timelineEvents[3].DeviceName != "Router-Branch-03" {
+		t.Errorf("Timeline order mismatch, got: %+v", timelineEvents)
+	}
+
+	// 6. 测试多设备对比分析报告生成与自动结论
+	report, err := svc.GetMultiDeviceReport(taskInfo.TaskID, []uint{dev1.ID, dev2.ID, dev3.ID})
+	if err != nil {
+		t.Fatalf("GetMultiDeviceReport failed: %v", err)
+	}
+	if len(report.Devices) != 3 {
+		t.Errorf("expected 3 devices in report, got %d", len(report.Devices))
+	}
+	if len(report.CommonEvents) == 0 {
+		t.Errorf("expected common events for OSPF/OSPF_NBR_CHG across devices")
+	}
+	if !strings.Contains(report.Conclusion, "多设备协同审计综述") || !strings.Contains(report.Conclusion, "OSPF 邻居震荡排查") {
+		t.Errorf("expected diagnostic conclusion with OSPF suggestions, got: %s", report.Conclusion)
+	}
+
+	// 7. 测试多设备 HTML 报告导出
+	htmlReport, err := svc.ExportMultiDeviceHTML(taskInfo.TaskID, []uint{dev1.ID, dev2.ID, dev3.ID})
+	if err != nil {
+		t.Fatalf("ExportMultiDeviceHTML failed: %v", err)
+	}
+	if !strings.Contains(htmlReport, "多设备协同分析与时间线诊断报告") || !strings.Contains(htmlReport, "Router-Core-01") {
+		t.Errorf("expected valid multi-device HTML report, got: %s", htmlReport)
+	}
+
+	// 8. 测试 AutoAssignDevices 自动按 Hostname 识别
+	taskInfoAuto, _ := svc.CreateEmptyTask("Auto-Assign-Test", "NetEngine")
+	mixedLogs := `
+Apr 15 2026 10:00:00 PE-Router-A %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF neighbor down.
+Apr 15 2026 10:00:01 PE-Router-B %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF neighbor down.
+`
+	_, _ = svc.ImportLogs(taskInfoAuto.TaskID, []task.FileUploadItem{
+		{FileName: "mixed.log", Content: mixedLogs},
+	}, "overwrite")
+
+	autoDevs, err := svc.AutoAssignDevices(taskInfoAuto.TaskID)
+	if err != nil || len(autoDevs) != 2 {
+		t.Fatalf("AutoAssignDevices failed, expected 2 devices, got %d (err: %v)", len(autoDevs), err)
+	}
+}
+
+
 
 

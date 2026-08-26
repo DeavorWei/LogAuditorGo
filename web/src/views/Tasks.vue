@@ -18,7 +18,12 @@
           </template>
         </el-table-column>
         <el-table-column prop="device_type" label="设备类型" width="130" />
-        <el-table-column prop="file_count" label="文件数" width="90" align="center">
+        <el-table-column prop="device_count" label="设备数" width="80" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="row.device_count > 1 ? 'primary' : 'info'">{{ row.device_count || 0 }}</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="file_count" label="文件数" width="80" align="center">
           <template #default="{ row }">
             <el-tag size="small" type="info">{{ row.file_count || (row.log_count > 0 ? 1 : 0) }}</el-tag>
           </template>
@@ -46,11 +51,12 @@
             {{ formatTime(row.start_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="220" align="center">
+        <el-table-column label="操作" width="260" align="center">
           <template #default="{ row }">
             <el-button v-if="row.status === 'PENDING'" type="primary" size="small" @click="openTask(row.task_id)">导入日志</el-button>
             <el-button v-else type="primary" link size="small" @click="openTask(row.task_id)">查看审计</el-button>
             <el-button type="success" link size="small" :disabled="row.status === 'PENDING'" @click="exportHTML(row.task_id)">导出报告</el-button>
+            <el-button v-if="row.device_count > 1" type="warning" link size="small" :disabled="row.status === 'PENDING'" @click="exportMultiHTML(row.task_id)">多设备报告</el-button>
             <el-popconfirm title="确定彻底删除该任务数据库吗？" @confirm="handleDelete(row.task_id)">
               <template #reference>
                 <el-button type="danger" link size="small">删除</el-button>
@@ -91,6 +97,10 @@ const openTask = (taskId) => {
 
 const exportHTML = (taskId) => {
   window.open(`/api/v1/tasks/${taskId}/export?format=html`, '_blank')
+}
+
+const exportMultiHTML = (taskId) => {
+  window.open(`/api/v1/tasks/${taskId}/multi-device/export?format=html`, '_blank')
 }
 
 const handleDelete = async (taskId) => {

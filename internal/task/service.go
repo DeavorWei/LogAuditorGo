@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -173,6 +174,16 @@ func (s *Service) GetTaskFiles(taskID string) ([]model.TaskFile, error) {
 
 // ImportLogs 导入/补充导入日志文件，支持全流程阶段进度实时追踪
 func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
+	return s.ImportLogsWithDevice(taskID, 0, items, conflictMode, tracker...)
+}
+
+// ImportLogsToDevice 向指定设备导入日志
+func (s *Service) ImportLogsToDevice(taskID string, deviceID uint, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
+	return s.ImportLogsWithDevice(taskID, deviceID, items, conflictMode, tracker...)
+}
+
+// ImportLogsWithDevice 导入日志文件并支持指定关联设备ID
+func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
 	defer func() {
 		for i := range items {
 			items[i].Cleanup()
@@ -454,6 +465,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 						}
 
 						rec := model.LogRecord{
+							DeviceID:        deviceID,
 							Timestamp:       norm.Timestamp,
 							Hostname:        norm.Hostname,
 							Module:          norm.Module,
@@ -600,13 +612,31 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		}
 	}
 
+	// 若指定了具体设备，同步刷新该设备在任务库中的日志与匹配条数
+	if deviceID > 0 {
+		var devLogs, devMatched int64
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ?", deviceID).Count(&devLogs)
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ? AND knowledge_id > 0", deviceID).Count(&devMatched)
+		taskDB.Model(&model.Device{}).Where("id = ?", deviceID).Updates(map[string]interface{}{
+			"log_count":     int(devLogs),
+			"matched_count": int(devMatched),
+			"updated_at":    time.Now(),
+		})
+	}
+
 	var currentFileCount int64
 	if err := taskDB.Model(&model.TaskFile{}).Count(&currentFileCount).Error; err != nil {
 		logger.Log.Warnf("[Task Service] Count task files warning: %v", err)
 	}
 
+	var currentDeviceCount int64
+	if err := taskDB.Model(&model.Device{}).Count(&currentDeviceCount).Error; err != nil {
+		logger.Log.Warnf("[Task Service] Count task devices warning: %v", err)
+	}
+
 	now := time.Now()
 	taskInfo.FileCount = int(currentFileCount)
+	taskInfo.DeviceCount = int(currentDeviceCount)
 	taskInfo.LogCount = totalLogCount
 	taskInfo.MatchedCount = matchedCount
 	taskInfo.RcaCount = len(rcaEvents)
@@ -662,6 +692,9 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 
 	query := taskDB.Model(&model.LogRecord{})
 
+	if filter.DeviceID != nil {
+		query = query.Where("device_id = ?", *filter.DeviceID)
+	}
 	if filter.Module != "" {
 		query = query.Where("UPPER(module) = ?", strings.ToUpper(filter.Module))
 	}
@@ -778,4 +811,649 @@ func (s *Service) DeleteTask(taskID string) error {
 		return fmt.Errorf("delete task db failed: %w", err)
 	}
 	return nil
+}
+
+var DeviceDefaultColors = []string{
+	"#3B82F6", // Blue
+	"#10B981", // Emerald
+	"#F59E0B", // Amber
+	"#EF4444", // Red
+	"#8B5CF6", // Purple
+	"#EC4899", // Pink
+	"#14B8A6", // Teal
+	"#F97316", // Orange
+	"#6366F1", // Indigo
+	"#84CC16", // Lime
+}
+
+// CreateDevice 在任务中创建新设备
+func (s *Service) CreateDevice(taskID string, device *model.Device) (*model.Device, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	if device == nil {
+		return nil, fmt.Errorf("nil device")
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	device.TaskID = taskID
+	if device.DeviceName == "" {
+		device.DeviceName = fmt.Sprintf("Device-%d", time.Now().Unix()%10000)
+	}
+	if device.DeviceType == "" {
+		device.DeviceType = "Router"
+	}
+	if device.Color == "" {
+		var count int64
+		taskDB.Model(&model.Device{}).Count(&count)
+		device.Color = DeviceDefaultColors[int(count)%len(DeviceDefaultColors)]
+	}
+	device.CreatedAt = time.Now()
+	device.UpdatedAt = time.Now()
+
+	if err := taskDB.Create(device).Error; err != nil {
+		return nil, fmt.Errorf("create device in task db failed: %w", err)
+	}
+
+	s.syncTaskDeviceCount(taskID, taskDB)
+	logger.Log.Infof("[Task Service] Created device '%s' (ID: %d, Type: %s) for task %s", device.DeviceName, device.ID, device.DeviceType, taskID)
+	return device, nil
+}
+
+func (s *Service) syncTaskDeviceCount(taskID string, taskDB *gorm.DB) {
+	var count int64
+	taskDB.Model(&model.Device{}).Count(&count)
+	s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Update("device_count", int(count))
+	taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Update("device_count", int(count))
+}
+
+// ListDevices 获取指定任务下的所有设备列表并实时汇总其日志数与匹配数
+func (s *Service) ListDevices(taskID string) ([]model.Device, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	var devices []model.Device
+	if err := taskDB.Order("id asc").Find(&devices).Error; err != nil {
+		return nil, err
+	}
+
+	for i := range devices {
+		var logCount, matchedCount int64
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ?", devices[i].ID).Count(&logCount)
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ? AND knowledge_id > 0", devices[i].ID).Count(&matchedCount)
+		devices[i].LogCount = int(logCount)
+		devices[i].MatchedCount = int(matchedCount)
+	}
+
+	return devices, nil
+}
+
+// GetDevice 获取单个设备信息
+func (s *Service) GetDevice(taskID string, deviceID uint) (*model.Device, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	var device model.Device
+	if err := taskDB.First(&device, "id = ?", deviceID).Error; err != nil {
+		return nil, err
+	}
+
+	var logCount, matchedCount int64
+	taskDB.Model(&model.LogRecord{}).Where("device_id = ?", device.ID).Count(&logCount)
+	taskDB.Model(&model.LogRecord{}).Where("device_id = ? AND knowledge_id > 0", device.ID).Count(&matchedCount)
+	device.LogCount = int(logCount)
+	device.MatchedCount = int(matchedCount)
+
+	return &device, nil
+}
+
+// UpdateDevice 更新设备属性
+func (s *Service) UpdateDevice(taskID string, deviceID uint, updates map[string]interface{}) (*model.Device, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	updates["updated_at"] = time.Now()
+	if err := taskDB.Model(&model.Device{}).Where("id = ?", deviceID).Updates(updates).Error; err != nil {
+		return nil, err
+	}
+
+	return s.GetDevice(taskID, deviceID)
+}
+
+// DeleteDevice 删除设备并将关联日志解除绑定 (device_id=0)
+func (s *Service) DeleteDevice(taskID string, deviceID uint) error {
+	if !isValidTaskID(taskID) {
+		return fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return err
+	}
+
+	if err := taskDB.Delete(&model.Device{}, "id = ?", deviceID).Error; err != nil {
+		return err
+	}
+
+	if err := taskDB.Model(&model.LogRecord{}).Where("device_id = ?", deviceID).Update("device_id", 0).Error; err != nil {
+		logger.Log.Warnf("reset log records device_id failed: %v", err)
+	}
+
+	s.syncTaskDeviceCount(taskID, taskDB)
+	return nil
+}
+
+// AutoAssignDevices 根据日志中提取的 Hostname 自动识别并创建设备，自动将日志按 Hostname 归属绑定
+func (s *Service) AutoAssignDevices(taskID string) ([]model.Device, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	var hostnames []string
+	if err := taskDB.Model(&model.LogRecord{}).
+		Where("hostname != '' AND hostname IS NOT NULL").
+		Distinct("hostname").
+		Pluck("hostname", &hostnames).Error; err != nil {
+		return nil, err
+	}
+
+	if len(hostnames) == 0 {
+		return s.ListDevices(taskID)
+	}
+
+	for i, h := range hostnames {
+		h = strings.TrimSpace(h)
+		if h == "" {
+			continue
+		}
+		var dev model.Device
+		err := taskDB.Where("task_id = ? AND (hostname = ? OR device_name = ?)", taskID, h, h).First(&dev).Error
+		if err != nil {
+			dev = model.Device{
+				TaskID:     taskID,
+				DeviceName: h,
+				DeviceType: "Router",
+				Hostname:   h,
+				Color:      DeviceDefaultColors[i%len(DeviceDefaultColors)],
+				CreatedAt:  time.Now(),
+				UpdatedAt:  time.Now(),
+			}
+			if err := taskDB.Create(&dev).Error; err != nil {
+				logger.Log.Errorf("create auto device %s failed: %v", h, err)
+				continue
+			}
+		}
+
+		taskDB.Model(&model.LogRecord{}).
+			Where("hostname = ? AND (device_id = 0 OR device_id IS NULL)", h).
+			Update("device_id", dev.ID)
+	}
+
+	s.syncTaskDeviceCount(taskID, taskDB)
+	return s.ListDevices(taskID)
+}
+
+// QueryMultiDeviceLogs 多设备联合日志查询与时间线构建
+func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLogFilter) ([]model.DeviceTimelineEvent, int64, error) {
+	if !isValidTaskID(taskID) {
+		return nil, 0, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	var devList []model.Device
+	taskDB.Find(&devList)
+	devMap := make(map[uint]model.Device)
+	for _, d := range devList {
+		devMap[d.ID] = d
+	}
+
+	query := taskDB.Model(&model.LogRecord{})
+
+	if len(filter.DeviceIDs) > 0 {
+		query = query.Where("device_id IN ?", filter.DeviceIDs)
+	}
+	if len(filter.Modules) > 0 {
+		var upperMods []string
+		for _, m := range filter.Modules {
+			if trimmed := strings.TrimSpace(m); trimmed != "" {
+				upperMods = append(upperMods, strings.ToUpper(trimmed))
+			}
+		}
+		if len(upperMods) > 0 {
+			query = query.Where("UPPER(module) IN ?", upperMods)
+		}
+	}
+	if len(filter.Briefs) > 0 {
+		var upperBriefs []string
+		for _, b := range filter.Briefs {
+			if trimmed := strings.TrimSpace(b); trimmed != "" {
+				upperBriefs = append(upperBriefs, strings.ToUpper(trimmed))
+			}
+		}
+		if len(upperBriefs) > 0 {
+			query = query.Where("UPPER(brief) IN ?", upperBriefs)
+		}
+	}
+	if filter.Severity != nil {
+		query = query.Where("severity <= ?", *filter.Severity)
+	}
+	if filter.Keyword != "" {
+		escaped := escapeLikePattern(filter.Keyword)
+		query = query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\' OR brief LIKE ? ESCAPE '\\')", "%"+escaped+"%", "%"+escaped+"%", "%"+escaped+"%")
+	}
+	if filter.TimeStart != nil {
+		query = query.Where("timestamp >= ?", *filter.TimeStart)
+	}
+	if filter.TimeEnd != nil {
+		query = query.Where("timestamp <= ?", *filter.TimeEnd)
+	}
+
+	var total int64
+	if err := query.Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	orderClause := "timestamp asc, id asc"
+	if !filter.AscOrder {
+		orderClause = "timestamp desc, id desc"
+	}
+
+	var records []model.LogRecord
+	if filter.PageSize < 0 {
+		err = query.Order(orderClause).Find(&records).Error
+	} else {
+		page := filter.Page
+		if page <= 0 {
+			page = 1
+		}
+		pageSize := filter.PageSize
+		if pageSize <= 0 {
+			pageSize = 100
+		} else if pageSize > 10000 {
+			pageSize = 10000
+		}
+		offset := (page - 1) * pageSize
+		err = query.Order(orderClause).Offset(offset).Limit(pageSize).Find(&records).Error
+	}
+
+	if err != nil {
+		return nil, 0, err
+	}
+
+	events := make([]model.DeviceTimelineEvent, len(records))
+	for i, r := range records {
+		var params map[string]string
+		if r.ParametersJSON != "" && r.ParametersJSON != "{}" {
+			_ = json.Unmarshal([]byte(r.ParametersJSON), &params)
+		}
+
+		devName := "未指定设备"
+		devColor := "#64748B"
+		if d, ok := devMap[r.DeviceID]; ok {
+			devName = d.DeviceName
+			if d.Color != "" {
+				devColor = d.Color
+			}
+		} else if r.Hostname != "" {
+			devName = r.Hostname
+		}
+
+		events[i] = model.DeviceTimelineEvent{
+			LogID:           r.ID,
+			Timestamp:       r.Timestamp,
+			DeviceID:        r.DeviceID,
+			DeviceName:      devName,
+			DeviceColor:     devColor,
+			Hostname:        r.Hostname,
+			Module:          r.Module,
+			Brief:           r.Brief,
+			Severity:        r.Severity,
+			RawLog:          r.RawLog,
+			MessageBody:     r.MessageBody,
+			SourceFile:      r.SourceFile,
+			KnowledgeID:     r.KnowledgeID,
+			MatchTier:       r.MatchTier,
+			MatchConfidence: r.MatchConfidence,
+			Parameters:      params,
+		}
+	}
+
+	return events, total, nil
+}
+
+// GetDeviceTimeline 获取多设备联合时间线事件
+func (s *Service) GetDeviceTimeline(taskID string, filter model.MultiDeviceLogFilter) ([]model.DeviceTimelineEvent, error) {
+	if filter.PageSize == 0 {
+		filter.PageSize = 500
+	}
+	filter.AscOrder = true
+	events, _, err := s.QueryMultiDeviceLogs(taskID, filter)
+	return events, err
+}
+
+// GetMultiDeviceReport 生成多设备对比统计与推断诊断报告
+func (s *Service) GetMultiDeviceReport(taskID string, deviceIDs []uint) (*model.MultiDeviceReport, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskInfo, err := s.GetTaskByID(taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	var devices []model.Device
+	if len(deviceIDs) > 0 {
+		taskDB.Where("id IN ?", deviceIDs).Order("id asc").Find(&devices)
+	} else {
+		taskDB.Order("id asc").Find(&devices)
+	}
+
+	var devStatsList []model.DeviceStats
+	totalLogs := 0
+	totalMatched := 0
+
+	for _, dev := range devices {
+		var logCnt, matchCnt int64
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ?", dev.ID).Count(&logCnt)
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ? AND knowledge_id > 0", dev.ID).Count(&matchCnt)
+
+		var topMods []model.ModuleCount
+		taskDB.Model(&model.LogRecord{}).
+			Select("module, count(*) as count").
+			Where("device_id = ?", dev.ID).
+			Group("module").
+			Order("count desc").
+			Limit(5).
+			Scan(&topMods)
+
+		type SevRow struct {
+			Severity int
+			Count    int
+		}
+		var sevRows []SevRow
+		taskDB.Model(&model.LogRecord{}).
+			Select("severity, count(*) as count").
+			Where("device_id = ?", dev.ID).
+			Group("severity").
+			Scan(&sevRows)
+		sevDist := make(map[int]int)
+		for _, sr := range sevRows {
+			sevDist[sr.Severity] = sr.Count
+		}
+
+		type TimeRange struct {
+			MinTime *time.Time
+			MaxTime *time.Time
+		}
+		var tr TimeRange
+		taskDB.Model(&model.LogRecord{}).
+			Select("min(timestamp) as min_time, max(timestamp) as max_time").
+			Where("device_id = ?", dev.ID).
+			Scan(&tr)
+
+		devCopy := dev
+		devCopy.LogCount = int(logCnt)
+		devCopy.MatchedCount = int(matchCnt)
+
+		devStatsList = append(devStatsList, model.DeviceStats{
+			Device:       devCopy,
+			LogCount:     int(logCnt),
+			MatchedCount: int(matchCnt),
+			TopModules:   topMods,
+			SeverityDist: sevDist,
+			FirstSeen:    tr.MinTime,
+			LastSeen:     tr.MaxTime,
+		})
+
+		totalLogs += int(logCnt)
+		totalMatched += int(matchCnt)
+	}
+
+	selectedDevIDs := make([]uint, len(devices))
+	for i, d := range devices {
+		selectedDevIDs[i] = d.ID
+	}
+	timelineFilter := model.MultiDeviceLogFilter{
+		DeviceIDs: selectedDevIDs,
+		PageSize:  500,
+		AscOrder:  true,
+	}
+	timelineEvents, _, _ := s.QueryMultiDeviceLogs(taskID, timelineFilter)
+
+	eventDevMap := make(map[string]map[uint]bool)
+	for _, ev := range timelineEvents {
+		if ev.Module == "" || ev.Brief == "" || ev.DeviceID == 0 {
+			continue
+		}
+		key := fmt.Sprintf("%s/%s", strings.ToUpper(ev.Module), ev.Brief)
+		if eventDevMap[key] == nil {
+			eventDevMap[key] = make(map[uint]bool)
+		}
+		eventDevMap[key][ev.DeviceID] = true
+	}
+
+	var commonEvents []string
+	for k, devSet := range eventDevMap {
+		if len(devSet) >= 2 || (len(devices) == 1 && len(devSet) >= 1) {
+			commonEvents = append(commonEvents, fmt.Sprintf("%s (涉及 %d 台设备)", k, len(devSet)))
+		}
+	}
+	sort.Strings(commonEvents)
+
+	clusters := buildCorrelatedClusters(timelineEvents, 60*time.Second)
+	conclusion := generateMultiDeviceConclusion(devStatsList, timelineEvents, clusters, commonEvents)
+
+	report := &model.MultiDeviceReport{
+		TaskInfo:     taskInfo,
+		Devices:      devStatsList,
+		TotalLogs:    totalLogs,
+		TotalMatched: totalMatched,
+		CommonEvents: commonEvents,
+		Clusters:     clusters,
+		Timeline:     timelineEvents,
+		Conclusion:   conclusion,
+		ExportTime:   time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	return report, nil
+}
+
+// buildCorrelatedClusters 基于时间窗口将多设备关联事件聚合为时序簇
+func buildCorrelatedClusters(events []model.DeviceTimelineEvent, window time.Duration) []model.CorrelatedTimelineCluster {
+	if len(events) == 0 {
+		return nil
+	}
+
+	var clusters []model.CorrelatedTimelineCluster
+	var curEvents []model.DeviceTimelineEvent
+	var curStartTime time.Time
+
+	for _, ev := range events {
+		if curStartTime.IsZero() {
+			curStartTime = ev.Timestamp
+			curEvents = []model.DeviceTimelineEvent{ev}
+			continue
+		}
+
+		if ev.Timestamp.Sub(curStartTime) <= window {
+			curEvents = append(curEvents, ev)
+		} else {
+			if c := evaluateCluster(curEvents); c != nil {
+				clusters = append(clusters, *c)
+			}
+			curStartTime = ev.Timestamp
+			curEvents = []model.DeviceTimelineEvent{ev}
+		}
+	}
+
+	if len(curEvents) > 0 {
+		if c := evaluateCluster(curEvents); c != nil {
+			clusters = append(clusters, *c)
+		}
+	}
+
+	return clusters
+}
+
+func evaluateCluster(events []model.DeviceTimelineEvent) *model.CorrelatedTimelineCluster {
+	if len(events) == 0 {
+		return nil
+	}
+	devMap := make(map[string]bool)
+	var mods []string
+	modMap := make(map[string]bool)
+
+	for _, ev := range events {
+		devMap[ev.DeviceName] = true
+		if !modMap[ev.Module] {
+			modMap[ev.Module] = true
+			mods = append(mods, ev.Module)
+		}
+	}
+
+	if len(devMap) >= 2 || len(events) >= 3 {
+		var devList []string
+		for d := range devMap {
+			devList = append(devList, d)
+		}
+		sort.Strings(devList)
+
+		first := events[0]
+		last := events[len(events)-1]
+		summary := fmt.Sprintf("[%s ~ %s] 涉及设备 %s，触发 %d 条事件 (包含模块: %s)",
+			first.Timestamp.Format("15:04:05"), last.Timestamp.Format("15:04:05"),
+			strings.Join(devList, ", "), len(events), strings.Join(mods, "/"))
+
+		return &model.CorrelatedTimelineCluster{
+			StartTime: first.Timestamp,
+			EndTime:   last.Timestamp,
+			Module:    strings.Join(mods, ","),
+			Devices:   devList,
+			Events:    events,
+			Summary:   summary,
+		}
+	}
+	return nil
+}
+
+// generateMultiDeviceConclusion 自动生成多设备协同与时间线分析结论
+func generateMultiDeviceConclusion(devices []model.DeviceStats, timeline []model.DeviceTimelineEvent, clusters []model.CorrelatedTimelineCluster, commonEvents []string) string {
+	if len(devices) == 0 {
+		return "当前任务尚未配置设备，建议添加设备或执行按 Hostname 自动识别以进行多设备协同分析。"
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("【多设备协同审计综述】本次分析覆盖 %d 台网络设备，", len(devices)))
+
+	totalCrit := 0
+	for _, d := range devices {
+		for sev, count := range d.SeverityDist {
+			if sev <= 3 {
+				totalCrit += count
+			}
+		}
+	}
+
+	if len(timeline) > 0 {
+		start := timeline[0].Timestamp.Format("2006-01-02 15:04:05")
+		end := timeline[len(timeline)-1].Timestamp.Format("2006-01-02 15:04:05")
+		sb.WriteString(fmt.Sprintf("时间跨度为 %s 至 %s，共汇聚分析 %d 条时序日志，其中严重告警（级别≤3）共 %d 条。\n\n",
+			start, end, len(timeline), totalCrit))
+	} else {
+		sb.WriteString("暂无时间线日志记录。\n\n")
+	}
+
+	if len(commonEvents) > 0 {
+		sb.WriteString("【跨设备共性事件】检测到以下在多台设备间协同或相继发生的事件：\n")
+		for _, ce := range commonEvents {
+			sb.WriteString(fmt.Sprintf(" • %s\n", ce))
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(clusters) > 0 {
+		sb.WriteString("【故障传播与时间窗口推断】\n")
+		for i, cl := range clusters {
+			if i >= 3 {
+				sb.WriteString(fmt.Sprintf(" • 另有 %d 个时序关联事件簇...\n", len(clusters)-3))
+				break
+			}
+			if len(cl.Events) > 0 {
+				firstEv := cl.Events[0]
+				sb.WriteString(fmt.Sprintf(" • [%s] 由设备「%s」率先上报 %s/%s 事件，随后在时间窗口内协同影响设备 (%s)。\n",
+					firstEv.Timestamp.Format("15:04:05"), firstEv.DeviceName, firstEv.Module, firstEv.Brief, strings.Join(cl.Devices, ", ")))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("【专家排查建议】\n")
+	hasOSPF := false
+	hasBGP := false
+	hasLink := false
+	for _, ev := range timeline {
+		m := strings.ToUpper(ev.Module)
+		if strings.Contains(m, "OSPF") {
+			hasOSPF = true
+		}
+		if strings.Contains(m, "BGP") {
+			hasBGP = true
+		}
+		if strings.Contains(m, "IFNET") || strings.Contains(m, "PORT") || strings.Contains(m, "ETH") {
+			hasLink = true
+		}
+	}
+
+	if hasOSPF {
+		sb.WriteString(" 1. OSPF 邻居震荡排查：请重点检查对端路由器接口 MTU 一致性、Hello/Dead Timer 配置、链路丢包以及 BFD 联动保活状态。\n")
+	}
+	if hasBGP {
+		sb.WriteString(" 2. BGP 状态排查：请检查 TCP 179 端口可达性、Hold Timer 超时原因、以及对等体 Keepalive 报文交互是否被 ACL 或 CPU 防攻击策略丢弃。\n")
+	}
+	if hasLink {
+		sb.WriteString(" 3. 物理链路排查：检查对端光模块收发光功率（optical-power）、接口 CRC 错包统计及物理光纤链路质量。\n")
+	}
+	if !hasOSPF && !hasBGP && !hasLink {
+		sb.WriteString(" 1. 请依据时间线率先产生告警的设备与模块，结合华为官方知识库排查指引依次进行处置。\n")
+	}
+
+	return sb.String()
+}
+
+// ExportMultiDeviceHTML 导出多设备对比 HTML 报告
+func (s *Service) ExportMultiDeviceHTML(taskID string, deviceIDs []uint) (string, error) {
+	report, err := s.GetMultiDeviceReport(taskID, deviceIDs)
+	if err != nil {
+		return "", err
+	}
+	return GenerateMultiDeviceHTMLReport(report), nil
 }

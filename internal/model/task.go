@@ -17,6 +17,7 @@ type TaskInfo struct {
 	TaskName     string     `gorm:"size:255" json:"task_name"`
 	DeviceType   string     `gorm:"size:128" json:"device_type"`
 	FileCount    int        `json:"file_count"`
+	DeviceCount  int        `json:"device_count"` // 设备数量
 	LogCount     int        `json:"log_count"`
 	MatchedCount int        `json:"matched_count"`
 	RcaCount     int        `json:"rca_count"`
@@ -49,6 +50,7 @@ func (TaskFile) TableName() string {
 type LogQueryFilter struct {
 	Page       int        `form:"page" json:"page"`
 	PageSize   int        `form:"page_size" json:"page_size"`
+	DeviceID   *uint      `form:"device_id" json:"device_id"`
 	Module     string     `form:"module" json:"module"`
 	Severity   *int       `form:"severity" json:"severity"`
 	Brief      string     `form:"brief" json:"brief"`

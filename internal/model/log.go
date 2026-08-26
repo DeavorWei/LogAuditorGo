@@ -23,11 +23,14 @@ type NormalizedLog struct {
 	KnowledgeID     uint    `json:"knowledge_id,omitempty"`
 	MatchTier       string  `json:"match_tier,omitempty"`       // EXACT, MNEMONIC, TEMPLATE, BLEVE, UNMATCHED
 	MatchConfidence float64 `json:"match_confidence,omitempty"` // 0.0 ~ 1.0
+
+	DeviceID uint `json:"device_id,omitempty"` // 关联设备ID
 }
 
 // LogRecord 任务数据库中的日志存储实体
 type LogRecord struct {
 	ID              uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	DeviceID        uint      `gorm:"index;default:0" json:"device_id"` // 所属设备ID (0表示未指定设备)
 	Timestamp       time.Time `gorm:"index" json:"timestamp"`
 	Hostname        string    `gorm:"size:128;index" json:"hostname"`
 	Module          string    `gorm:"size:64;index" json:"module"`

@@ -85,6 +85,7 @@ func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) 
 		&model.TaskFile{},
 		&model.LogRecord{},
 		&model.RCAEvent{},
+		&model.Device{},
 	); err != nil {
 		return nil, "", fmt.Errorf("auto migrate task tables failed: %w", err)
 	}
