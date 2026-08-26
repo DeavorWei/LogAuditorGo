@@ -70,7 +70,7 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 		Action      string `json:"action"`
 	}
 
-	var enrichedHits []EnrichedHit
+	enrichedHits := make([]EnrichedHit, 0)
 	if len(res.Hits) > 0 {
 		uniqueIDs := make([]uint, 0, len(res.Hits))
 		idSet := make(map[uint]struct{}, len(res.Hits))

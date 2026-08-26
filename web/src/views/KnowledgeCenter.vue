@@ -35,7 +35,7 @@
 
       <div class="knowledge-grid">
         <el-card
-          v-for="k in knowledgeList"
+          v-for="k in (knowledgeList || [])"
           :key="k.knowledge_id || k.id"
           shadow="hover"
           class="kb-card"
@@ -52,7 +52,7 @@
         </el-card>
       </div>
 
-      <el-empty v-if="!loading && knowledgeList.length === 0" description="未检索到匹配的故障知识" />
+      <el-empty v-if="!loading && (!knowledgeList || knowledgeList.length === 0)" description="未检索到匹配的故障知识" />
 
       <div class="pagination-bar">
         <el-pagination
@@ -153,10 +153,17 @@ const fetchKnowledge = async () => {
       page: query.value.page,
       page_size: query.value.pageSize
     })
-    if (res.code === 0) {
-      knowledgeList.value = res.data.hits
-      total.value = res.data.total
+    if (res.code === 0 && res.data) {
+      knowledgeList.value = res.data.hits || []
+      total.value = res.data.total || 0
+    } else {
+      knowledgeList.value = []
+      total.value = 0
     }
+  } catch (e) {
+    console.error('Fetch knowledge failed:', e)
+    knowledgeList.value = []
+    total.value = 0
   } finally {
     loading.value = false
   }
