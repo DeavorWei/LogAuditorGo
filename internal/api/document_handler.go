@@ -1,9 +1,7 @@
 package api
 
 import (
-	"archive/zip"
 	"fmt"
-	"io"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"logauditorgo/internal/hdx"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
@@ -153,8 +152,8 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 				_ = os.RemoveAll(batchTempDir)
 			}()
 
-			tracker.AddLog("info", "开始检查并解压所有 .hdx 官方压缩包...")
-			if err := extractAllHDXArchivesWithTracker(batchTempDir, tracker); err != nil {
+			tracker.AddLog("info", "开始检查并解压所有 HDX 官方压缩包...")
+			if err := hdx.ExtractAllArchivesWithTracker(batchTempDir, tracker); err != nil {
 				logger.Log.Warnf("[API Documents] Extract HDX archives warning: %v", err)
 				tracker.AddLog("warning", "解压警告: %v", err)
 			}
@@ -173,7 +172,7 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 	// 同步模式（兼容旧单测和直接调用）
 	defer os.RemoveAll(batchTempDir)
 
-	if err := extractAllHDXArchivesWithTracker(batchTempDir, tracker); err != nil {
+	if err := hdx.ExtractAllArchivesWithTracker(batchTempDir, tracker); err != nil {
 		logger.Log.Warnf("[API Documents] Extract HDX archives warning: %v", err)
 	}
 
@@ -214,92 +213,6 @@ func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
 	}
 
 	SuccessResponse(c, nil, "Document deleted successfully")
-}
-
-// extractAllHDXArchivesWithTracker 递归查找并解压目录下所有的 .hdx 压缩文件并向 Tracker 上报日志
-func extractAllHDXArchivesWithTracker(dir string, tr *progress.JobTracker) error {
-	var hdxFiles []string
-	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d == nil || d.IsDir() {
-			return nil
-		}
-		ext := strings.ToLower(filepath.Ext(p))
-		if ext == ".hdx" {
-			hdxFiles = append(hdxFiles, p)
-		}
-		return nil
-	})
-
-	if len(hdxFiles) > 0 && tr != nil {
-		tr.AddLog("info", "发现 %d 个 HDX 压缩包，正在解压...", len(hdxFiles))
-	}
-
-	for _, h := range hdxFiles {
-		destDir := filepath.Join(filepath.Dir(h), "extracted_"+strings.TrimSuffix(filepath.Base(h), filepath.Ext(h)))
-		if tr != nil {
-			tr.AddLog("info", "正在解压: %s", filepath.Base(h))
-		}
-		if err := unzipFile(h, destDir); err != nil {
-			logger.Log.Warnf("[API Documents] Failed to unzip HDX archive %s: %v", h, err)
-			if tr != nil {
-				tr.AddLog("warning", "解压 %s 失败: %v", filepath.Base(h), err)
-			}
-			continue
-		}
-		_ = os.Remove(h)
-	}
-	return nil
-}
-
-func unzipFile(src string, dest string) error {
-	r, err := zip.OpenReader(src)
-	if err != nil {
-		return err
-	}
-	defer r.Close()
-
-	if err := os.MkdirAll(dest, 0755); err != nil {
-		return err
-	}
-
-	for _, f := range r.File {
-		fpath := filepath.Join(dest, f.Name)
-		if !strings.HasPrefix(filepath.Clean(fpath)+string(os.PathSeparator), filepath.Clean(dest)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal file path: %s", fpath)
-		}
-
-		if f.FileInfo().IsDir() {
-			_ = os.MkdirAll(fpath, os.ModePerm)
-			continue
-		}
-
-		if err := os.MkdirAll(filepath.Dir(fpath), os.ModePerm); err != nil {
-			return err
-		}
-
-		err = func() error {
-			outFile, err := os.OpenFile(fpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, f.Mode())
-			if err != nil {
-				return err
-			}
-			defer outFile.Close()
-
-			rc, err := f.Open()
-			if err != nil {
-				return err
-			}
-			defer rc.Close()
-
-			if _, err := io.Copy(outFile, rc); err != nil {
-				logger.Log.Warnf("unzip copy error for %s: %v", f.Name, err)
-			}
-			return nil
-		}()
-		if err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // getOriginalFilename 从 Content-Disposition 请求头中提取保留了目录层级的原始相对路径

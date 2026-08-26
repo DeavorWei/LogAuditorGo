@@ -1,6 +1,9 @@
 package hdx_test
 
 import (
+	"archive/zip"
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +11,7 @@ import (
 
 	"logauditorgo/internal/hdx"
 	"logauditorgo/internal/model"
+	"logauditorgo/pkg/progress"
 )
 
 func TestCharsetDecode(t *testing.T) {
@@ -318,4 +322,129 @@ func TestFindHDXDocDirs(t *testing.T) {
 		t.Errorf("expected case insensitive match for PROFILE.XML, got res: %v, err: %v", resCase, err)
 	}
 }
+
+func TestUnzipConcurrent_Success(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "sample.hdx")
+	destDir := filepath.Join(tmpDir, "extracted")
+
+	// 构造一个包含 50 个文件与多层子目录的 zip 包
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("folder%d/file_%d.txt", i%5, i)
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatalf("create entry %s failed: %v", name, err)
+		}
+		_, _ = w.Write([]byte(fmt.Sprintf("content_%d", i)))
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("close zip failed: %v", err)
+	}
+
+	if err := os.WriteFile(zipPath, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("write zip file failed: %v", err)
+	}
+
+	tracker := progress.NewJobTracker("test_unzip_job", "", "hdx", []progress.StageDef{
+		{Key: "UPLOAD", Name: "上传与解压"},
+	})
+	tracker.SetStage("UPLOAD", "准备解压")
+
+	err := hdx.UnzipConcurrent(zipPath, destDir, tracker)
+	if err != nil {
+		t.Fatalf("UnzipConcurrent failed: %v", err)
+	}
+
+	// 验证所有 50 个文件是否解压完整
+	for i := 0; i < 50; i++ {
+		name := fmt.Sprintf("folder%d/file_%d.txt", i%5, i)
+		filePath := filepath.Join(destDir, name)
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			t.Fatalf("file %s not found: %v", name, err)
+		}
+		if string(content) != fmt.Sprintf("content_%d", i) {
+			t.Errorf("mismatched content for %s: got %s", name, string(content))
+		}
+	}
+}
+
+func TestUnzipConcurrent_ZipSlipProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	zipPath := filepath.Join(tmpDir, "evil.zip")
+	destDir := filepath.Join(tmpDir, "extracted")
+
+	buf := new(bytes.Buffer)
+	zw := zip.NewWriter(buf)
+
+	// 构造恶意的 Zip Slip 路径
+	w, err := zw.Create("../evil.txt")
+	if err != nil {
+		t.Fatalf("create evil entry failed: %v", err)
+	}
+	_, _ = w.Write([]byte("malicious"))
+	_ = zw.Close()
+
+	_ = os.WriteFile(zipPath, buf.Bytes(), 0644)
+
+	err = hdx.UnzipConcurrent(zipPath, destDir, nil)
+	if err == nil {
+		t.Fatalf("expected Zip Slip detection error, but got nil")
+	}
+	if !strings.Contains(err.Error(), "Zip Slip") {
+		t.Errorf("expected Zip Slip in error message, got: %v", err)
+	}
+}
+
+func TestExtractAllArchivesWithTracker(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	createSimpleZip := func(targetPath, innerFile, content string) {
+		buf := new(bytes.Buffer)
+		zw := zip.NewWriter(buf)
+		w, _ := zw.Create(innerFile)
+		_, _ = w.Write([]byte(content))
+		_ = zw.Close()
+		_ = os.WriteFile(targetPath, buf.Bytes(), 0644)
+	}
+
+	// 创建 1 个 .hdx 和 1 个 .zip 文件
+	hdxFile := filepath.Join(tmpDir, "doc1.hdx")
+	zipFile := filepath.Join(tmpDir, "sub", "doc2.zip")
+	_ = os.MkdirAll(filepath.Dir(zipFile), 0755)
+
+	createSimpleZip(hdxFile, "profile.xml", "<profile>doc1</profile>")
+	createSimpleZip(zipFile, "profile.xml", "<profile>doc2</profile>")
+
+	tracker := progress.NewJobTracker("test_extract_all", "", "hdx", []progress.StageDef{
+		{Key: "UPLOAD", Name: "上传与解压"},
+	})
+
+	err := hdx.ExtractAllArchivesWithTracker(tmpDir, tracker)
+	if err != nil {
+		t.Fatalf("ExtractAllArchivesWithTracker failed: %v", err)
+	}
+
+	// 验证压缩包已解压且源压缩包已被删除
+	if _, err := os.Stat(hdxFile); !os.IsNotExist(err) {
+		t.Errorf("expected hdx file %s to be cleaned up", hdxFile)
+	}
+	if _, err := os.Stat(zipFile); !os.IsNotExist(err) {
+		t.Errorf("expected zip file %s to be cleaned up", zipFile)
+	}
+
+	dest1 := filepath.Join(tmpDir, "extracted_doc1", "profile.xml")
+	if c, err := os.ReadFile(dest1); err != nil || string(c) != "<profile>doc1</profile>" {
+		t.Errorf("expected extracted content in %s, got: %s (err: %v)", dest1, string(c), err)
+	}
+
+	dest2 := filepath.Join(tmpDir, "sub", "extracted_doc2", "profile.xml")
+	if c, err := os.ReadFile(dest2); err != nil || string(c) != "<profile>doc2</profile>" {
+		t.Errorf("expected extracted content in %s, got: %s (err: %v)", dest2, string(c), err)
+	}
+}
+
 
