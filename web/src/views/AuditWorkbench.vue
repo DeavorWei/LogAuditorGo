@@ -193,16 +193,48 @@
             </el-descriptions>
           </div>
 
-          <!-- 动态提取参数 -->
+          <!-- 动态提取参数与文档说明融合 -->
           <div class="section-box">
-            <div class="box-title">动态提取变量参数 (Parameters)</div>
-            <div v-if="parsedParameters && Object.keys(parsedParameters).length > 0" class="param-grid">
-              <div v-for="(val, key) in parsedParameters" :key="key" class="param-chip">
-                <span class="p-key">{{ key }}</span>
-                <span class="p-val">{{ val }}</span>
+            <div class="box-title flex-between">
+              <span>动态提取变量与文档说明 (Parameters & Documentation)</span>
+              <span v-if="enrichedParameters.length > 0" class="param-count-badge">
+                已提取 {{ enrichedParameters.length }} 个变量
+                <template v-if="matchedParamCount > 0">（已匹配 {{ matchedParamCount }} 条文档说明）</template>
+              </span>
+            </div>
+            <div v-if="enrichedParameters && enrichedParameters.length > 0" class="param-grid-enhanced">
+              <div
+                v-for="p in enrichedParameters"
+                :key="p.name"
+                :class="['param-card', { 'has-desc': !!p.description }]"
+              >
+                <div class="param-card-top">
+                  <span class="p-key">{{ p.name }}</span>
+                  <el-tooltip v-if="p.description" :content="`官方文档定义: ${p.description}`" placement="top">
+                    <span class="p-desc-badge">📖 {{ p.description }}</span>
+                  </el-tooltip>
+                </div>
+                <div class="p-val-box">
+                  <span class="p-val">{{ p.value }}</span>
+                </div>
               </div>
             </div>
             <div v-else class="empty-hint">该日志未解析出结构化动态键值变量</div>
+          </div>
+
+          <!-- 消息模板动态实例化对照 -->
+          <div v-if="selectedLog.knowledge && selectedLog.knowledge.message" class="section-box">
+            <div class="box-title flex-between">
+              <span>📋 官方日志消息模板实例化 (Template Instantiation)</span>
+              <el-tag size="small" type="success" effect="plain">变量已注入</el-tag>
+            </div>
+            <div class="template-box">
+              <div class="template-rendered" v-html="renderedTemplateHtml"></div>
+              <div class="template-raw-sub">
+                <span class="sub-label">官方原始模板:</span>
+                <code>{{ selectedLog.knowledge.message }}</code>
+              </div>
+            </div>
           </div>
 
           <!-- 关联根因提示 -->
@@ -223,35 +255,81 @@
             <el-tab-pane label="官方知识与处理步骤" name="knowledge">
               <div v-if="selectedLog.knowledge" class="kb-content">
                 <div class="kb-header-card">
-                  <div class="kb-title">{{ selectedLog.knowledge.module }}/{{ selectedLog.knowledge.brief }}</div>
+                  <div class="kb-header-top">
+                    <div class="kb-title">{{ selectedLog.knowledge.module }}/{{ selectedLog.knowledge.brief }}</div>
+                    <el-switch
+                      v-model="contextualizeMode"
+                      size="small"
+                      active-text="现场参数注入"
+                      inactive-text="原始文档"
+                      style="--el-switch-on-color: #10b981;"
+                    />
+                  </div>
                   <div class="kb-meta">
                     <span class="badge-tier">匹配层级: {{ selectedLog.match_tier }}</span>
                     <span class="badge-conf">置信度: {{ (selectedLog.match_confidence * 100).toFixed(0) }}%</span>
+                    <span v-if="contextualizeMode && matchedParamCount > 0" class="badge-ctx">
+                      ✨ 已将现场 {{ matchedParamCount }} 个参数动态注入至排查步骤
+                    </span>
                   </div>
                 </div>
 
                 <!-- 含义 -->
                 <div class="kb-block">
                   <div class="kb-subtitle">📖 日志/告警含义解释</div>
-                  <div class="kb-text">{{ selectedLog.knowledge.description || selectedLog.knowledge.message }}</div>
+                  <div
+                    class="kb-text"
+                    v-html="renderContextualizedHtml(selectedLog.knowledge.description || selectedLog.knowledge.message)"
+                  ></div>
                 </div>
 
                 <!-- 官方可能原因 -->
                 <div class="kb-block">
                   <div class="kb-subtitle">🔍 官方可能原因</div>
-                  <div class="kb-text cause-text">{{ selectedLog.knowledge.cause || '官方文档未提供特定原因' }}</div>
+                  <div
+                    class="kb-text cause-text"
+                    v-html="renderContextualizedHtml(selectedLog.knowledge.cause || '官方文档未提供特定原因')"
+                  ></div>
                 </div>
 
                 <!-- 官方建议处理步骤 -->
                 <div class="kb-block">
                   <div class="kb-subtitle">🛠️ 官方处理排错步骤</div>
-                  <div class="kb-text action-box">{{ selectedLog.knowledge.action || '按标准网络排错规范处理' }}</div>
+                  <div
+                    class="kb-text action-box"
+                    v-html="renderContextualizedHtml(selectedLog.knowledge.action || '按标准网络排错规范处理')"
+                  ></div>
                 </div>
 
                 <!-- 系统影响 -->
                 <div v-if="selectedLog.knowledge.impact" class="kb-block">
                   <div class="kb-subtitle">⚠️ 对系统的影响</div>
-                  <div class="kb-text">{{ selectedLog.knowledge.impact }}</div>
+                  <div
+                    class="kb-text"
+                    v-html="renderContextualizedHtml(selectedLog.knowledge.impact)"
+                  ></div>
+                </div>
+
+                <!-- 官方参数定义字典与现场对照表 -->
+                <div v-if="kbParamDefs.length > 0" class="kb-block">
+                  <div class="kb-subtitle flex-between">
+                    <span>📚 官方参数字典与现场实际值对照</span>
+                    <span class="dict-count-tag">共 {{ kbParamDefs.length }} 项参数定义</span>
+                  </div>
+                  <el-table :data="kbParamDefs" size="small" border style="width: 100%; margin-top: 6px;">
+                    <el-table-column prop="name" label="参数名称" width="130">
+                      <template #default="{ row }">
+                        <span class="dict-pname">{{ row.name }}</span>
+                      </template>
+                    </el-table-column>
+                    <el-table-column prop="description" label="官方含义说明" min-width="140" />
+                    <el-table-column label="现场实际值" width="130">
+                      <template #default="{ row }">
+                        <span v-if="row.actualValue !== undefined" class="dict-pval">{{ row.actualValue }}</span>
+                        <span v-else class="dict-pnone">未捕获</span>
+                      </template>
+                    </el-table-column>
+                  </el-table>
                 </div>
               </div>
               <div v-else class="empty-kb">
@@ -512,6 +590,215 @@ const parsedParameters = computed(() => {
   } catch (e) {
     return {}
   }
+})
+
+// 规范化辅助函数：忽略大小写、空格与下划线
+const normalizeParamKey = (k) => {
+  return (k || '').toString().toLowerCase().replace(/[-_\s]/g, '')
+}
+
+// HTML 转义防 XSS
+const escapeHtml = (text) => {
+  if (!text) return ''
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+// 动态变量与官方文档参数定义融合
+const enrichedParameters = computed(() => {
+  if (!selectedLog.value) return []
+  
+  // 如果后端已经返回 enriched_parameters (阶段二/三)，优先直接使用
+  if (Array.isArray(selectedLog.value.enriched_parameters) && selectedLog.value.enriched_parameters.length > 0) {
+    return selectedLog.value.enriched_parameters.map(p => ({
+      name: p.name || p.Name,
+      value: p.value || p.Value,
+      description: p.description || p.Description || '',
+      matched: !!(p.description || p.Description)
+    }))
+  }
+
+  const rawParams = parsedParameters.value || {}
+  const kb = selectedLog.value.knowledge
+  let defs = []
+  if (kb && kb.parameters) {
+    try {
+      const parsed = typeof kb.parameters === 'string' ? JSON.parse(kb.parameters) : kb.parameters
+      if (Array.isArray(parsed)) {
+        defs = parsed
+      }
+    } catch (e) {}
+  }
+
+  // 构建精确查找字典与规范化模糊查找字典
+  const exactMap = new Map()
+  const normalizedMap = new Map()
+  for (const d of defs) {
+    const name = d.name || d.Name || ''
+    const desc = d.description || d.Description || ''
+    if (name) {
+      exactMap.set(name, desc)
+      normalizedMap.set(normalizeParamKey(name), desc)
+    }
+  }
+
+  const result = []
+  for (const [key, val] of Object.entries(rawParams)) {
+    let desc = exactMap.get(key)
+    if (!desc) {
+      desc = normalizedMap.get(normalizeParamKey(key)) || ''
+    }
+    result.push({
+      name: key,
+      value: val,
+      description: desc,
+      matched: !!desc
+    })
+  }
+
+  return result
+})
+
+const matchedParamCount = computed(() => {
+  return enrichedParameters.value.filter(p => p.matched).length
+})
+
+// 官方日志消息模板实例化（将占位符替换为提取的真实值并高亮）
+const renderedTemplateHtml = computed(() => {
+  const log = selectedLog.value
+  if (!log || !log.knowledge || !log.knowledge.message) return ''
+
+  const rawTemplate = log.knowledge.message
+  const params = parsedParameters.value || {}
+  const normParams = new Map()
+  for (const [k, v] of Object.entries(params)) {
+    normParams.set(normalizeParamKey(k), v)
+  }
+
+  // 匹配类似 [PeerID], <PeerID>, {PeerID}, %PeerID%, $PeerID 占位符
+  const placeholderRegex = /(\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))/g
+
+  let lastIdx = 0
+  let html = ''
+  let match
+
+  while ((match = placeholderRegex.exec(rawTemplate)) !== null) {
+    const start = match.index
+    const end = placeholderRegex.lastIndex
+    const fullMatch = match[0]
+    const keyName = match[2] || match[3] || match[4] || match[5] || match[6]
+
+    // 添加前面的普通文本
+    html += escapeHtml(rawTemplate.substring(lastIdx, start))
+
+    // 查找实际值
+    let actualVal = params[keyName]
+    if (actualVal === undefined) {
+      actualVal = normParams.get(normalizeParamKey(keyName))
+    }
+
+    if (actualVal !== undefined) {
+      html += `<span class="inst-param-injected" title="参数: ${escapeHtml(keyName)} = ${escapeHtml(actualVal)}">${escapeHtml(actualVal)}</span>`
+    } else {
+      // 保持原占位符样式
+      html += `<span class="inst-param-placeholder">${escapeHtml(fullMatch)}</span>`
+    }
+
+    lastIdx = end
+  }
+
+  // 添加剩余文本
+  html += escapeHtml(rawTemplate.substring(lastIdx))
+  return html
+})
+
+// 现场排查上下文参数注入开关
+const contextualizeMode = ref(true)
+
+// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染
+const renderContextualizedHtml = (text) => {
+  if (!text) return ''
+  if (!contextualizeMode.value) {
+    return escapeHtml(text).replace(/\n/g, '<br/>')
+  }
+
+  const params = parsedParameters.value || {}
+  const normParams = new Map()
+  for (const [k, v] of Object.entries(params)) {
+    normParams.set(normalizeParamKey(k), v)
+  }
+
+  const placeholderRegex = /(\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))/g
+
+  let lastIdx = 0
+  let html = ''
+  let match
+
+  while ((match = placeholderRegex.exec(text)) !== null) {
+    const start = match.index
+    const end = placeholderRegex.lastIndex
+    const fullMatch = match[0]
+    const keyName = match[2] || match[3] || match[4] || match[5] || match[6]
+
+    html += escapeHtml(text.substring(lastIdx, start)).replace(/\n/g, '<br/>')
+
+    let actualVal = params[keyName]
+    if (actualVal === undefined) {
+      actualVal = normParams.get(normalizeParamKey(keyName))
+    }
+
+    if (actualVal !== undefined) {
+      html += `<span class="inst-param-injected" title="现场变量: ${escapeHtml(keyName)} = ${escapeHtml(actualVal)}">${escapeHtml(actualVal)}</span>`
+    } else {
+      html += `<span class="inst-param-placeholder">${escapeHtml(fullMatch)}</span>`
+    }
+
+    lastIdx = end
+  }
+
+  html += escapeHtml(text.substring(lastIdx)).replace(/\n/g, '<br/>')
+  return html
+}
+
+// 官方知识库参数字典与现场实际值对照列表
+const kbParamDefs = computed(() => {
+  const kb = selectedLog.value?.knowledge
+  if (!kb || !kb.parameters) return []
+
+  let defs = []
+  try {
+    const parsed = typeof kb.parameters === 'string' ? JSON.parse(kb.parameters) : kb.parameters
+    if (Array.isArray(parsed)) {
+      defs = parsed
+    }
+  } catch (e) {
+    return []
+  }
+
+  const rawParams = parsedParameters.value || {}
+  const normParams = new Map()
+  for (const [k, v] of Object.entries(rawParams)) {
+    normParams.set(normalizeParamKey(k), v)
+  }
+
+  return defs.map(d => {
+    const name = d.name || d.Name || ''
+    const desc = d.description || d.Description || ''
+    let actualVal = rawParams[name]
+    if (actualVal === undefined) {
+      actualVal = normParams.get(normalizeParamKey(name))
+    }
+
+    return {
+      name,
+      description: desc,
+      actualValue: actualVal
+    }
+  })
 })
 
 const matchedRCA = computed(() => {
@@ -1091,6 +1378,19 @@ onMounted(() => {
   color: #475569;
   margin-bottom: 8px;
 }
+.flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.param-count-badge {
+  font-size: 11px;
+  font-weight: normal;
+  color: #0284c7;
+  background: #e0f2fe;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
 .raw-code {
   font-family: monospace;
   font-size: 12px;
@@ -1100,6 +1400,104 @@ onMounted(() => {
   border-radius: 4px;
   word-break: break-all;
   line-height: 1.5;
+}
+.param-grid-enhanced {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+}
+.param-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all 0.15s ease;
+}
+.param-card:hover {
+  border-color: #38bdf8;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+}
+.param-card.has-desc {
+  border-left: 3px solid #0284c7;
+}
+.param-card-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+}
+.p-key {
+  color: #0284c7;
+  font-weight: 600;
+  font-size: 12px;
+}
+.p-desc-badge {
+  font-size: 11px;
+  color: #0369a1;
+  background: #f0f9ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+.p-val-box {
+  background: #f8fafc;
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-family: monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+.p-val {
+  color: #0f172a;
+  font-weight: 500;
+}
+.template-box {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.template-rendered {
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1e293b;
+  margin-bottom: 8px;
+}
+:deep(.inst-param-injected) {
+  background: #dcfce7;
+  color: #15803d;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border-bottom: 1.5px solid #22c55e;
+}
+:deep(.inst-param-placeholder) {
+  background: #f1f5f9;
+  color: #64748b;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.template-raw-sub {
+  font-size: 11px;
+  color: #64748b;
+  border-top: 1px dashed #cbd5e1;
+  padding-top: 6px;
+  word-break: break-all;
+}
+.template-raw-sub .sub-label {
+  margin-right: 6px;
+  font-weight: 500;
+}
+.template-raw-sub code {
+  font-family: monospace;
+  color: #475569;
 }
 .param-grid {
   display: flex;
@@ -1112,14 +1510,6 @@ onMounted(() => {
   border-radius: 4px;
   padding: 4px 8px;
   font-size: 12px;
-}
-.p-key {
-  color: #0284c7;
-  font-weight: 600;
-  margin-right: 4px;
-}
-.p-val {
-  color: #334155;
 }
 .rca-alert {
   background: #fff7ed;
@@ -1148,6 +1538,11 @@ onMounted(() => {
   padding: 12px;
   margin-bottom: 14px;
 }
+.kb-header-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
 .kb-title {
   font-size: 16px;
   font-weight: bold;
@@ -1156,11 +1551,43 @@ onMounted(() => {
 .kb-meta {
   margin-top: 6px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
   font-size: 11px;
 }
 .badge-tier { background: #e0f2fe; color: #0284c7; padding: 2px 6px; border-radius: 3px; }
 .badge-conf { background: #dcfce7; color: #15803d; padding: 2px 6px; border-radius: 3px; font-weight: bold; }
+.badge-ctx {
+  background: #dcfce7;
+  color: #166534;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+}
+.dict-count-tag {
+  font-size: 11px;
+  font-weight: normal;
+  color: #64748b;
+}
+.dict-pname {
+  font-family: monospace;
+  font-weight: 600;
+  color: #0284c7;
+}
+.dict-pval {
+  font-family: monospace;
+  background: #f0fdf4;
+  color: #15803d;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #bbf7d0;
+}
+.dict-pnone {
+  color: #94a3b8;
+  font-style: italic;
+}
 .kb-block {
   margin-bottom: 14px;
 }

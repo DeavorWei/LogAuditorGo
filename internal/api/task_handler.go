@@ -347,6 +347,50 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	SuccessResponse(c, t)
 }
 
+// EnrichedRecord 包含日志、知识库与融合参数的完整记录实体
+type EnrichedRecord struct {
+	model.LogRecord
+	Knowledge          *model.Knowledge         `json:"knowledge,omitempty"`
+	ContextualizedKB   *ContextualizedKnowledge `json:"contextualized_knowledge,omitempty"`
+	EnrichedParameters []EnrichedParameter      `json:"enriched_parameters,omitempty"`
+	RenderedMessage    string                   `json:"rendered_message,omitempty"`
+}
+
+func (h *TaskHandler) enrichRecords(records []model.LogRecord) []EnrichedRecord {
+	uniqueKIDs := make([]uint, 0)
+	kidSet := make(map[uint]bool)
+	for _, rec := range records {
+		if rec.KnowledgeID > 0 && !kidSet[rec.KnowledgeID] {
+			kidSet[rec.KnowledgeID] = true
+			uniqueKIDs = append(uniqueKIDs, rec.KnowledgeID)
+		}
+	}
+
+	var knowledgeMap map[uint]*model.Knowledge
+	if len(uniqueKIDs) > 0 && h.knowledgeSvc != nil {
+		knowledgeMap, _ = h.knowledgeSvc.GetKnowledgeMapByIDs(uniqueKIDs)
+	}
+
+	enrichedList := make([]EnrichedRecord, 0, len(records))
+	for _, rec := range records {
+		er := EnrichedRecord{LogRecord: rec}
+		if rec.KnowledgeID > 0 && knowledgeMap != nil {
+			kb := knowledgeMap[rec.KnowledgeID]
+			er.Knowledge = kb
+			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, kb)
+			er.ContextualizedKB = ContextualizeKnowledge(kb, rec.ParametersJSON)
+			if kb != nil && kb.Message != "" {
+				rawParams := ParseParametersJSON(rec.ParametersJSON)
+				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
+			}
+		} else if rec.ParametersJSON != "" {
+			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, nil)
+		}
+		enrichedList = append(enrichedList, er)
+	}
+	return enrichedList
+}
+
 // QueryLogs 查询任务内日志并分页
 func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	taskID := c.Param("id")
@@ -410,31 +454,7 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		return
 	}
 
-	// 批量补充关联的知识库详情（优化 N+1 查询）
-	type EnrichedRecord struct {
-		model.LogRecord
-		Knowledge *model.Knowledge `json:"knowledge,omitempty"`
-	}
-
-	uniqueKIDs := make([]uint, 0)
-	kidSet := make(map[uint]bool)
-	for _, rec := range records {
-		if rec.KnowledgeID > 0 && !kidSet[rec.KnowledgeID] {
-			kidSet[rec.KnowledgeID] = true
-			uniqueKIDs = append(uniqueKIDs, rec.KnowledgeID)
-		}
-	}
-
-	knowledgeMap, _ := h.knowledgeSvc.GetKnowledgeMapByIDs(uniqueKIDs)
-
-	var enrichedList []EnrichedRecord
-	for _, rec := range records {
-		er := EnrichedRecord{LogRecord: rec}
-		if rec.KnowledgeID > 0 && knowledgeMap != nil {
-			er.Knowledge = knowledgeMap[rec.KnowledgeID]
-		}
-		enrichedList = append(enrichedList, er)
-	}
+	enrichedList := h.enrichRecords(records)
 
 	SuccessResponse(c, gin.H{
 		"total":     total,
@@ -485,10 +505,11 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 	t, _ := h.taskSvc.GetTaskByID(taskID)
 	records, _, _ := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{PageSize: -1})
 	rcas, _ := h.taskSvc.GetTaskRCAEvents(taskID)
+	enrichedRecords := h.enrichRecords(records)
 
 	c.JSON(http.StatusOK, gin.H{
 		"task":    t,
-		"records": records,
+		"records": enrichedRecords,
 		"rcas":    rcas,
 	})
 }
