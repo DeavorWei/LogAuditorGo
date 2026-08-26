@@ -86,3 +86,21 @@ func TestTimeParser(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkParseLine(b *testing.B) {
+	line := "Apr 15 2026 14:23:10 HUAWEI-CORE-SW01 %%01BGP/4/BGP_AUTH_FAILED(l)[1042][Slot=1/1]: BGP session authentication failed. (PeerID=192.168.1.2, TcpConnSocket=12, ReturnCode=3, SourceInterface=GE1/0/1)"
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = logparser.ParseLine(line)
+	}
+}
+
+func BenchmarkTimestamp(b *testing.B) {
+	ts := "2026-04-15 14:23:10"
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = logparser.ParseHuaweiTimestamp(ts)
+	}
+}

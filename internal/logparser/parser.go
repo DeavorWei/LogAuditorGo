@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"logauditorgo/internal/model"
 )
@@ -16,20 +17,30 @@ type LogParser interface {
 }
 
 var (
-	parsers []LogParser
-	mu      sync.RWMutex
+	parserList atomic.Value // holds []LogParser
+	regMu      sync.Mutex
+	defaultVRP = &VRPParser{}
 )
 
 func init() {
+	parserList.Store([]LogParser{})
 	RegisterParser(&USGSecurityParser{})
 	RegisterParser(&VRPParser{})
 }
 
 // RegisterParser 注册自定义日志解析器
 func RegisterParser(p LogParser) {
-	mu.Lock()
-	defer mu.Unlock()
-	parsers = append(parsers, p)
+	regMu.Lock()
+	defer regMu.Unlock()
+
+	var curr []LogParser
+	if val := parserList.Load(); val != nil {
+		curr = val.([]LogParser)
+	}
+	newSlice := make([]LogParser, len(curr)+1)
+	copy(newSlice, curr)
+	newSlice[len(curr)] = p
+	parserList.Store(newSlice)
 }
 
 // ParseLine 使用已注册的解析器自动解析单行日志
@@ -40,9 +51,7 @@ func ParseLine(line string) (norm *model.NormalizedLog, err error) {
 		}
 	}()
 
-	mu.RLock()
-	defer mu.RUnlock()
-
+	parsers, _ := parserList.Load().([]LogParser)
 	for _, p := range parsers {
 		if p.Support(line) {
 			norm, err := p.Parse(line)
@@ -53,8 +62,7 @@ func ParseLine(line string) (norm *model.NormalizedLog, err error) {
 	}
 
 	// 如果没有 Parser 声明完全支持，最后尝试 VRP 标准解析器
-	vrp := &VRPParser{}
-	return vrp.Parse(line)
+	return defaultVRP.Parse(line)
 }
 
 // ParseBatch 批量解析多行日志
@@ -76,3 +84,4 @@ func ParseBatch(lines []string) ([]*model.NormalizedLog, []error) {
 
 	return logs, errs
 }
+

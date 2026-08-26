@@ -140,3 +140,51 @@ func TestMatcherDefensive(t *testing.T) {
 		t.Errorf("expected TierUnmatch for nil log, got %s", tier)
 	}
 }
+
+func BenchmarkMatcherExactAndNegative(b *testing.B) {
+	tmpDir, _ := os.MkdirTemp("", "bench_matcher_*")
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "bench_matcher.db")
+	db, _ := storage.InitKnowledgeDB(dbPath)
+	indexPath := filepath.Join(tmpDir, "bench_matcher.bleve")
+	indexer, _ := search.InitIndexer(indexPath)
+	defer indexer.Close()
+
+	items := []model.Knowledge{
+		{
+			ID:          1,
+			EntryType:   model.EntryTypeLog,
+			Module:      "BGP",
+			Severity:    4,
+			Brief:       "BGP_AUTH_FAILED",
+			Message:     "BGP session authentication failed.",
+			ContentHash: "h1",
+		},
+	}
+	for _, it := range items {
+		db.Create(&it)
+	}
+	engine := matcher.NewMatchEngine(db, indexer)
+
+	normMatch := &model.NormalizedLog{
+		Module:      "BGP",
+		Brief:       "BGP_AUTH_FAILED",
+		MessageBody: "BGP session authentication failed.",
+	}
+	normUnmatch := &model.NormalizedLog{
+		Module:      "DEBUG",
+		Brief:       "ROUTINE_EVENT",
+		MessageBody: "Routine session message",
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if i%2 == 0 {
+			_, _, _ = engine.Match(normMatch, "", "")
+		} else {
+			_, _, _ = engine.Match(normUnmatch, "", "")
+		}
+	}
+}

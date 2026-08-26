@@ -488,6 +488,18 @@ func (s *Service) FindBestKnowledgeMatch(candidates []model.Knowledge, targetPro
 	if len(candidates) == 0 {
 		return nil
 	}
+	ptrs := make([]*model.Knowledge, len(candidates))
+	for i := range candidates {
+		ptrs[i] = &candidates[i]
+	}
+	return s.FindBestKnowledgeMatchPtr(ptrs, targetProduct, targetVersion)
+}
+
+// FindBestKnowledgeMatchPtr 针对指针切片执行高效零拷贝匹配
+func (s *Service) FindBestKnowledgeMatchPtr(candidates []*model.Knowledge, targetProduct, targetVersion string) *model.Knowledge {
+	if len(candidates) == 0 {
+		return nil
+	}
 
 	targetProductTrim := strings.TrimSpace(targetProduct)
 	targetVersionTrim := strings.TrimSpace(targetVersion)
@@ -495,8 +507,10 @@ func (s *Service) FindBestKnowledgeMatch(candidates []model.Knowledge, targetPro
 	var bestMatch *model.Knowledge
 	var highestScore int = -1
 
-	for i := range candidates {
-		k := &candidates[i]
+	for _, k := range candidates {
+		if k == nil {
+			continue
+		}
 
 		if len(k.Versions) == 0 {
 			if highestScore < 5 {

@@ -225,3 +225,49 @@ Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state
 	}
 }
 
+func BenchmarkTaskImportPipeline(b *testing.B) {
+	tmpDir, _ := os.MkdirTemp("", "task_bench_*")
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, _ := storage.InitKnowledgeDB(dbPath)
+	k := model.Knowledge{
+		ID:          1,
+		Module:      "IFNET",
+		Brief:       "IF_DOWN",
+		Message:     "Interface state turned to DOWN.",
+		ContentHash: "hash_if_down_bench",
+	}
+	globalDB.Create(&k)
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	lines := make([]string, 5000)
+	for i := 0; i < 5000; i++ {
+		if i%2 == 0 {
+			lines[i] = "Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN. (InterfaceName=100GE1/0/1)"
+		} else {
+			lines[i] = "Apr 15 2026 14:00:02 CORE-SW-01 %%01DEBUG/6/ROUTINE_INFO(l)[2]: Routine keepalive ok. (PeerID=10.0.0.1)"
+		}
+	}
+	content := ""
+	for _, l := range lines {
+		content += l + "\n"
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		emptyTask, _ := svc.CreateEmptyTask("", "CloudEngine")
+		item := task.FileUploadItem{
+			FileName: "bench.log",
+			FileSize: int64(len(content)),
+			Content:  content,
+		}
+		_, _ = svc.ImportLogs(emptyTask.TaskID, []task.FileUploadItem{item}, "overwrite")
+	}
+}
+

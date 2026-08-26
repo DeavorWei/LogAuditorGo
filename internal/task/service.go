@@ -1,6 +1,7 @@
 package task
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -133,6 +134,10 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		tr.SetStage("RECEIVE", "正在加载并预处理待导入日志文件...")
 	}
 
+	if s.matchEngine != nil {
+		s.matchEngine.Reload()
+	}
+
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
 		if tr != nil {
@@ -212,10 +217,12 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 			}
 		}
 
-		rawLines := strings.Split(strings.ReplaceAll(item.Content, "\r\n", "\n"), "\n")
 		var validLines []string
-		for _, l := range rawLines {
-			l = strings.TrimSpace(l)
+		scanner := bufio.NewScanner(strings.NewReader(item.Content))
+		scanBuf := make([]byte, 64*1024)
+		scanner.Buffer(scanBuf, 1024*1024)
+		for scanner.Scan() {
+			l := strings.TrimSpace(scanner.Text())
 			if l != "" {
 				validLines = append(validLines, l)
 			}
@@ -260,8 +267,8 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 			workerNum = 32
 		}
 
-		jobs := make(chan logParseJob, 1024)
-		results := make(chan logParseResult, 1024)
+		jobs := make(chan logParseJob, 2048)
+		results := make(chan logParseResult, 2048)
 
 		// 结果收集协程
 		collectDone := make(chan struct{})
@@ -273,7 +280,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 					atomic.AddInt64(&matchedCountSoFar, 1)
 				}
 				cur := atomic.AddInt64(&processedCount, 1)
-				if tr != nil && (cur%200 == 0 || cur == totalValidLines) {
+				if tr != nil && (cur%500 == 0 || cur == totalValidLines) {
 					curMatched := atomic.LoadInt64(&matchedCountSoFar)
 					tr.UpdateProgress(cur, totalValidLines,
 						fmt.Sprintf("正在并发解析与匹配: %d / %d 行 (命中知识库 %d 条)", cur, totalValidLines, curMatched))
@@ -307,7 +314,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 					}
 					norm.SourceFile = job.cleanName
 
-					// 知识库多级匹配
+					// 知识库多级匹配（纯内存极速检索 + 负缓存）
 					k, tier, conf := s.matchEngine.Match(norm, taskInfo.DeviceType, "")
 					matched := false
 					if k != nil && k.ID > 0 {
@@ -328,7 +335,13 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 						norm.Severity = 8
 					}
 
-					paramJSON, _ := json.Marshal(norm.Parameters)
+					paramJSONStr := "{}"
+					if len(norm.Parameters) > 0 {
+						if b, err := json.Marshal(norm.Parameters); err == nil {
+							paramJSONStr = string(b)
+						}
+					}
+
 					rec := model.LogRecord{
 						Timestamp:       norm.Timestamp,
 						Hostname:        norm.Hostname,
@@ -339,7 +352,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 						SourceFile:      job.cleanName,
 						RawLog:          norm.RawLog,
 						MessageBody:     norm.MessageBody,
-						ParametersJSON:  string(paramJSON),
+						ParametersJSON:  paramJSONStr,
 						KnowledgeID:     norm.KnowledgeID,
 						MatchTier:       norm.MatchTier,
 						MatchConfidence: norm.MatchConfidence,
@@ -389,10 +402,13 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		tr.AddLog("info", "并发日志分行与匹配完成，开始批量持久化落盘 (%d 条)...", len(allNewLogRecords))
 	}
 
-	// 批量插入新增日志记录
+	// 事务级批量插入新增日志记录
 	if len(allNewLogRecords) > 0 {
 		logger.Log.Debugf("[Task Service] Inserting %d new log records for task %s...", len(allNewLogRecords), taskID)
-		if err := taskDB.CreateInBatches(&allNewLogRecords, 500).Error; err != nil {
+		err := taskDB.Transaction(func(tx *gorm.DB) error {
+			return tx.CreateInBatches(&allNewLogRecords, 1000).Error
+		})
+		if err != nil {
 			logger.Log.Errorf("batch insert log records failed: %v", err)
 		}
 	}

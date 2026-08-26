@@ -13,23 +13,104 @@ import (
 	"logauditorgo/pkg/logger"
 )
 
+type matchCacheItem struct {
+	k    *model.Knowledge
+	tier string
+	conf float64
+}
+
 type MatchEngine struct {
 	db           *gorm.DB
 	indexer      *search.Indexer
 	knowledgeSvc *knowledge.Service
-	cache        sync.Map // 内存精确匹配缓存: "MODULE:BRIEF" -> *model.Knowledge
-	regexCache   sync.Map // 模板正则缓存: template -> *regexp.Regexp
+
+	// 全量内存索引结构
+	indexMu   sync.RWMutex
+	exactMap  map[string][]*model.Knowledge // Key: UPPER(MODULE) + ":" + UPPER(BRIEF)
+	moduleMap map[string][]*model.Knowledge // Key: UPPER(MODULE)
+	idMap     map[uint]*model.Knowledge     // Key: ID
+	loaded    bool
+
+	// 运行时结果缓存与负缓存
+	cache         sync.Map // cacheKey -> *matchCacheItem
+	negativeCache sync.Map // cacheKey -> struct{}
+	regexCache    sync.Map // template -> *regexp.Regexp
 }
 
 func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
-	return &MatchEngine{
+	engine := &MatchEngine{
 		db:           db,
 		indexer:      indexer,
 		knowledgeSvc: knowledge.NewService(db),
+		exactMap:     make(map[string][]*model.Knowledge),
+		moduleMap:    make(map[string][]*model.Knowledge),
+		idMap:        make(map[uint]*model.Knowledge),
+	}
+	if db != nil {
+		engine.loadIndexLocked()
+	}
+	return engine
+}
+
+// Reload 重新从数据库加载知识库到内存索引并清空运行时缓存
+func (m *MatchEngine) Reload() {
+	if m == nil || m.db == nil {
+		return
+	}
+	m.indexMu.Lock()
+	defer m.indexMu.Unlock()
+	m.loadIndexLocked()
+	m.cache = sync.Map{}
+	m.negativeCache = sync.Map{}
+}
+
+func (m *MatchEngine) loadIndexLocked() {
+	if m.db == nil {
+		return
+	}
+	var list []model.Knowledge
+	if err := m.db.Preload("Versions").Find(&list).Error; err == nil {
+		newExact := make(map[string][]*model.Knowledge, len(list))
+		newModule := make(map[string][]*model.Knowledge)
+		newID := make(map[uint]*model.Knowledge, len(list))
+
+		for i := range list {
+			k := &list[i]
+			modKey := strings.ToUpper(strings.TrimSpace(k.Module))
+			briefKey := strings.ToUpper(strings.TrimSpace(k.Brief))
+			exactKey := modKey + ":" + briefKey
+
+			newExact[exactKey] = append(newExact[exactKey], k)
+			newModule[modKey] = append(newModule[modKey], k)
+			newID[k.ID] = k
+		}
+
+		m.exactMap = newExact
+		m.moduleMap = newModule
+		m.idMap = newID
+		if len(list) > 0 {
+			m.loaded = true
+		}
+		logger.Log.Debugf("[Matcher] In-memory knowledge index loaded: %d items", len(list))
 	}
 }
 
-// Match 执行四级流水线知识匹配
+func (m *MatchEngine) ensureIndex() {
+	m.indexMu.RLock()
+	if m.loaded && len(m.idMap) > 0 {
+		m.indexMu.RUnlock()
+		return
+	}
+	m.indexMu.RUnlock()
+
+	m.indexMu.Lock()
+	defer m.indexMu.Unlock()
+	if !m.loaded || len(m.idMap) == 0 {
+		m.loadIndexLocked()
+	}
+}
+
+// Match 执行四级流水线知识匹配（纯内存极速检索）
 func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version string) (matchedK *model.Knowledge, tier string, conf float64) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -38,34 +119,44 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		}
 	}()
 
-	if m == nil || m.db == nil || norm == nil {
+	if m == nil || norm == nil {
 		return nil, TierUnmatch, 0.0
 	}
 
 	module := strings.ToUpper(strings.TrimSpace(norm.Module))
 	brief := strings.TrimSpace(norm.Brief)
+	upperBrief := strings.ToUpper(brief)
 
-	// ---------------- Tier 1: EXACT 精确匹配 ----------------
+	// 构造缓存 Key
 	cacheKey := module + ":" + brief + ":" + strings.TrimSpace(product) + ":" + strings.TrimSpace(version)
+
+	// 1. 优先检查精确命中缓存
 	if cachedVal, exists := m.cache.Load(cacheKey); exists {
-		if cachedK, ok := cachedVal.(*model.Knowledge); ok && cachedK != nil {
-			logger.Log.Debugf("[Matcher] Tier 1 (EXACT-Cache Hit): %s -> Knowledge ID %d", cacheKey, cachedK.ID)
-			return cachedK, TierExact, 1.0
+		if item, ok := cachedVal.(*matchCacheItem); ok && item != nil {
+			return item.k, item.tier, item.conf
 		}
 	}
 
-	var exactCandidates []model.Knowledge
-	if err := m.db.Preload("Versions").Where("UPPER(module) = ? AND (brief = ? OR UPPER(brief) = UPPER(?))", module, brief, brief).Find(&exactCandidates).Error; err == nil && len(exactCandidates) > 0 {
-		best := m.knowledgeSvc.FindBestKnowledgeMatch(exactCandidates, product, version)
+	// 2. 检查负缓存（Negative Cache Hit）：若此前已确认未匹配，立即返回
+	if _, exists := m.negativeCache.Load(cacheKey); exists {
+		return nil, TierUnmatch, 0.0
+	}
+
+	m.ensureIndex()
+
+	m.indexMu.RLock()
+	defer m.indexMu.RUnlock()
+
+	// ---------------- Tier 1: EXACT 内存精确匹配 ----------------
+	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
+		best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(exactCandidates, product, version)
 		if best != nil {
-			m.cache.Store(cacheKey, best)
-			logger.Log.Debugf("[Matcher] Tier 1 (EXACT-DB Hit): %s -> Knowledge ID %d (%s)", cacheKey, best.ID, best.Brief)
+			m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierExact, conf: 1.0})
 			return best, TierExact, 1.0
 		}
 	}
 
 	// ---------------- Tier 2: MNEMONIC 助记符别名/前后缀匹配 ----------------
-	// 常见后缀: _active, _clear, _fail, _error, _down, _up
 	trimmedBrief := brief
 	suffixes := []string{"_active", "_clear", "_fail", "_error", "_down", "_up", "_Active", "_Clear", "_Fail"}
 	for _, suf := range suffixes {
@@ -75,35 +166,48 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		}
 	}
 
-	if trimmedBrief != "" {
-		var mnemCandidates []model.Knowledge
-		// 严密匹配：精准别名、去除后缀后一致、或严格前缀匹配
-		if err := m.db.Preload("Versions").Where("UPPER(module) = ? AND (UPPER(brief) = UPPER(?) OR UPPER(brief) = UPPER(?) OR brief LIKE ?)",
-			module, trimmedBrief, brief, trimmedBrief+"%").Find(&mnemCandidates).Error; err == nil && len(mnemCandidates) > 0 {
-			best := m.knowledgeSvc.FindBestKnowledgeMatch(mnemCandidates, product, version)
+	trimmedUpper := strings.ToUpper(trimmedBrief)
+	if trimmedUpper != "" {
+		// 优先查去掉后缀后的 exactMap
+		if mnemCandidates, ok := m.exactMap[module+":"+trimmedUpper]; ok && len(mnemCandidates) > 0 {
+			best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(mnemCandidates, product, version)
 			if best != nil {
-				logger.Log.Debugf("[Matcher] Tier 2 (MNEMONIC Hit): %s (trimmed: %s) -> Knowledge ID %d (%s)",
-					brief, trimmedBrief, best.ID, best.Brief)
+				m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: 0.90})
 				return best, TierMnemonic, 0.90
+			}
+		}
+
+		// 其次扫描该模块下是否有以 trimmedUpper 为前缀的候选
+		if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
+			var prefixCandidates []*model.Knowledge
+			for _, cand := range moduleCandidates {
+				if strings.HasPrefix(strings.ToUpper(cand.Brief), trimmedUpper) {
+					prefixCandidates = append(prefixCandidates, cand)
+				}
+			}
+			if len(prefixCandidates) > 0 {
+				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(prefixCandidates, product, version)
+				if best != nil {
+					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: 0.90})
+					return best, TierMnemonic, 0.90
+				}
 			}
 		}
 	}
 
 	// ---------------- Tier 3: TEMPLATE 消息模板反向匹配 ----------------
 	if norm.MessageBody != "" {
-		var candidates []model.Knowledge
-		if err := m.db.Preload("Versions").Where("UPPER(module) = ? AND message != ''", module).Find(&candidates).Error; err == nil && len(candidates) > 0 {
-			var matchedCandidates []model.Knowledge
-			for _, cand := range candidates {
-				if m.matchTemplate(cand.Message, norm.MessageBody) {
+		if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
+			var matchedCandidates []*model.Knowledge
+			for _, cand := range moduleCandidates {
+				if cand.Message != "" && m.matchTemplate(cand.Message, norm.MessageBody) {
 					matchedCandidates = append(matchedCandidates, cand)
 				}
 			}
 			if len(matchedCandidates) > 0 {
-				best := m.knowledgeSvc.FindBestKnowledgeMatch(matchedCandidates, product, version)
+				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(matchedCandidates, product, version)
 				if best != nil {
-					logger.Log.Debugf("[Matcher] Tier 3 (TEMPLATE Hit): Message matches template of Knowledge ID %d (%s)",
-						best.ID, best.Brief)
+					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierTemplate, conf: 0.80})
 					return best, TierTemplate, 0.80
 				}
 			}
@@ -123,33 +227,31 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			PageSize: 10,
 		})
 		if err == nil && res.Total > 0 && len(res.Hits) > 0 {
-			var hitIDs []uint
+			var bleveCandidates []*model.Knowledge
 			hitScoreMap := make(map[uint]float64)
 			for _, h := range res.Hits {
 				if h.Score >= 0.25 {
-					hitIDs = append(hitIDs, h.KnowledgeID)
-					hitScoreMap[h.KnowledgeID] = h.Score
+					if cand, exists := m.idMap[h.KnowledgeID]; exists {
+						bleveCandidates = append(bleveCandidates, cand)
+						hitScoreMap[h.KnowledgeID] = h.Score
+					}
 				}
 			}
 
-			if len(hitIDs) > 0 {
-				var bleveCandidates []model.Knowledge
-				if err := m.db.Preload("Versions").Where("id IN ?", hitIDs).Find(&bleveCandidates).Error; err == nil && len(bleveCandidates) > 0 {
-					best := m.knowledgeSvc.FindBestKnowledgeMatch(bleveCandidates, product, version)
-					if best != nil {
-						rawScore := hitScoreMap[best.ID]
-						confidence := CalculateConfidence(TierBleve, rawScore)
-						logger.Log.Debugf("[Matcher] Tier 4 (BLEVE Hit): score=%.3f, conf=%.3f -> Knowledge ID %d (%s)",
-							rawScore, confidence, best.ID, best.Brief)
-						return best, TierBleve, confidence
-					}
+			if len(bleveCandidates) > 0 {
+				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(bleveCandidates, product, version)
+				if best != nil {
+					rawScore := hitScoreMap[best.ID]
+					confidence := CalculateConfidence(TierBleve, rawScore)
+					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierBleve, conf: confidence})
+					return best, TierBleve, confidence
 				}
 			}
 		}
 	}
 
-	// ---------------- Tier 5: UNMATCHED 未匹配 ----------------
-	logger.Log.Debugf("[Matcher] Tier 5 (UNMATCHED): %s/%s (Msg: %s)", module, brief, norm.MessageBody)
+	// ---------------- Tier 5: UNMATCHED 负缓存记录 ----------------
+	m.negativeCache.Store(cacheKey, struct{}{})
 	return nil, TierUnmatch, 0.0
 }
 

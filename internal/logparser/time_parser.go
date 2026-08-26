@@ -88,6 +88,79 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 		}
 	}
 
+	rawLen := len(raw)
+
+	// Fast-path 1: ISO 格式以数字开头的常见格式 (e.g. 2026-04-15 ...)
+	if rawLen >= 19 && raw[0] >= '0' && raw[0] <= '9' && raw[4] == '-' && raw[7] == '-' {
+		hasT := (raw[10] == 'T')
+		hasSpace := (raw[10] == ' ')
+
+		if hasSpace || hasT {
+			if rawLen == 19 {
+				// "2006-01-02 15:04:05" 或 "2006-01-02T15:04:05"
+				layout := "2006-01-02 15:04:05"
+				if hasT {
+					layout = "2006-01-02T15:04:05"
+				}
+				if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+					return t, nil
+				}
+			}
+
+			// 带时区或毫秒
+			if hasT {
+				if t, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+					return t, nil
+				}
+				if t, err := time.Parse(time.RFC3339, raw); err == nil {
+					return t, nil
+				}
+				if t, err := time.ParseInLocation("2006-01-02T15:04:05.999999", raw, time.Local); err == nil {
+					return t, nil
+				}
+			} else {
+				if t, err := time.ParseInLocation("2006-01-02 15:04:05.999999-07:00", raw, time.Local); err == nil {
+					return t, nil
+				}
+				if t, err := time.ParseInLocation("2006-01-02 15:04:05-07:00", raw, time.Local); err == nil {
+					return t, nil
+				}
+				if t, err := time.ParseInLocation("2006-01-02 15:04:05.999999", raw, time.Local); err == nil {
+					return t, nil
+				}
+			}
+		}
+	}
+
+	// Fast-path 2: Syslog BSD 格式 (e.g. Apr 15 2026 14:23:10 或 Apr 15 14:23:10)
+	if (raw[0] >= 'A' && raw[0] <= 'Z') || (raw[0] >= 'a' && raw[0] <= 'z') {
+		// 尝试带年份
+		if t, err := time.ParseInLocation("Jan 02 2006 15:04:05.999999", raw, time.Local); err == nil {
+			return t, nil
+		}
+		if t, err := time.ParseInLocation("Jan 02 2006 15:04:05", raw, time.Local); err == nil {
+			return t, nil
+		}
+		if t, err := time.ParseInLocation("Jan  2 2006 15:04:05", raw, time.Local); err == nil {
+			return t, nil
+		}
+
+		// 尝试不带年份（默认当年）
+		if t, err := time.ParseInLocation("Jan 02 15:04:05.999999", raw, time.Local); err == nil {
+			currentYear := time.Now().Year()
+			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+		}
+		if t, err := time.ParseInLocation("Jan 02 15:04:05", raw, time.Local); err == nil {
+			currentYear := time.Now().Year()
+			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+		}
+		if t, err := time.ParseInLocation("Jan  2 15:04:05", raw, time.Local); err == nil {
+			currentYear := time.Now().Year()
+			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+		}
+	}
+
+	// Fallback: 兜底正则匹配
 	for _, p := range timePatterns {
 		if p.regex.MatchString(raw) {
 			t, err := time.ParseInLocation(p.layout, raw, time.Local)
