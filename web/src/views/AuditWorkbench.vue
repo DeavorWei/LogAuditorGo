@@ -66,6 +66,11 @@
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
           <span>多设备协同时间线</span>
         </el-radio-button>
+        <el-radio-button label="rca">
+          <el-icon style="margin-right: 4px; vertical-align: middle;"><Aim /></el-icon>
+          <span>RCA 故障联动</span>
+          <el-badge v-if="currentTask && currentTask.rca_count" :value="currentTask.rca_count" type="danger" style="margin-left: 6px;" />
+        </el-radio-button>
         <el-radio-button label="multi-report">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
           <span>多设备对比诊断报告</span>
@@ -87,7 +92,12 @@
       <MultiDeviceTimeline :task-id="currentTaskId" />
     </div>
 
-    <!-- 视图 3：多设备对比诊断报告视图 -->
+    <!-- 视图 3：独立 RCA 故障联动分析中心 -->
+    <div v-else-if="currentTaskId && currentViewMode === 'rca'" class="workbench-sub-view">
+      <RcaCenter :task-id="currentTaskId" @jump-to-log="handleJumpToLog" />
+    </div>
+
+    <!-- 视图 4：多设备对比诊断报告视图 -->
     <div v-else-if="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
       <MultiDeviceReport :task-id="currentTaskId" />
     </div>
@@ -207,6 +217,19 @@
 
       <!-- 中栏：结构化报文与动态参数解析 (36%) -->
       <div class="col-middle">
+        <!-- RCA 联动告警全局提示条 -->
+        <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
+          <div class="banner-left">
+            <el-icon color="#ea580c" size="18"><Aim /></el-icon>
+            <span class="banner-text">
+              <strong>系统已识别 {{ rcaEvents.length }} 个协议联动事件</strong>
+            </span>
+          </div>
+          <el-button type="warning" link size="small" icon="ArrowRight" @click="currentViewMode = 'rca'">
+            查看 RCA 全景分析
+          </el-button>
+        </div>
+
         <div v-if="selectedLog" class="detail-container">
           <div class="panel-title">
             <span>📄 日志报文结构化解析 (#{{ selectedLog.id }})</span>
@@ -570,13 +593,14 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import DeviceManager from '@/components/DeviceManager.vue'
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
+import RcaCenter from '@/components/RcaCenter.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -597,6 +621,22 @@ const handleDeviceUpdated = (devices) => {
 const openProgressModalWithId = (jobId) => {
   currentJobId.value = jobId
   showProgressModal.value = true
+}
+
+const handleJumpToLog = async (logId) => {
+  currentViewMode.value = 'workbench'
+  try {
+    const res = await api.queryTaskLogs(currentTaskId.value, {
+      page: 1,
+      page_size: 50,
+      keyword: `#${logId}`
+    })
+    if (res.code === 0 && res.data?.records?.length > 0) {
+      selectLog(res.data.records[0])
+    }
+  } catch (e) {
+    console.error('Jump to log failed:', e)
+  }
 }
 
 const logRecords = ref([])
@@ -1808,5 +1848,26 @@ onMounted(() => {
 
 .workbench-sub-view {
   min-height: calc(100vh - 180px);
+}
+
+.rca-banner-alert {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
+  border-left: 4px solid #f97316;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+.rca-banner-alert .banner-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rca-banner-alert .banner-text {
+  font-size: 12px;
+  color: #9a3412;
 }
 </style>

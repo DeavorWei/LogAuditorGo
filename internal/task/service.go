@@ -772,6 +772,176 @@ func (s *Service) GetTaskRCAEvents(taskID string) ([]model.RCAEvent, error) {
 	return events, err
 }
 
+// GetEnrichedRCAEvents 获取包含完整根因与级联时序日志元数据的富化 RCA 事件列表
+func (s *Service) GetEnrichedRCAEvents(taskID string) ([]model.EnrichedRCAEvent, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+
+	var events []model.RCAEvent
+	if err := taskDB.Order("id asc").Find(&events).Error; err != nil {
+		return nil, err
+	}
+
+	if len(events) == 0 {
+		return []model.EnrichedRCAEvent{}, nil
+	}
+
+	// 收集所有关联的 LogID 并批量加载 LogRecord
+	logIDSet := make(map[uint]bool)
+	for _, ev := range events {
+		if ev.RootLogID > 0 {
+			logIDSet[ev.RootLogID] = true
+		}
+		var impactList []model.ImpactEvent
+		if ev.ImpactEventsJSON != "" {
+			_ = json.Unmarshal([]byte(ev.ImpactEventsJSON), &impactList)
+			for _, ie := range impactList {
+				if ie.LogID > 0 {
+					logIDSet[ie.LogID] = true
+				}
+				if ie.FromLogID > 0 {
+					logIDSet[ie.FromLogID] = true
+				}
+			}
+		}
+	}
+
+	var allLogIDs []uint
+	for id := range logIDSet {
+		allLogIDs = append(allLogIDs, id)
+	}
+
+	logRecordMap := make(map[uint]model.LogRecord)
+	if len(allLogIDs) > 0 {
+		var records []model.LogRecord
+		taskDB.Where("id IN ?", allLogIDs).Find(&records)
+		for _, r := range records {
+			logRecordMap[r.ID] = r
+		}
+	}
+
+	// 批量加载设备映射
+	var devList []model.Device
+	taskDB.Find(&devList)
+	devMap := make(map[uint]model.Device)
+	for _, d := range devList {
+		devMap[d.ID] = d
+	}
+
+	enrichedList := make([]model.EnrichedRCAEvent, len(events))
+	for i, ev := range events {
+		enriched := model.EnrichedRCAEvent{
+			RCAEvent: ev,
+		}
+
+		modMap := make(map[string]bool)
+		devNameMap := make(map[string]bool)
+
+		if ev.RootModule != "" {
+			modMap[ev.RootModule] = true
+		}
+
+		// 装配根因日志信息
+		if rootRec, ok := logRecordMap[ev.RootLogID]; ok {
+			recCopy := rootRec
+			enriched.RootLog = &recCopy
+			enriched.RootHostname = rootRec.Hostname
+
+			if rootRec.ParametersJSON != "" && rootRec.ParametersJSON != "{}" {
+				var p map[string]string
+				if err := json.Unmarshal([]byte(rootRec.ParametersJSON), &p); err == nil {
+					enriched.RootParameters = p
+				}
+			}
+
+			if d, exists := devMap[rootRec.DeviceID]; exists {
+				enriched.RootDeviceName = d.DeviceName
+				enriched.RootDeviceColor = d.Color
+			} else if rootRec.Hostname != "" {
+				enriched.RootDeviceName = rootRec.Hostname
+				enriched.RootDeviceColor = "#3B82F6"
+			} else {
+				enriched.RootDeviceName = "未指定设备"
+				enriched.RootDeviceColor = "#64748B"
+			}
+			devNameMap[enriched.RootDeviceName] = true
+		}
+
+		// 装配衍生事件明细
+		var impactList []model.ImpactEvent
+		if ev.ImpactEventsJSON != "" {
+			_ = json.Unmarshal([]byte(ev.ImpactEventsJSON), &impactList)
+		}
+
+		details := make([]model.ImpactLogDetail, len(impactList))
+		for j, ie := range impactList {
+			detail := model.ImpactLogDetail{
+				ImpactEvent: ie,
+			}
+			if ie.Module != "" {
+				modMap[ie.Module] = true
+			}
+
+			if rec, ok := logRecordMap[ie.LogID]; ok {
+				detail.Hostname = rec.Hostname
+				detail.DeviceID = rec.DeviceID
+				detail.Severity = rec.Severity
+				detail.RawLog = rec.RawLog
+				detail.SourceFile = rec.SourceFile
+				detail.KnowledgeID = rec.KnowledgeID
+				detail.MatchTier = rec.MatchTier
+				detail.MatchConfidence = rec.MatchConfidence
+
+				if rec.ParametersJSON != "" && rec.ParametersJSON != "{}" {
+					var p map[string]string
+					if err := json.Unmarshal([]byte(rec.ParametersJSON), &p); err == nil {
+						detail.Parameters = p
+					}
+				}
+
+				if d, exists := devMap[rec.DeviceID]; exists {
+					detail.DeviceName = d.DeviceName
+					detail.DeviceColor = d.Color
+				} else if rec.Hostname != "" {
+					detail.DeviceName = rec.Hostname
+					detail.DeviceColor = "#3B82F6"
+				} else {
+					detail.DeviceName = "未指定设备"
+					detail.DeviceColor = "#64748B"
+				}
+				devNameMap[detail.DeviceName] = true
+			}
+			details[j] = detail
+		}
+
+		enriched.ImpactDetails = details
+		enriched.CorrelatedCount = len(details)
+
+		var mods []string
+		for m := range modMap {
+			mods = append(mods, m)
+		}
+		sort.Strings(mods)
+		enriched.ModulesInvolved = mods
+
+		var devs []string
+		for d := range devNameMap {
+			devs = append(devs, d)
+		}
+		sort.Strings(devs)
+		enriched.DevicesInvolved = devs
+
+		enrichedList[i] = enriched
+	}
+
+	return enrichedList, nil
+}
+
 // ExportTaskHTML 导出任务 HTML 报告
 func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 	if !isValidTaskID(taskID) {

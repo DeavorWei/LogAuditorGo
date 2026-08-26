@@ -25,3 +25,33 @@ type RCAEvent struct {
 	Confidence        float64       `json:"confidence"`
 	RecommendedAction string        `gorm:"type:text" json:"recommended_action"`
 }
+
+// ImpactLogDetail 富化后的衍生故障日志详细信息
+type ImpactLogDetail struct {
+	ImpactEvent
+	Hostname        string            `json:"hostname"`
+	DeviceID        uint              `json:"device_id"`
+	DeviceName      string            `json:"device_name"`
+	DeviceColor     string            `json:"device_color"`
+	Severity        int               `json:"severity"`
+	RawLog          string            `json:"raw_log"`
+	Parameters      map[string]string `json:"parameters,omitempty"`
+	SourceFile      string            `json:"source_file,omitempty"`
+	KnowledgeID     uint              `json:"knowledge_id,omitempty"`
+	MatchTier       string            `json:"match_tier,omitempty"`
+	MatchConfidence float64           `json:"match_confidence,omitempty"`
+}
+
+// EnrichedRCAEvent 包含根因日志与全链条衍生日志元数据的富化 RCA 事件实体
+type EnrichedRCAEvent struct {
+	RCAEvent
+	RootLog          *LogRecord        `json:"root_log,omitempty"`
+	RootDeviceName   string            `json:"root_device_name"`
+	RootDeviceColor  string            `json:"root_device_color"`
+	RootHostname     string            `json:"root_hostname"`
+	RootParameters   map[string]string `json:"root_parameters,omitempty"`
+	ImpactDetails    []ImpactLogDetail `json:"impact_details"`
+	CorrelatedCount  int               `json:"correlated_count"`
+	ModulesInvolved  []string          `json:"modules_involved"`
+	DevicesInvolved  []string          `json:"devices_involved"`
+}

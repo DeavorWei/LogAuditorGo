@@ -474,14 +474,14 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	})
 }
 
-// GetRCA 获取任务 RCA 事件
+// GetRCA 获取任务 RCA 事件 (返回包含根因与级联时序日志元数据的完整实体)
 func (h *TaskHandler) GetRCA(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
-	events, err := h.taskSvc.GetTaskRCAEvents(taskID)
+	events, err := h.taskSvc.GetEnrichedRCAEvents(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
