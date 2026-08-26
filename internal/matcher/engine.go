@@ -7,9 +7,9 @@ import (
 
 	"gorm.io/gorm"
 
-	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/search"
+	"logauditorgo/pkg/cache"
 	"logauditorgo/pkg/logger"
 )
 
@@ -19,10 +19,15 @@ type matchCacheItem struct {
 	conf float64
 }
 
+const (
+	defaultMatchCacheCap    = 100000
+	defaultNegativeCacheCap = 50000
+	defaultRegexCacheCap    = 10000
+)
+
 type MatchEngine struct {
-	db           *gorm.DB
-	indexer      *search.Indexer
-	knowledgeSvc *knowledge.Service
+	db      *gorm.DB
+	indexer *search.Indexer
 
 	// 全量内存索引结构
 	indexMu   sync.RWMutex
@@ -31,20 +36,22 @@ type MatchEngine struct {
 	idMap     map[uint]*model.Knowledge     // Key: ID
 	loaded    bool
 
-	// 运行时结果缓存与负缓存
-	cache         sync.Map // cacheKey -> *matchCacheItem
-	negativeCache sync.Map // cacheKey -> struct{}
-	regexCache    sync.Map // template -> *regexp.Regexp
+	// 运行时结果缓存与负缓存 (LRU Bounded)
+	cache         *cache.LRUCache[string, *matchCacheItem]
+	negativeCache *cache.LRUCache[string, struct{}]
+	regexCache    *cache.LRUCache[string, *regexp.Regexp]
 }
 
 func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
 	engine := &MatchEngine{
-		db:           db,
-		indexer:      indexer,
-		knowledgeSvc: knowledge.NewService(db),
-		exactMap:     make(map[string][]*model.Knowledge),
-		moduleMap:    make(map[string][]*model.Knowledge),
-		idMap:        make(map[uint]*model.Knowledge),
+		db:            db,
+		indexer:       indexer,
+		exactMap:      make(map[string][]*model.Knowledge),
+		moduleMap:     make(map[string][]*model.Knowledge),
+		idMap:         make(map[uint]*model.Knowledge),
+		cache:         cache.NewLRUCache[string, *matchCacheItem](defaultMatchCacheCap),
+		negativeCache: cache.NewLRUCache[string, struct{}](defaultNegativeCacheCap),
+		regexCache:    cache.NewLRUCache[string, *regexp.Regexp](defaultRegexCacheCap),
 	}
 	if db != nil {
 		engine.loadIndexLocked()
@@ -60,8 +67,12 @@ func (m *MatchEngine) Reload() {
 	m.indexMu.Lock()
 	defer m.indexMu.Unlock()
 	m.loadIndexLocked()
-	m.cache = sync.Map{}
-	m.negativeCache = sync.Map{}
+	if m.cache != nil {
+		m.cache.Purge()
+	}
+	if m.negativeCache != nil {
+		m.negativeCache.Purge()
+	}
 }
 
 func (m *MatchEngine) loadIndexLocked() {
@@ -131,15 +142,17 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	cacheKey := module + ":" + brief + ":" + strings.TrimSpace(product) + ":" + strings.TrimSpace(version)
 
 	// 1. 优先检查精确命中缓存
-	if cachedVal, exists := m.cache.Load(cacheKey); exists {
-		if item, ok := cachedVal.(*matchCacheItem); ok && item != nil {
+	if m.cache != nil {
+		if item, exists := m.cache.Get(cacheKey); exists && item != nil {
 			return item.k, item.tier, item.conf
 		}
 	}
 
 	// 2. 检查负缓存（Negative Cache Hit）：若此前已确认未匹配，立即返回
-	if _, exists := m.negativeCache.Load(cacheKey); exists {
-		return nil, TierUnmatch, 0.0
+	if m.negativeCache != nil {
+		if _, exists := m.negativeCache.Get(cacheKey); exists {
+			return nil, TierUnmatch, 0.0
+		}
 	}
 
 	m.ensureIndex()
@@ -149,10 +162,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 
 	// ---------------- Tier 1: EXACT 内存精确匹配 ----------------
 	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
-		best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(exactCandidates, product, version)
+		best := FindBestKnowledgeMatchPtr(exactCandidates, product, version)
 		if best != nil {
-			m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierExact, conf: 1.0})
-			return best, TierExact, 1.0
+			if m.cache != nil {
+				m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierExact, conf: ConfidenceExact})
+			}
+			return best, TierExact, ConfidenceExact
 		}
 	}
 
@@ -170,10 +185,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	if trimmedUpper != "" {
 		// 优先查去掉后缀后的 exactMap
 		if mnemCandidates, ok := m.exactMap[module+":"+trimmedUpper]; ok && len(mnemCandidates) > 0 {
-			best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(mnemCandidates, product, version)
+			best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version)
 			if best != nil {
-				m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: 0.90})
-				return best, TierMnemonic, 0.90
+				if m.cache != nil {
+					m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+				}
+				return best, TierMnemonic, ConfidenceMnemonic
 			}
 		}
 
@@ -186,10 +203,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				}
 			}
 			if len(prefixCandidates) > 0 {
-				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(prefixCandidates, product, version)
+				best := FindBestKnowledgeMatchPtr(prefixCandidates, product, version)
 				if best != nil {
-					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: 0.90})
-					return best, TierMnemonic, 0.90
+					if m.cache != nil {
+						m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+					}
+					return best, TierMnemonic, ConfidenceMnemonic
 				}
 			}
 		}
@@ -205,10 +224,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				}
 			}
 			if len(matchedCandidates) > 0 {
-				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(matchedCandidates, product, version)
+				best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version)
 				if best != nil {
-					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierTemplate, conf: 0.80})
-					return best, TierTemplate, 0.80
+					if m.cache != nil {
+						m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierTemplate, conf: ConfidenceTemplate})
+					}
+					return best, TierTemplate, ConfidenceTemplate
 				}
 			}
 		}
@@ -230,7 +251,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			var bleveCandidates []*model.Knowledge
 			hitScoreMap := make(map[uint]float64)
 			for _, h := range res.Hits {
-				if h.Score >= 0.25 {
+				if h.Score >= BleveMinScoreThreshold {
 					if cand, exists := m.idMap[h.KnowledgeID]; exists {
 						bleveCandidates = append(bleveCandidates, cand)
 						hitScoreMap[h.KnowledgeID] = h.Score
@@ -239,11 +260,13 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			}
 
 			if len(bleveCandidates) > 0 {
-				best := m.knowledgeSvc.FindBestKnowledgeMatchPtr(bleveCandidates, product, version)
+				best := FindBestKnowledgeMatchPtr(bleveCandidates, product, version)
 				if best != nil {
 					rawScore := hitScoreMap[best.ID]
 					confidence := CalculateConfidence(TierBleve, rawScore)
-					m.cache.Store(cacheKey, &matchCacheItem{k: best, tier: TierBleve, conf: confidence})
+					if m.cache != nil {
+						m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierBleve, conf: confidence})
+					}
 					return best, TierBleve, confidence
 				}
 			}
@@ -251,7 +274,9 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	}
 
 	// ---------------- Tier 5: UNMATCHED 负缓存记录 ----------------
-	m.negativeCache.Store(cacheKey, struct{}{})
+	if m.negativeCache != nil {
+		m.negativeCache.Put(cacheKey, struct{}{})
+	}
 	return nil, TierUnmatch, 0.0
 }
 
@@ -264,8 +289,8 @@ func (m *MatchEngine) matchTemplate(template string, actualMsg string) bool {
 	}
 
 	trimmedTpl := strings.TrimSpace(template)
-	if cached, ok := m.regexCache.Load(trimmedTpl); ok {
-		if re, ok := cached.(*regexp.Regexp); ok && re != nil {
+	if m.regexCache != nil {
+		if re, ok := m.regexCache.Get(trimmedTpl); ok && re != nil {
 			return re.MatchString(actualMsg)
 		}
 	}
@@ -279,6 +304,8 @@ func (m *MatchEngine) matchTemplate(template string, actualMsg string) bool {
 		return false
 	}
 
-	m.regexCache.Store(trimmedTpl, re)
+	if m.regexCache != nil {
+		m.regexCache.Put(trimmedTpl, re)
+	}
 	return re.MatchString(actualMsg)
 }

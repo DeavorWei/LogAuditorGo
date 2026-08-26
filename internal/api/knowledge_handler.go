@@ -71,21 +71,36 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 	}
 
 	var enrichedHits []EnrichedHit
-	for _, hit := range res.Hits {
-		k, err := h.knowledgeSvc.GetKnowledgeByID(hit.KnowledgeID)
-		if err == nil && k != nil {
-			eh := EnrichedHit{
-				SearchHit:   hit,
-				Module:      k.Module,
-				Brief:       k.Brief,
-				Severity:    k.Severity,
-				EntryType:   string(k.EntryType),
-				Message:     k.Message,
-				Description: k.Description,
-				Cause:       k.Cause,
-				Action:      k.Action,
+	if len(res.Hits) > 0 {
+		uniqueIDs := make([]uint, 0, len(res.Hits))
+		idSet := make(map[uint]struct{}, len(res.Hits))
+		for _, hit := range res.Hits {
+			if hit.KnowledgeID > 0 {
+				if _, exists := idSet[hit.KnowledgeID]; !exists {
+					idSet[hit.KnowledgeID] = struct{}{}
+					uniqueIDs = append(uniqueIDs, hit.KnowledgeID)
+				}
 			}
-			enrichedHits = append(enrichedHits, eh)
+		}
+
+		knowledgeMap, _ := h.knowledgeSvc.GetKnowledgeMapByIDs(uniqueIDs)
+		for _, hit := range res.Hits {
+			if knowledgeMap != nil {
+				if k, ok := knowledgeMap[hit.KnowledgeID]; ok && k != nil {
+					eh := EnrichedHit{
+						SearchHit:   hit,
+						Module:      k.Module,
+						Brief:       k.Brief,
+						Severity:    k.Severity,
+						EntryType:   string(k.EntryType),
+						Message:     k.Message,
+						Description: k.Description,
+						Cause:       k.Cause,
+						Action:      k.Action,
+					}
+					enrichedHits = append(enrichedHits, eh)
+				}
+			}
 		}
 	}
 

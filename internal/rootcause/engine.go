@@ -5,28 +5,113 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
+	"sync"
 	"time"
 
 	"logauditorgo/internal/model"
 	"logauditorgo/pkg/logger"
 )
 
-type Engine struct {
-	rules []ProtocolFaultRule
+type rootRuleCandidate struct {
+	rule  *ProtocolFaultRule
+	edges []*DAGEdge
 }
 
-func NewEngine(customRules []ProtocolFaultRule) *Engine {
+type Engine struct {
+	rules                  []ProtocolFaultRule
+	rootCandidatesByModule map[string][]rootRuleCandidate
+	fromEdgesByModule      map[string][]*DAGEdge
+	indexOnce              sync.Once
+}
+
+// NewEngine 创建并初始化根因分析引擎。支持无参调用 rootcause.NewEngine()，也支持传入自定义规则切片。
+func NewEngine(customRules ...[]ProtocolFaultRule) *Engine {
 	rules := make([]ProtocolFaultRule, len(DefaultRules))
 	copy(rules, DefaultRules)
-	if len(customRules) > 0 {
-		for _, cr := range customRules {
-			for e := range cr.DAGEdges {
-				cr.DAGEdges[e].compile()
+	for _, crList := range customRules {
+		if len(crList) > 0 {
+			for _, cr := range crList {
+				for e := range cr.DAGEdges {
+					cr.DAGEdges[e].compile()
+				}
+			}
+			rules = append(rules, crList...)
+		}
+	}
+	eng := &Engine{rules: rules}
+	eng.ensureIndexes()
+	return eng
+}
+
+func (e *Engine) ensureIndexes() {
+	e.indexOnce.Do(func() {
+		e.buildIndexes()
+	})
+}
+
+func (e *Engine) buildIndexes() {
+	e.rootCandidatesByModule = make(map[string][]rootRuleCandidate)
+	e.fromEdgesByModule = make(map[string][]*DAGEdge)
+
+	for rIdx := range e.rules {
+		rule := &e.rules[rIdx]
+		ruleModuleEdges := make(map[string][]*DAGEdge)
+		for eIdx := range rule.DAGEdges {
+			edge := &rule.DAGEdges[eIdx]
+			edge.compile()
+
+			for _, mod := range edge.fromMod.keywords {
+				modUpper := strings.ToUpper(strings.TrimSpace(mod))
+				if modUpper != "" {
+					e.fromEdgesByModule[modUpper] = append(e.fromEdgesByModule[modUpper], edge)
+					ruleModuleEdges[modUpper] = append(ruleModuleEdges[modUpper], edge)
+				}
 			}
 		}
-		rules = append(rules, customRules...)
+
+		for modUpper, edges := range ruleModuleEdges {
+			e.rootCandidatesByModule[modUpper] = append(e.rootCandidatesByModule[modUpper], rootRuleCandidate{
+				rule:  rule,
+				edges: edges,
+			})
+		}
 	}
-	return &Engine{rules: rules}
+}
+
+// matchRootRule returns the first rule whose DAG root edge matches the given module and brief
+func (e *Engine) matchRootRule(module, brief string) *ProtocolFaultRule {
+	modUpper := strings.ToUpper(strings.TrimSpace(module))
+	candidates, ok := e.rootCandidatesByModule[modUpper]
+	if !ok || len(candidates) == 0 {
+		return nil
+	}
+
+	for _, cand := range candidates {
+		for _, edge := range cand.edges {
+			if edge.fromBrf.Match(brief) {
+				return cand.rule
+			}
+		}
+	}
+	return nil
+}
+
+// getActiveOutgoingEdges returns all outgoing DAG edges across all rules matching curr module and brief
+func (e *Engine) getActiveOutgoingEdges(module, brief string) []*DAGEdge {
+	modUpper := strings.ToUpper(strings.TrimSpace(module))
+	candidates, ok := e.fromEdgesByModule[modUpper]
+	if !ok || len(candidates) == 0 {
+		return nil
+	}
+
+	var active []*DAGEdge
+	for _, edge := range candidates {
+		if edge.fromBrf.Match(brief) {
+			active = append(active, edge)
+		}
+	}
+	return active
 }
 
 // Analyze 执行根因推导与衍生事件聚合 (滑动窗口实现)
@@ -41,14 +126,19 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 		return nil
 	}
 
+	e.ensureIndexes()
+
 	validLogs := make([]*model.NormalizedLog, 0, len(logs))
 	for idx, log := range logs {
 		if log != nil {
-			// 如果 LogID 未分配（如内存分析/单测），自动生成一个稳定临时 ID
+			// (CQ-003) 如果 LogID 未分配，克隆副本并分配稳定临时 ID，避免修改调用方入参
 			if log.ID == 0 {
-				log.ID = uint(idx + 1)
+				logCopy := *log
+				logCopy.ID = uint(idx + 1)
+				validLogs = append(validLogs, &logCopy)
+			} else {
+				validLogs = append(validLogs, log)
 			}
-			validLogs = append(validLogs, log)
 		}
 	}
 	if len(validLogs) == 0 {
@@ -72,28 +162,13 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 	visited := make(map[uint]bool)
 
 	// 使用滑动窗口的方式向前搜索
-	for i, log := range sortedLogs {
+	for _, log := range sortedLogs {
 		if visited[log.ID] {
 			continue
 		}
 
-		// 检查当前日志是否可以作为某规则的根因
-		var matchedRule *ProtocolFaultRule
-		for rIdx := range e.rules {
-			rule := &e.rules[rIdx]
-			isRoot := false
-			for k := range rule.DAGEdges {
-				if rule.DAGEdges[k].MatchesNode(log.Module, log.Brief, true) {
-					isRoot = true
-					break
-				}
-			}
-			if isRoot {
-				matchedRule = rule
-				break
-			}
-		}
-
+		// (PERF-004) 通过倒排索引 O(1) 检查当前日志是否可以作为某规则的根因
+		matchedRule := e.matchRootRule(log.Module, log.Brief)
 		if matchedRule == nil {
 			continue
 		}
@@ -112,16 +187,32 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 
 		maxDepth := 0
 
+		// (PERF-004) 二分查找窗口右边界 windowEnd：所有 log.Timestamp <= endTime 的日志
+		windowEnd := sort.Search(len(sortedLogs), func(k int) bool {
+			return sortedLogs[k].Timestamp.After(endTime)
+		})
+
 		for len(queue) > 0 {
 			curr := queue[0]
 			queue = queue[1:]
 
-			// 在窗口内向后搜索 otherLog
-			for j := i + 1; j < len(sortedLogs); j++ {
+			// (PERF-004) 获取当前节点的所有活跃出边，若无出边则直接跳过
+			activeEdges := e.getActiveOutgoingEdges(curr.Module, curr.Brief)
+			if len(activeEdges) == 0 {
+				continue
+			}
+
+			// (PERF-004) 二分查找起始位置 windowStart：所有 timestamp >= curr.Timestamp 的日志
+			windowStart := sort.Search(windowEnd, func(k int) bool {
+				return !sortedLogs[k].Timestamp.Before(curr.Timestamp)
+			})
+
+			// 在窗口 [windowStart, windowEnd) 内向前搜索 otherLog
+			for j := windowStart; j < windowEnd; j++ {
 				otherLog := sortedLogs[j]
-				// 如果超出当前根因的前向时间窗口，停止搜索
-				if otherLog.Timestamp.After(endTime) {
-					break
+
+				if otherLog.ID == curr.ID || visitedInDAG[otherLog.ID] {
+					continue
 				}
 
 				// 设备/主机名隔离：只聚合相同主机或主机为空的日志
@@ -129,21 +220,11 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 					continue
 				}
 
-				if visitedInDAG[otherLog.ID] || otherLog.Timestamp.Before(curr.Timestamp) {
-					continue
-				}
-
-				// 检查 curr -> otherLog 是否满足当前规则或任意规则的 DAG 边（支持跨规则级联）
+				// 检查 curr -> otherLog 是否满足 activeEdges 中任意一条 DAG 边
 				edgeMatched := false
-				for rIdx := range e.rules {
-					for k := range e.rules[rIdx].DAGEdges {
-						edge := &e.rules[rIdx].DAGEdges[k]
-						if edge.MatchesNode(curr.Module, curr.Brief, true) && edge.MatchesNode(otherLog.Module, otherLog.Brief, false) {
-							edgeMatched = true
-							break
-						}
-					}
-					if edgeMatched {
+				for _, edge := range activeEdges {
+					if edge.MatchesNode(otherLog.Module, otherLog.Brief, false) {
+						edgeMatched = true
 						break
 					}
 				}

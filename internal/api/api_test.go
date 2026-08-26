@@ -13,10 +13,13 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
+
 	"logauditorgo/internal/api"
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/matcher"
+	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
@@ -553,3 +556,432 @@ func TestStaticFrontendAndSPARouting(t *testing.T) {
 		t.Errorf("expected json error message, got: %s", w3.Body.String())
 	}
 }
+
+func TestCORSMiddleware(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "cors_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. 请求带有 Origin 头，应当返回对应的 Origin、Credentials: true 以及 Vary: Origin
+	req1, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	req1.Header.Set("Origin", "http://example.com:3000")
+	w1 := httptest.NewRecorder()
+	router.ServeHTTP(w1, req1)
+
+	if w1.Header().Get("Access-Control-Allow-Origin") != "http://example.com:3000" {
+		t.Errorf("expected Access-Control-Allow-Origin to match request origin, got %s", w1.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if w1.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Errorf("expected Access-Control-Allow-Credentials: true when Origin is present, got %s", w1.Header().Get("Access-Control-Allow-Credentials"))
+	}
+	if !strings.Contains(w1.Header().Get("Vary"), "Origin") {
+		t.Errorf("expected Vary header to contain Origin, got %s", w1.Header().Get("Vary"))
+	}
+
+	// 2. 请求不带 Origin 头，应当返回 Allow-Origin: * 且不设置 Allow-Credentials: true
+	req2, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	w2 := httptest.NewRecorder()
+	router.ServeHTTP(w2, req2)
+
+	if w2.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: *, got %s", w2.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if w2.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Errorf("expected Access-Control-Allow-Credentials to be empty when no Origin, got %s", w2.Header().Get("Access-Control-Allow-Credentials"))
+	}
+
+	// 3. OPTIONS 预检请求应返回 204
+	req3, _ := http.NewRequest("OPTIONS", "/api/v1/system/stats", nil)
+	req3.Header.Set("Origin", "http://example.com:3000")
+	w3 := httptest.NewRecorder()
+	router.ServeHTTP(w3, req3)
+
+	if w3.Code != http.StatusNoContent {
+		t.Errorf("expected 204 for OPTIONS preflight, got %d", w3.Code)
+	}
+}
+
+func TestUploadHDXAsyncAndPathTraversal(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "upload_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	mockZipData := createMockHDXZip(t, "DOC_ASYNC_001", "AsyncSwitch", "V100R001C00")
+
+	// 1. 测试异步上传模式
+	b := &bytes.Buffer{}
+	w := multipart.NewWriter(b)
+	_ = w.WriteField("conflict_mode", "overwrite")
+	_ = w.WriteField("async", "true")
+	part, _ := w.CreateFormFile("files", "test_async.hdx")
+	part.Write(mockZipData)
+	w.Close()
+
+	req, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b.String()))
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for async upload, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			JobID   string `json:"job_id"`
+			IsAsync bool   `json:"is_async"`
+		} `json:"data"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &res)
+	if !res.Data.IsAsync || res.Data.JobID == "" {
+		t.Fatalf("expected is_async=true and valid job_id, got %+v", res)
+	}
+
+	// 2. 测试路径穿越攻击文件上传（应该被安全重定向或清洗，防止逃逸）
+	b2 := &bytes.Buffer{}
+	w2 := multipart.NewWriter(b2)
+	_ = w2.WriteField("conflict_mode", "overwrite")
+	part2, _ := w2.CreateFormFile("files", "../../escape.hdx")
+	part2.Write(mockZipData)
+	w2.Close()
+
+	req2, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b2.String()))
+	req2.Header.Set("Content-Type", w2.FormDataContentType())
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for sanitized upload, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	// 验证没有文件逃逸到 uploads 外层目录
+	escapedFile := filepath.Join(tmpDir, "escape.hdx")
+	if _, err := os.Stat(escapedFile); !os.IsNotExist(err) {
+		t.Errorf("file escaped to %s, path traversal vulnerability present!", escapedFile)
+	}
+}
+
+func TestTaskAPIValidation(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_task_val_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	badIDs := []string{
+		"short",
+		"bad*id",
+		"task%20spaces",
+		"invalid!id",
+		"task$dollar",
+		"toolongtaskid123456789012345678901234567890123456789012345678901234567890",
+	}
+
+	for _, badID := range badIDs {
+		endpoints := []struct {
+			method string
+			path   string
+		}{
+			{"GET", "/api/v1/tasks/" + badID},
+			{"GET", "/api/v1/tasks/" + badID + "/files"},
+			{"POST", "/api/v1/tasks/" + badID + "/import"},
+			{"GET", "/api/v1/tasks/" + badID + "/logs"},
+			{"GET", "/api/v1/tasks/" + badID + "/rca"},
+			{"GET", "/api/v1/tasks/" + badID + "/export"},
+			{"DELETE", "/api/v1/tasks/" + badID},
+		}
+
+		for _, ep := range endpoints {
+			req, _ := http.NewRequest(ep.method, ep.path, nil)
+			if ep.method == "POST" {
+				req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+			}
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400 Bad Request for %s %s, got %d", ep.method, ep.path, w.Code)
+			}
+		}
+	}
+}
+
+func TestStatsHandlerCache(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_stats_cache_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "stats_test.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	handler := api.NewStatsHandler(db)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/api/v1/system/stats", handler.GetSystemStats)
+
+	// 第一次请求 (未命中缓存，触发 DB 查询)
+	w1 := httptest.NewRecorder()
+	req1, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	r.ServeHTTP(w1, req1)
+	if w1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w1.Code)
+	}
+
+	var res1 struct {
+		Data struct {
+			TotalKnowledge int `json:"total_knowledge"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w1.Body.Bytes(), &res1)
+	if res1.Data.TotalKnowledge != 0 {
+		t.Errorf("expected total_knowledge 0, got %d", res1.Data.TotalKnowledge)
+	}
+
+	// 插入新记录，由于 15s 缓存未过期，请求依然返回缓存结果 0
+	db.Create(&model.Knowledge{Module: "TEST", Brief: "TEST_BRIEF", ContentHash: "h1"})
+
+	w2 := httptest.NewRecorder()
+	req2, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	r.ServeHTTP(w2, req2)
+	var res2 struct {
+		Data struct {
+			TotalKnowledge int `json:"total_knowledge"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w2.Body.Bytes(), &res2)
+	if res2.Data.TotalKnowledge != 0 {
+		t.Errorf("expected cached total_knowledge 0, got %d", res2.Data.TotalKnowledge)
+	}
+
+	// 清理缓存后，立即重新查询到最新值 1
+	handler.InvalidateCache()
+	w3 := httptest.NewRecorder()
+	req3, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	r.ServeHTTP(w3, req3)
+	var res3 struct {
+		Data struct {
+			TotalKnowledge int `json:"total_knowledge"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w3.Body.Bytes(), &res3)
+	if res3.Data.TotalKnowledge != 1 {
+		t.Errorf("expected refreshed total_knowledge 1, got %d", res3.Data.TotalKnowledge)
+	}
+}
+
+func TestTaskMultipartStreamingUpload(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_task_stream_upload_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	uploadDir := filepath.Join(tmpDir, "uploads")
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   uploadDir,
+		},
+	}
+	config.ConfigFileUsed = filepath.Join(tmpDir, "config.yaml")
+	config.GlobalConfig = cfg
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. Multipart POST /api/v1/tasks
+	var bodyBuf bytes.Buffer
+	mw := multipart.NewWriter(&bodyBuf)
+	_ = mw.WriteField("task_name", "MultipartTask")
+	_ = mw.WriteField("device_type", "CloudEngine")
+
+	part1, _ := mw.CreateFormFile("file", "sw01.log")
+	part1.Write([]byte("Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN. (InterfaceName=100GE1/0/1)\n"))
+	part2, _ := mw.CreateFormFile("file", "sw02.log")
+	part2.Write([]byte("Apr 15 2026 14:00:02 CORE-SW-02 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state changed to DOWN. (SessionID=10)\n"))
+	mw.Close()
+
+	req, _ := http.NewRequest("POST", "/api/v1/tasks", &bodyBuf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for multipart CreateTask, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			TaskID    string `json:"task_id"`
+			LogCount  int    `json:"log_count"`
+			FileCount int    `json:"file_count"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+
+	if res.Data.LogCount != 2 || res.Data.FileCount != 2 {
+		t.Errorf("expected 2 logs and 2 files, got logs=%d, files=%d", res.Data.LogCount, res.Data.FileCount)
+	}
+
+	// 2. Multipart POST /api/v1/tasks/:id/import 补充导入
+	var bodyBuf2 bytes.Buffer
+	mw2 := multipart.NewWriter(&bodyBuf2)
+	_ = mw2.WriteField("conflict_mode", "skip")
+	part3, _ := mw2.CreateFormFile("file", "fw01.log")
+	part3.Write([]byte("Apr 15 2026 14:05:00 USG-FW-01 %%01AAA/4/USER_AUTH_FAIL(l)[202]: User authentication failed. (UserName=testuser, UserIP=192.168.10.5)\n"))
+	mw2.Close()
+
+	req2, _ := http.NewRequest("POST", "/api/v1/tasks/"+res.Data.TaskID+"/import", &bodyBuf2)
+	req2.Header.Set("Content-Type", mw2.FormDataContentType())
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, req2)
+
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 for multipart ImportLogs, got %d: %s", rec2.Code, rec2.Body.String())
+	}
+
+	var res2 struct {
+		Code int `json:"code"`
+		Data struct {
+			LogCount  int `json:"log_count"`
+			FileCount int `json:"file_count"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &res2); err != nil {
+		t.Fatalf("unmarshal import response failed: %v", err)
+	}
+
+	if res2.Data.LogCount != 3 || res2.Data.FileCount != 3 {
+		t.Errorf("expected 3 logs and 3 files after import, got logs=%d, files=%d", res2.Data.LogCount, res2.Data.FileCount)
+	}
+}
+
+

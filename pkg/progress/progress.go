@@ -358,7 +358,7 @@ func (t *JobTracker) getSnapshotLocked() ProgressSnapshot {
 
 // Subscribe 订阅进度通知流 (用于 SSE)
 func (t *JobTracker) Subscribe() (chan ProgressSnapshot, func()) {
-	ch := make(chan ProgressSnapshot, 10)
+	ch := make(chan ProgressSnapshot, 64)
 	t.subMu.Lock()
 	t.subscribers[ch] = struct{}{}
 	t.subMu.Unlock()
@@ -444,7 +444,15 @@ func (t *JobTracker) broadcastLocked() {
 		select {
 		case ch <- snap:
 		default:
-			// 如果缓冲已满，丢弃旧消息或跳过，保证非阻塞
+			// 如果缓冲已满，丢弃最旧的一条快照，插入最新快照，确保终态和最新阶段不会丢失
+			select {
+			case <-ch:
+			default:
+			}
+			select {
+			case ch <- snap:
+			default:
+			}
 		}
 	}
 	t.lastNotify = time.Now()
@@ -458,8 +466,10 @@ func (t *JobTracker) throttleBroadcastLocked(interval time.Duration) {
 
 // Hub 全局进度追踪器管理器
 type Hub struct {
-	mu   sync.RWMutex
-	jobs map[string]*JobTracker
+	mu          sync.RWMutex
+	jobs        map[string]*JobTracker
+	stopJanitor chan struct{}
+	stopped     bool
 }
 
 var (
@@ -471,12 +481,23 @@ var (
 func GetHub() *Hub {
 	hubOnce.Do(func() {
 		GlobalHub = &Hub{
-			jobs: make(map[string]*JobTracker),
+			jobs:        make(map[string]*JobTracker),
+			stopJanitor: make(chan struct{}),
 		}
 		// 启动后台清理协程
 		go GlobalHub.startJanitor()
 	})
 	return GlobalHub
+}
+
+// Stop 停止 Hub 的后台清理任务
+func (h *Hub) Stop() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.stopped && h.stopJanitor != nil {
+		h.stopped = true
+		close(h.stopJanitor)
+	}
 }
 
 // NewJob 创建并注册新的追踪任务
@@ -512,19 +533,26 @@ func (h *Hub) GetJob(jobID string) *JobTracker {
 // startJanitor 定期清理超过 30 分钟未更新的任务
 func (h *Hub) startJanitor() {
 	ticker := time.NewTicker(5 * time.Minute)
-	for range ticker.C {
-		h.mu.Lock()
-		now := time.Now()
-		for id, job := range h.jobs {
-			job.mu.RLock()
-			lastUp := job.updatedAt
-			isDone := job.status == JobCompleted || job.status == JobFailed
-			job.mu.RUnlock()
+	defer ticker.Stop()
 
-			if isDone && now.Sub(lastUp) > 30*time.Minute {
-				delete(h.jobs, id)
+	for {
+		select {
+		case <-h.stopJanitor:
+			return
+		case <-ticker.C:
+			h.mu.Lock()
+			now := time.Now()
+			for id, job := range h.jobs {
+				job.mu.RLock()
+				lastUp := job.updatedAt
+				isDone := job.status == JobCompleted || job.status == JobFailed
+				job.mu.RUnlock()
+
+				if isDone && now.Sub(lastUp) > 30*time.Minute {
+					delete(h.jobs, id)
+				}
 			}
+			h.mu.Unlock()
 		}
-		h.mu.Unlock()
 	}
 }

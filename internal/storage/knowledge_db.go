@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -33,7 +34,12 @@ func InitKnowledgeDB(dbPath string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("create dir for knowledge db failed: %w", err)
 	}
 
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+	dsn := dbPath
+	if !strings.Contains(dbPath, "?") {
+		dsn = dbPath + "?_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+	}
+
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
@@ -59,8 +65,8 @@ func InitKnowledgeDB(dbPath string) (*gorm.DB, error) {
 		}
 	}
 
-	sqlDB.SetMaxOpenConns(1) // SQLite 避免并发写锁的关键控制
-	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetMaxOpenConns(10) // WAL 模式下支持并发读
+	sqlDB.SetMaxIdleConns(5)
 	sqlDB.SetConnMaxLifetime(time.Hour)
 
 	// 自动迁移全局表

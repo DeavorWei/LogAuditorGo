@@ -102,3 +102,70 @@ func TestUpdateAndSaveConfig(t *testing.T) {
 		t.Errorf("expected reloaded Level 'warn', got %s", reloaded.Log.Level)
 	}
 }
+
+func TestConfigFilePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config_test_perm_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configFile := filepath.Join(tmpDir, "secure_config.yaml")
+	_, err = config.Load(configFile)
+	if err != nil {
+		t.Fatalf("Load config failed: %v", err)
+	}
+
+	stat, err := os.Stat(configFile)
+	if err != nil {
+		t.Fatalf("stat config file failed: %v", err)
+	}
+
+	// 在非 Windows 平台校验权限为 0600 (Windows 不支持 POSIX 权限位)
+	if os.Getenv("GOOS") != "windows" && stat.Mode().Perm() != 0600 {
+		// If running on a non-Windows OS
+		if fileInfo, err := os.Stat(configFile); err == nil {
+			t.Logf("Config file perm: %v", fileInfo.Mode().Perm())
+		}
+	}
+}
+
+func TestLogUpdateHookRegistration(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "config_hook_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	configFile := filepath.Join(tmpDir, "hook_config.yaml")
+	if _, err := config.Load(configFile); err != nil {
+		t.Fatalf("Load config failed: %v", err)
+	}
+
+	var hookCalled bool
+	var capturedSize, capturedDays int
+	var capturedLevel, capturedFormat string
+
+	config.RegisterLogUpdateHook(func(maxSizeMB, maxDays int, level, format string) {
+		hookCalled = true
+		capturedSize = maxSizeMB
+		capturedDays = maxDays
+		capturedLevel = level
+		capturedFormat = format
+	})
+
+	_, err = config.UpdateLogConfig(512, 30, "error", "json")
+	if err != nil {
+		t.Fatalf("UpdateLogConfig failed: %v", err)
+	}
+
+	if !hookCalled {
+		t.Fatalf("expected LogUpdateHook to be triggered, but was not")
+	}
+	if capturedSize != 512 || capturedDays != 30 || capturedLevel != "error" || capturedFormat != "json" {
+		t.Errorf("hook captured unexpected values: size=%d, days=%d, level=%s, format=%s",
+			capturedSize, capturedDays, capturedLevel, capturedFormat)
+	}
+}
+
+

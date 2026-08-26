@@ -2,6 +2,7 @@ package rootcause
 
 import (
 	"strings"
+	"sync"
 )
 
 type Pattern struct {
@@ -52,6 +53,7 @@ type DAGEdge struct {
 	toMod    Pattern
 	toBrf    Pattern
 	compiled bool
+	once     sync.Once
 }
 
 // ProtocolFaultRule 定义基于 DAG 的故障传播规则
@@ -132,20 +134,17 @@ func init() {
 }
 
 func (e *DAGEdge) compile() {
-	if e.compiled {
-		return
-	}
-	e.fromMod = compilePattern(e.FromModulePattern, true)
-	e.fromBrf = compilePattern(e.FromBriefPattern, false)
-	e.toMod = compilePattern(e.ToModulePattern, true)
-	e.toBrf = compilePattern(e.ToBriefPattern, false)
-	e.compiled = true
+	e.once.Do(func() {
+		e.fromMod = compilePattern(e.FromModulePattern, true)
+		e.fromBrf = compilePattern(e.FromBriefPattern, false)
+		e.toMod = compilePattern(e.ToModulePattern, true)
+		e.toBrf = compilePattern(e.ToBriefPattern, false)
+		e.compiled = true
+	})
 }
 
 func (e *DAGEdge) MatchesNode(module, brief string, isFrom bool) bool {
-	if !e.compiled {
-		e.compile()
-	}
+	e.compile()
 	if isFrom {
 		return e.fromMod.Match(module) && e.fromBrf.Match(brief)
 	}

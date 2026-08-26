@@ -96,6 +96,33 @@ func BenchmarkParseLine(b *testing.B) {
 	}
 }
 
+func BenchmarkParseLine_USG(b *testing.B) {
+	line := "2026-04-15 16:00:00 USG-FW-01 %%01SEC/4/SESSION_CLOSE(s): Protocol=TCP, SrcIP=10.1.1.1, DstIP=192.168.1.1, Policy=default"
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_, _ = logparser.ParseLine(line)
+	}
+}
+
+func BenchmarkExtractParameters(b *testing.B) {
+	msg := "BGP session authentication failed. (PeerID=192.168.1.2, TcpConnSocket=12, ReturnCode=3, SourceInterface=GE1/0/1)"
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = logparser.ExtractParameters(msg)
+	}
+}
+
+func BenchmarkExtractParameters_NoEquals(b *testing.B) {
+	msg := "BGP session authentication failed with no parameters."
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = logparser.ExtractParameters(msg)
+	}
+}
+
 func BenchmarkTimestamp(b *testing.B) {
 	ts := "2026-04-15 14:23:10"
 	b.ResetTimer()
@@ -104,3 +131,4 @@ func BenchmarkTimestamp(b *testing.B) {
 		_, _ = logparser.ParseHuaweiTimestamp(ts)
 	}
 }
+

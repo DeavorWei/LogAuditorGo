@@ -1,6 +1,7 @@
 package rootcause_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -67,6 +68,7 @@ func TestRootCauseEngine(t *testing.T) {
 	t.Logf("RCA Success: Root=%s/%s, CorrelatedIDs=%s, Summary=%s",
 		rca.RootModule, rca.RootBrief, rca.CorrelatedLogIDs, rca.RootCauseSummary)
 }
+
 func TestRootCauseEngineAllRulesAndIsolation(t *testing.T) {
 	now := time.Now()
 	engine := rootcause.NewEngine(nil)
@@ -135,6 +137,88 @@ func TestRootCauseEngineAllRulesAndIsolation(t *testing.T) {
 	}
 }
 
+func TestRootCauseEngineZeroIDNoMutation(t *testing.T) {
+	now := time.Now()
+	// Logs with ID 0 to verify CQ-003: no in-place mutation of input slice elements
+	origLog1 := &model.NormalizedLog{
+		ID:        0,
+		Module:    "IFNET",
+		Severity:  4,
+		Brief:     "IF_DOWN",
+		Timestamp: now,
+	}
+	origLog2 := &model.NormalizedLog{
+		ID:        0,
+		Module:    "BFD",
+		Severity:  2,
+		Brief:     "BFD_SESS_DOWN",
+		Timestamp: now.Add(100 * time.Millisecond),
+	}
+
+	logs := []*model.NormalizedLog{origLog1, origLog2}
+
+	engine := rootcause.NewEngine(nil)
+	events := engine.Analyze(logs, 300)
+
+	if len(events) == 0 {
+		t.Fatalf("expected 1 RCA event, got 0")
+	}
+
+	// Verify original input struct pointers were NOT mutated
+	if origLog1.ID != 0 {
+		t.Errorf("expected origLog1.ID to remain 0, got %d (mutated in-place)", origLog1.ID)
+	}
+	if origLog2.ID != 0 {
+		t.Errorf("expected origLog2.ID to remain 0, got %d (mutated in-place)", origLog2.ID)
+	}
+
+	// Verify the RCA event has valid non-zero temporary RootLogID
+	if events[0].RootLogID == 0 {
+		t.Errorf("expected non-zero RootLogID in generated event, got 0")
+	}
+}
+
+func TestRootCauseEngineCustomRulesAndCrossCascade(t *testing.T) {
+	now := time.Now()
+	customRules := []rootcause.ProtocolFaultRule{
+		{
+			ID:       "CUSTOM_FAN_FAIL",
+			Category: "ENVIRONMENT",
+			DAGEdges: []rootcause.DAGEdge{
+				{
+					FromModulePattern: "ENVMON,FAN",
+					FromBriefPattern:  "FAN_FAILED,FAN_STOPPED",
+					ToModulePattern:   "DEVM,SYSTEM,RESOURCE",
+					ToBriefPattern:    "CPU_HIGH,CPURISING,TEMP_HIGH",
+				},
+			},
+			SummaryTemplate: "风扇模块故障引发温度升高与CPU过载",
+			ActionTemplate:  "1. 检查风扇模块状态并更换故障风扇。",
+		},
+	}
+
+	engine := rootcause.NewEngine(customRules)
+
+	logs := []*model.NormalizedLog{
+		{ID: 801, Module: "FAN", Severity: 1, Brief: "FAN_FAILED", Timestamp: now},
+		{ID: 802, Module: "DEVM", Severity: 2, Brief: "CPU_HIGH", Timestamp: now.Add(1 * time.Second)},
+		{ID: 803, Module: "BGP", Severity: 2, Brief: "HOLD_TIME_EXPIRED", Timestamp: now.Add(5 * time.Second)},
+	}
+
+	events := engine.Analyze(logs, 300)
+	if len(events) == 0 {
+		t.Fatalf("expected RCA event with custom rule cross-cascade, got 0")
+	}
+
+	if events[0].RootLogID != 801 || events[0].RootModule != "FAN" {
+		t.Errorf("expected Root FAN/FAN_FAILED (#801), got %s/%s (#%d)",
+			events[0].RootModule, events[0].RootBrief, events[0].RootLogID)
+	}
+	if len(events[0].CorrelatedLogIDs) == 0 {
+		t.Errorf("expected correlated logs [802, 803], got %s", events[0].CorrelatedLogIDs)
+	}
+}
+
 func TestRootCauseEngineDefensive(t *testing.T) {
 	var engine *rootcause.Engine
 
@@ -164,5 +248,73 @@ func TestRootCauseEngineDefensive(t *testing.T) {
 	events = engine2.Analyze(logs2, 300)
 	if len(events) != 0 {
 		t.Errorf("expected 0 events for invalid logs, got %d", len(events))
+	}
+}
+
+func TestDAGEdgeConcurrency(t *testing.T) {
+	// 未预先 compile 的 DAGEdge 在高并发下调用 MatchesNode
+	edge := &rootcause.DAGEdge{
+		FromModulePattern: "IFNET,PORT,ETHBASE",
+		FromBriefPattern:  "IF_DOWN,LINK_DOWN,PORT_DOWN",
+		ToModulePattern:   "BFD",
+		ToBriefPattern:    "BFD_SESS_DOWN,SESS_DOWN",
+	}
+
+	var wg sync.WaitGroup
+	workers := 50
+	iterations := 200
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				// 并发调用 MatchesNode (From / To)
+				if !edge.MatchesNode("IFNET", "IF_DOWN", true) {
+					t.Errorf("expected match for IFNET/IF_DOWN")
+				}
+				if !edge.MatchesNode("BFD", "BFD_SESS_DOWN", false) {
+					t.Errorf("expected match for BFD/BFD_SESS_DOWN")
+				}
+				if edge.MatchesNode("UNKNOWN", "UNKNOWN", true) {
+					t.Errorf("expected no match for UNKNOWN")
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+func BenchmarkRootCauseEngine(b *testing.B) {
+	now := time.Now()
+	engine := rootcause.NewEngine(nil)
+
+	// Construct 1,000 logs simulating background noise + periodic cascades
+	numLogs := 1000
+	logs := make([]*model.NormalizedLog, numLogs)
+	for i := 0; i < numLogs; i++ {
+		ts := now.Add(time.Duration(i*100) * time.Millisecond)
+		switch i % 50 {
+		case 0:
+			logs[i] = &model.NormalizedLog{ID: uint(i + 1), Module: "IFNET", Severity: 4, Brief: "IF_DOWN", Timestamp: ts}
+		case 1:
+			logs[i] = &model.NormalizedLog{ID: uint(i + 1), Module: "BFD", Severity: 2, Brief: "BFD_SESS_DOWN", Timestamp: ts}
+		case 2:
+			logs[i] = &model.NormalizedLog{ID: uint(i + 1), Module: "BGP", Severity: 2, Brief: "PEER_BACKWARD", Timestamp: ts}
+		case 3:
+			logs[i] = &model.NormalizedLog{ID: uint(i + 1), Module: "RM", Severity: 4, Brief: "ROUTE_DELETE", Timestamp: ts}
+		default:
+			logs[i] = &model.NormalizedLog{ID: uint(i + 1), Module: "SYS", Severity: 6, Brief: "INFO_LOG_NORMAL", Timestamp: ts}
+		}
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		events := engine.Analyze(logs, 300)
+		if len(events) == 0 {
+			b.Fatalf("expected events in benchmark")
+		}
 	}
 }

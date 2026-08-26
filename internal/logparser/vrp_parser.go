@@ -14,11 +14,34 @@ import (
 // VRP 标准 Syslog 正则表达式
 // 匹配: [PRI] Time Hostname %%[Version]Module/Severity/Brief(Type)[Seq][Slot]: Message
 var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>(?:[A-Za-z]{3}\s+\d+\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|UTC[+-]\d{1,2}(?::?\d{2})?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?))\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
-var vrpGroupNames = vrpRegex.SubexpNames()
+
+var (
+	vrpPriIdx     = vrpRegex.SubexpIndex("pri")
+	vrpTimeIdx    = vrpRegex.SubexpIndex("time")
+	vrpHostIdx    = vrpRegex.SubexpIndex("host")
+	vrpVersionIdx = vrpRegex.SubexpIndex("version")
+	vrpModIdx     = vrpRegex.SubexpIndex("module")
+	vrpSevIdx     = vrpRegex.SubexpIndex("severity")
+	vrpBriefIdx   = vrpRegex.SubexpIndex("brief")
+	vrpTypeIdx    = vrpRegex.SubexpIndex("type")
+	vrpSeqIdx     = vrpRegex.SubexpIndex("seq")
+	vrpSlotIdx    = vrpRegex.SubexpIndex("slot")
+	vrpMsgIdx     = vrpRegex.SubexpIndex("msg")
+)
 
 // 简化的 VRP 格式正则 (某些 syslog 转发器可能丢弃了部分 header)
 var vrpSimpleRegex = regexp.MustCompile(`%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
-var vrpSimpleGroupNames = vrpSimpleRegex.SubexpNames()
+
+var (
+	vrpSimpleVersionIdx = vrpSimpleRegex.SubexpIndex("version")
+	vrpSimpleModIdx     = vrpSimpleRegex.SubexpIndex("module")
+	vrpSimpleSevIdx     = vrpSimpleRegex.SubexpIndex("severity")
+	vrpSimpleBriefIdx   = vrpSimpleRegex.SubexpIndex("brief")
+	vrpSimpleTypeIdx    = vrpSimpleRegex.SubexpIndex("type")
+	vrpSimpleSeqIdx     = vrpSimpleRegex.SubexpIndex("seq")
+	vrpSimpleSlotIdx    = vrpSimpleRegex.SubexpIndex("slot")
+	vrpSimpleMsgIdx     = vrpSimpleRegex.SubexpIndex("msg")
+)
 
 type VRPParser struct{}
 
@@ -44,37 +67,38 @@ func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
 	}
 
 	if match := vrpRegex.FindStringSubmatch(line); match != nil {
-		for i, name := range vrpGroupNames {
-			if i == 0 || name == "" {
-				continue
+		if vrpTimeIdx >= 0 && vrpTimeIdx < len(match) && match[vrpTimeIdx] != "" {
+			if t, err := ParseHuaweiTimestamp(match[vrpTimeIdx]); err == nil {
+				norm.Timestamp = t
+			} else {
+				logger.Log.Warnf("[LogParser VRP] Parse timestamp '%s' failed: %v", match[vrpTimeIdx], err)
 			}
-			val := match[i]
-			switch name {
-			case "time":
-				if t, err := ParseHuaweiTimestamp(val); err == nil {
-					norm.Timestamp = t
-				} else {
-					logger.Log.Warnf("[LogParser VRP] Parse timestamp '%s' failed: %v", val, err)
-				}
-			case "host":
-				norm.Hostname = val
-			case "module":
-				norm.Module = strings.ToUpper(val)
-			case "severity":
-				sev, _ := strconv.Atoi(val)
-				norm.Severity = sev
-			case "brief":
-				norm.Brief = val
-			case "type":
-				norm.LogType = strings.ToLower(val)
-			case "seq":
-				seq, _ := strconv.ParseUint(val, 10, 64)
-				norm.Sequence = seq
-			case "slot":
-				norm.SlotInfo = val
-			case "msg":
-				norm.MessageBody = strings.TrimSpace(val)
-			}
+		}
+		if vrpHostIdx >= 0 && vrpHostIdx < len(match) {
+			norm.Hostname = match[vrpHostIdx]
+		}
+		if vrpModIdx >= 0 && vrpModIdx < len(match) {
+			norm.Module = strings.ToUpper(match[vrpModIdx])
+		}
+		if vrpSevIdx >= 0 && vrpSevIdx < len(match) && match[vrpSevIdx] != "" {
+			sev, _ := strconv.Atoi(match[vrpSevIdx])
+			norm.Severity = sev
+		}
+		if vrpBriefIdx >= 0 && vrpBriefIdx < len(match) {
+			norm.Brief = match[vrpBriefIdx]
+		}
+		if vrpTypeIdx >= 0 && vrpTypeIdx < len(match) {
+			norm.LogType = strings.ToLower(match[vrpTypeIdx])
+		}
+		if vrpSeqIdx >= 0 && vrpSeqIdx < len(match) && match[vrpSeqIdx] != "" {
+			seq, _ := strconv.ParseUint(match[vrpSeqIdx], 10, 64)
+			norm.Sequence = seq
+		}
+		if vrpSlotIdx >= 0 && vrpSlotIdx < len(match) {
+			norm.SlotInfo = match[vrpSlotIdx]
+		}
+		if vrpMsgIdx >= 0 && vrpMsgIdx < len(match) {
+			norm.MessageBody = strings.TrimSpace(match[vrpMsgIdx])
 		}
 	} else if match := vrpSimpleRegex.FindStringSubmatch(line); match != nil {
 		// 截取前面可能的时间与主机
@@ -90,29 +114,28 @@ func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
 			norm.Hostname = prefixParts[0]
 		}
 
-		for i, name := range vrpSimpleGroupNames {
-			if i == 0 || name == "" {
-				continue
-			}
-			val := match[i]
-			switch name {
-			case "module":
-				norm.Module = strings.ToUpper(val)
-			case "severity":
-				sev, _ := strconv.Atoi(val)
-				norm.Severity = sev
-			case "brief":
-				norm.Brief = val
-			case "type":
-				norm.LogType = strings.ToLower(val)
-			case "seq":
-				seq, _ := strconv.ParseUint(val, 10, 64)
-				norm.Sequence = seq
-			case "slot":
-				norm.SlotInfo = val
-			case "msg":
-				norm.MessageBody = strings.TrimSpace(val)
-			}
+		if vrpSimpleModIdx >= 0 && vrpSimpleModIdx < len(match) {
+			norm.Module = strings.ToUpper(match[vrpSimpleModIdx])
+		}
+		if vrpSimpleSevIdx >= 0 && vrpSimpleSevIdx < len(match) && match[vrpSimpleSevIdx] != "" {
+			sev, _ := strconv.Atoi(match[vrpSimpleSevIdx])
+			norm.Severity = sev
+		}
+		if vrpSimpleBriefIdx >= 0 && vrpSimpleBriefIdx < len(match) {
+			norm.Brief = match[vrpSimpleBriefIdx]
+		}
+		if vrpSimpleTypeIdx >= 0 && vrpSimpleTypeIdx < len(match) {
+			norm.LogType = strings.ToLower(match[vrpSimpleTypeIdx])
+		}
+		if vrpSimpleSeqIdx >= 0 && vrpSimpleSeqIdx < len(match) && match[vrpSimpleSeqIdx] != "" {
+			seq, _ := strconv.ParseUint(match[vrpSimpleSeqIdx], 10, 64)
+			norm.Sequence = seq
+		}
+		if vrpSimpleSlotIdx >= 0 && vrpSimpleSlotIdx < len(match) {
+			norm.SlotInfo = match[vrpSimpleSlotIdx]
+		}
+		if vrpSimpleMsgIdx >= 0 && vrpSimpleMsgIdx < len(match) {
+			norm.MessageBody = strings.TrimSpace(match[vrpSimpleMsgIdx])
 		}
 	} else {
 		return nil, fmt.Errorf("line does not match VRP format: %s", line)

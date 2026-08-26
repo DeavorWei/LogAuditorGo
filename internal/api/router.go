@@ -2,7 +2,9 @@ package api
 
 import (
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -36,8 +38,14 @@ func SetupRouter(
 
 	// CORS 跨域支持中间件
 	r.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+		origin := c.Request.Header.Get("Origin")
+		if origin != "" {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+			c.Writer.Header().Add("Vary", "Origin")
+		} else {
+			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		}
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
 
@@ -50,7 +58,7 @@ func SetupRouter(
 
 	docHandler := NewDocumentHandler(knowledgeSvc, cfg.Storage.UploadDir)
 	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer)
-	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
+	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc, cfg.Storage.UploadDir)
 	statsHandler := NewStatsHandler(globalDB)
 	systemHandler := NewSystemHandler()
 	progressHandler := NewProgressHandler()
@@ -144,4 +152,29 @@ func SetupRouter(
 	})
 
 	return r
+}
+
+// isAllowedOrigin 校验跨域来源是否属于受信本地回环域或匹配服务端主机
+func isAllowedOrigin(origin, host string) bool {
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	hostname := strings.ToLower(u.Hostname())
+	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
+		return true
+	}
+	if host != "" {
+		hostOnly := host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			hostOnly = h
+		}
+		if strings.EqualFold(hostname, hostOnly) {
+			return true
+		}
+	}
+	return false
 }

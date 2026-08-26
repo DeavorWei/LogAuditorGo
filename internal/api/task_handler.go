@@ -2,8 +2,10 @@ package api
 
 import (
 	"fmt"
-	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"time"
 
@@ -16,16 +18,35 @@ import (
 	"logauditorgo/pkg/progress"
 )
 
+var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
+
+func isValidTaskID(taskID string) bool {
+	return taskIDRegex.MatchString(taskID)
+}
+
 type TaskHandler struct {
 	taskSvc      *task.Service
 	knowledgeSvc *knowledge.Service
+	uploadDir    string
 }
 
-func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *TaskHandler {
+func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service, uploadDir ...string) *TaskHandler {
+	dir := ""
+	if len(uploadDir) > 0 {
+		dir = uploadDir[0]
+	}
 	return &TaskHandler{
 		taskSvc:      taskSvc,
 		knowledgeSvc: knowledgeSvc,
+		uploadDir:    dir,
 	}
+}
+
+func (h *TaskHandler) getUploadDir() string {
+	if h.uploadDir != "" {
+		return h.uploadDir
+	}
+	return os.TempDir()
 }
 
 // CreateTask 创建日志审计任务（支持空任务创建、多文件上传或文本直接提交，支持全流程阶段进度实时追踪）
@@ -37,24 +58,37 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 
 	var items []task.FileUploadItem
 
-	// 检查多文件上传
+	// 检查多文件上传（采用流式落盘到 uploadDir，避免全量读入内存导致 OOM）
 	form, err := c.MultipartForm()
 	if err == nil && form != nil {
+		uploadDir := h.getUploadDir()
+		_ = os.MkdirAll(uploadDir, 0755)
+
 		for _, fileHeaders := range form.File {
 			for _, fh := range fileHeaders {
-				f, err := fh.Open()
-				if err != nil {
-					continue
+				cleanBase := filepath.Base(fh.Filename)
+				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
+					cleanBase = "uploaded_log.txt"
 				}
-				data, err := io.ReadAll(f)
-				f.Close()
-				if err != nil {
+				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
+				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
+					// 降级使用 fh.Open() 直接传递流
+					f, err := fh.Open()
+					if err != nil {
+						continue
+					}
+					items = append(items, task.FileUploadItem{
+						FileName: fh.Filename,
+						FileSize: fh.Size,
+						Reader:   f,
+					})
 					continue
 				}
 				items = append(items, task.FileUploadItem{
 					FileName: fh.Filename,
 					FileSize: fh.Size,
-					Content:  string(data),
+					FilePath: tempPath,
+					TempFile: true,
 				})
 			}
 		}
@@ -149,6 +183,10 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 // ImportLogs 导入/补充导入日志文件（支持多文件上传或文本提交，支持覆盖/跳过冲突模式，支持进度追踪及异步模式）
 func (h *TaskHandler) ImportLogs(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
 	if conflictMode == "" {
 		conflictMode = "overwrite"
@@ -157,24 +195,37 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 
 	var items []task.FileUploadItem
 
-	// 检查多文件上传
+	// 检查多文件上传（采用流式落盘到 uploadDir，避免全量读入内存导致 OOM）
 	form, err := c.MultipartForm()
 	if err == nil && form != nil {
+		uploadDir := h.getUploadDir()
+		_ = os.MkdirAll(uploadDir, 0755)
+
 		for _, fileHeaders := range form.File {
 			for _, fh := range fileHeaders {
-				f, err := fh.Open()
-				if err != nil {
-					continue
+				cleanBase := filepath.Base(fh.Filename)
+				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
+					cleanBase = "uploaded_log.txt"
 				}
-				data, err := io.ReadAll(f)
-				f.Close()
-				if err != nil {
+				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
+				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
+					// 降级使用 fh.Open() 直接传递流
+					f, err := fh.Open()
+					if err != nil {
+						continue
+					}
+					items = append(items, task.FileUploadItem{
+						FileName: fh.Filename,
+						FileSize: fh.Size,
+						Reader:   f,
+					})
 					continue
 				}
 				items = append(items, task.FileUploadItem{
 					FileName: fh.Filename,
 					FileSize: fh.Size,
-					Content:  string(data),
+					FilePath: tempPath,
+					TempFile: true,
 				})
 			}
 		}
@@ -256,6 +307,10 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 // GetTaskFiles 获取指定任务已上传的文件清单
 func (h *TaskHandler) GetTaskFiles(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	files, err := h.taskSvc.GetTaskFiles(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
@@ -279,6 +334,10 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 // GetTask 获取任务元信息
 func (h *TaskHandler) GetTask(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	t, err := h.taskSvc.GetTaskByID(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusNotFound, -1, "Task not found")
@@ -291,6 +350,10 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 // QueryLogs 查询任务内日志并分页
 func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
@@ -362,17 +425,12 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		}
 	}
 
-	knowledgeMap := make(map[uint]*model.Knowledge)
-	for _, kid := range uniqueKIDs {
-		if k, err := h.knowledgeSvc.GetKnowledgeByID(kid); err == nil && k != nil {
-			knowledgeMap[kid] = k
-		}
-	}
+	knowledgeMap, _ := h.knowledgeSvc.GetKnowledgeMapByIDs(uniqueKIDs)
 
 	var enrichedList []EnrichedRecord
 	for _, rec := range records {
 		er := EnrichedRecord{LogRecord: rec}
-		if rec.KnowledgeID > 0 {
+		if rec.KnowledgeID > 0 && knowledgeMap != nil {
 			er.Knowledge = knowledgeMap[rec.KnowledgeID]
 		}
 		enrichedList = append(enrichedList, er)
@@ -389,6 +447,10 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 // GetRCA 获取任务 RCA 事件
 func (h *TaskHandler) GetRCA(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	events, err := h.taskSvc.GetTaskRCAEvents(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
@@ -401,6 +463,10 @@ func (h *TaskHandler) GetRCA(c *gin.Context) {
 // ExportReport 导出分析报告
 func (h *TaskHandler) ExportReport(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	format := c.DefaultQuery("format", "html")
 
 	if format == "html" {
@@ -430,6 +496,10 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 // DeleteTask 删除任务
 func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
 	if err := h.taskSvc.DeleteTask(taskID); err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return

@@ -2,34 +2,81 @@ package task
 
 import (
 	"fmt"
-	"html"
+	"html/template"
 	"strings"
 	"time"
 
 	"logauditorgo/internal/model"
 )
 
-// GenerateHTMLReport 生成任务分析的独立 HTML 离线报告
-func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []model.RCAEvent) string {
-	if task == nil {
-		return "<html><body><h3>Task not found</h3></body></html>"
+// ReportViewModel 包含渲染独立 HTML 离线报告所需的全部结构化数据
+type ReportViewModel struct {
+	Task       *model.TaskInfo
+	Records    []model.LogRecord
+	RCAs       []model.RCAEvent
+	ExportTime string
+}
+
+// formatTime 格式化时间戳，对于零值返回 "-"
+func formatTime(t time.Time) string {
+	if t.IsZero() {
+		return "-"
+	}
+	return t.Format("2006-01-02 15:04:05")
+}
+
+// coveragePercent 计算知识库覆盖率百分比字符串
+func coveragePercent(matched, total int) string {
+	if total <= 0 {
+		return "0.0%"
+	}
+	return fmt.Sprintf("%.1f%%", float64(matched)/float64(total)*100)
+}
+
+// formatConfidence 格式化置信度百分比
+func formatConfidence(conf float64) string {
+	return fmt.Sprintf("%.0f%%", conf*100)
+}
+
+// severityBadgeClass 根据日志级别返回对应的 CSS 样式类
+func severityBadgeClass(sev int) string {
+	switch {
+	case sev <= 2:
+		return "sev-crit"
+	case sev <= 4:
+		return "sev-err"
+	case sev <= 5:
+		return "sev-warn"
+	default:
+		return "sev-info"
+	}
+}
+
+// matchBadgeHTML 生成安全的知识库匹配状态徽章 HTML
+func matchBadgeHTML(knowledgeID uint, matchTier string) template.HTML {
+	if knowledgeID > 0 {
+		return template.HTML(fmt.Sprintf(`<span class="badge" style="background:#dcfce7; color:#166534;">已匹配 (%s)</span>`, template.HTMLEscapeString(matchTier)))
+	}
+	return template.HTML(`<span class="badge" style="background:#f1f5f9; color:#64748b;">未匹配</span>`)
+}
+
+var (
+	reportFuncMap = template.FuncMap{
+		"formatTime":         formatTime,
+		"coveragePercent":    coveragePercent,
+		"formatConfidence":   formatConfidence,
+		"severityBadgeClass": severityBadgeClass,
+		"matchBadgeHTML":     matchBadgeHTML,
 	}
 
-	var sb strings.Builder
+	reportTemplate = template.Must(template.New("html_report").Funcs(reportFuncMap).Parse(htmlReportTpl))
+)
 
-	taskName := html.EscapeString(task.TaskName)
-	deviceType := html.EscapeString(task.DeviceType)
-
-	coverageStr := "0.0%"
-	if task.LogCount > 0 {
-		coverageStr = fmt.Sprintf("%.1f%%", float64(task.MatchedCount)/float64(task.LogCount)*100)
-	}
-
-	sb.WriteString(`<!DOCTYPE html>
+const htmlReportTpl = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>LogAuditorGo 审计分析报告 - ` + taskName + `</title>
+<title>LogAuditorGo 审计分析报告 - {{ .Task.TaskName }}</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 30px; background: #f8fafc; color: #1e293b; }
   .header { background: #1e293b; color: #fff; padding: 24px; border-radius: 8px; margin-bottom: 24px; }
@@ -57,54 +104,38 @@ func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []
 <body>
   <div class="header">
     <h1>LogAuditorGo 华为网络设备日志智能审计报告</h1>
-    <div>任务名称: ` + taskName + ` | 设备类型: ` + deviceType + ` | 导出时间: ` + time.Now().Format("2006-01-02 15:04:05") + `</div>
+    <div>任务名称: {{ .Task.TaskName }} | 设备类型: {{ .Task.DeviceType }} | 导出时间: {{ .ExportTime }}</div>
   </div>
 
   <div class="stats-grid">
     <div class="stat-card">
-      <div class="val">` + fmt.Sprintf("%d", task.LogCount) + `</div>
+      <div class="val">{{ .Task.LogCount }}</div>
       <div class="label">总分析日志数</div>
     </div>
     <div class="stat-card" style="border-left-color: #10b981;">
-      <div class="val">` + fmt.Sprintf("%d", task.MatchedCount) + `</div>
+      <div class="val">{{ .Task.MatchedCount }}</div>
       <div class="label">知识库匹配数</div>
     </div>
     <div class="stat-card" style="border-left-color: #f97316;">
-      <div class="val">` + fmt.Sprintf("%d", len(rcas)) + `</div>
+      <div class="val">{{ len .RCAs }}</div>
       <div class="label">识别根因事件数</div>
     </div>
     <div class="stat-card" style="border-left-color: #8b5cf6;">
-      <div class="val">` + coverageStr + `</div>
+      <div class="val">{{ coveragePercent .Task.MatchedCount .Task.LogCount }}</div>
       <div class="label">官方知识覆盖率</div>
     </div>
   </div>
-`)
-
-	// 根因分析部分
-	if len(rcas) > 0 {
-		sb.WriteString(`  <div class="section">
+{{ if .RCAs }}
+  <div class="section">
     <h2>🎯 根因分析（RCA）排查建议</h2>
-`)
-		for _, rca := range rcas {
-			rcaModule := html.EscapeString(rca.RootModule)
-			rcaBrief := html.EscapeString(rca.RootBrief)
-			rcaTime := html.EscapeString(rca.RootTimestamp)
-			rcaSummary := html.EscapeString(rca.RootCauseSummary)
-			rcaAction := html.EscapeString(rca.RecommendedAction)
-
-			sb.WriteString(`    <div class="rca-card">
-      <div class="rca-title">💥 根因事件 [` + rcaModule + `/` + rcaBrief + `] - ` + rcaTime + ` (置信度: ` + fmt.Sprintf("%.0f%%", rca.Confidence*100) + `)</div>
-      <div>` + rcaSummary + `</div>
-      <div class="rca-action"><strong>官方建议排查方案：</strong>` + rcaAction + `</div>
+{{ range .RCAs }}    <div class="rca-card">
+      <div class="rca-title">💥 根因事件 [{{ .RootModule }}/{{ .RootBrief }}] - {{ .RootTimestamp }} (置信度: {{ formatConfidence .Confidence }})</div>
+      <div>{{ .RootCauseSummary }}</div>
+      <div class="rca-action"><strong>官方建议排查方案：</strong>{{ .RecommendedAction }}</div>
     </div>
-`)
-		}
-		sb.WriteString(`  </div>
-`)
-	}
-
-	// 结构化日志表格
-	sb.WriteString(`  <div class="section">
+{{ end }}  </div>
+{{ end }}
+  <div class="section">
     <h2>📋 日志分析明细 (前 100 条)</h2>
     <table>
       <thead>
@@ -118,44 +149,43 @@ func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []
         </tr>
       </thead>
       <tbody>
-`)
-
-	limit := len(records)
-	if limit > 100 {
-		limit = 100
-	}
-	for i := 0; i < limit; i++ {
-		r := records[i]
-		sevClass := "sev-info"
-		if r.Severity <= 2 {
-			sevClass = "sev-crit"
-		} else if r.Severity <= 4 {
-			sevClass = "sev-err"
-		} else if r.Severity <= 5 {
-			sevClass = "sev-warn"
-		}
-
-		matchBadge := `<span class="badge" style="background:#f1f5f9; color:#64748b;">未匹配</span>`
-		if r.KnowledgeID > 0 {
-			matchBadge = `<span class="badge" style="background:#dcfce7; color:#166534;">已匹配 (` + html.EscapeString(r.MatchTier) + `)</span>`
-		}
-
-		sb.WriteString(`        <tr>
-          <td>` + html.EscapeString(r.Timestamp.Format("2006-01-02 15:04:05")) + `</td>
-          <td>` + html.EscapeString(r.Hostname) + `</td>
-          <td><span class="badge ` + sevClass + `">` + fmt.Sprintf("%d", r.Severity) + `</span></td>
-          <td><strong>` + html.EscapeString(r.Module) + `</strong>/` + html.EscapeString(r.Brief) + `</td>
-          <td><div class="code">` + html.EscapeString(r.RawLog) + `</div></td>
-          <td>` + matchBadge + `</td>
+{{ range .Records }}        <tr>
+          <td>{{ formatTime .Timestamp }}</td>
+          <td>{{ .Hostname }}</td>
+          <td><span class="badge {{ severityBadgeClass .Severity }}">{{ .Severity }}</span></td>
+          <td><strong>{{ .Module }}</strong>/{{ .Brief }}</td>
+          <td><div class="code">{{ .RawLog }}</div></td>
+          <td>{{ matchBadgeHTML .KnowledgeID .MatchTier }}</td>
         </tr>
-`)
-	}
-
-	sb.WriteString(`      </tbody>
+{{ end }}      </tbody>
     </table>
   </div>
 </body>
-</html>`)
+</html>`
+
+// GenerateHTMLReport 生成任务分析的独立 HTML 离线报告
+func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []model.RCAEvent) string {
+	if task == nil {
+		return "<html><body><h3>Task not found</h3></body></html>"
+	}
+
+	displayRecords := records
+	if len(displayRecords) > 100 {
+		displayRecords = displayRecords[:100]
+	}
+
+	data := ReportViewModel{
+		Task:       task,
+		Records:    displayRecords,
+		RCAs:       rcas,
+		ExportTime: time.Now().Format("2006-01-02 15:04:05"),
+	}
+
+	var sb strings.Builder
+	if err := reportTemplate.Execute(&sb, data); err != nil {
+		return fmt.Sprintf("<html><body><h3>Render report failed: %s</h3></body></html>", template.HTMLEscapeString(err.Error()))
+	}
 
 	return sb.String()
 }
+

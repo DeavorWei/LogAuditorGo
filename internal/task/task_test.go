@@ -1,9 +1,12 @@
 package task_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
@@ -225,6 +228,166 @@ Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state
 	}
 }
 
+func TestTaskIDValidation(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_sec_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	invalidIDs := []string{
+		"../../etc/passwd",
+		"short",
+		"task with spaces",
+		"task*with*wildcards",
+		"task/slash",
+		"task\\backslash",
+		"",
+	}
+
+	for _, badID := range invalidIDs {
+		if _, err := svc.GetTaskFiles(badID); err == nil {
+			t.Errorf("expected error for GetTaskFiles with invalid id '%s', got nil", badID)
+		}
+		if _, err := svc.GetTaskByID(badID); err == nil {
+			t.Errorf("expected error for GetTaskByID with invalid id '%s', got nil", badID)
+		}
+		if _, err := svc.ImportLogs(badID, []task.FileUploadItem{{FileName: "a.txt", Content: "log"}}, "overwrite"); err == nil {
+			t.Errorf("expected error for ImportLogs with invalid id '%s', got nil", badID)
+		}
+		if _, _, err := svc.QueryTaskLogs(badID, model.LogQueryFilter{}); err == nil {
+			t.Errorf("expected error for QueryTaskLogs with invalid id '%s', got nil", badID)
+		}
+		if _, err := svc.GetTaskRCAEvents(badID); err == nil {
+			t.Errorf("expected error for GetTaskRCAEvents with invalid id '%s', got nil", badID)
+		}
+		if _, err := svc.ExportTaskHTML(badID); err == nil {
+			t.Errorf("expected error for ExportTaskHTML with invalid id '%s', got nil", badID)
+		}
+		if err := svc.DeleteTask(badID); err == nil {
+			t.Errorf("expected error for DeleteTask with invalid id '%s', got nil", badID)
+		}
+	}
+}
+
+func TestQueryTaskLogsLikeEscaping(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_like_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	logContent := `
+Apr 15 2026 14:00:01 CORE_SW_01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down 100% loss. (InterfaceName=100GE1/0/1)
+Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD down with 50% packet drop. (SessionID=10)
+Apr 15 2026 14:00:03 COREXSWX01 %%01BGP/2/PEER_BACKWARD(l)[3]: BGP peer down. (PeerAddress=192.168.1.2)
+`
+	taskInfo, err := svc.CreateAndRunTask("Test-Like-Escaping", "CloudEngine", logContent)
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	// 1. 测试 Hostname 中含 "_" 的精确匹配，如果未转义，CORE_SW_01 中的 "_" 会匹配 COREXSWX01 和 CORE-SW-01
+	records, total, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Hostname: "CORE_SW_01"})
+	if err != nil {
+		t.Fatalf("query logs failed: %v", err)
+	}
+	if total != 1 || len(records) != 1 || records[0].Hostname != "CORE_SW_01" {
+		t.Errorf("expected 1 record for CORE_SW_01, got total=%d, len=%d", total, len(records))
+	}
+
+	// 2. 测试 Keyword 中含 "%" 的模糊匹配，搜索 "100%" 只应命中第 1 条，不应将 "%" 当作通配符匹配其他
+	records100, total100, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Keyword: "100%"})
+	if err != nil {
+		t.Fatalf("query logs failed: %v", err)
+	}
+	if total100 != 1 || len(records100) != 1 {
+		t.Errorf("expected 1 record for '100%%', got total=%d, len=%d", total100, len(records100))
+	}
+
+	// 3. 测试 Brief 中含通配符安全搜索
+	recordsBrief, totalBrief, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Brief: "IF_DOWN"})
+	if err != nil {
+		t.Fatalf("query logs failed: %v", err)
+	}
+	if totalBrief != 1 || len(recordsBrief) != 1 {
+		t.Errorf("expected 1 record for IF_DOWN, got total=%d", totalBrief)
+	}
+}
+
+func TestTaskDeletionAndCleanup(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_del_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	taskInfo, err := svc.CreateEmptyTask("TaskToDelete", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create empty task failed: %v", err)
+	}
+
+	taskDBPath := filepath.Join(taskDir, fmt.Sprintf("task_%s.db", taskInfo.TaskID))
+	if _, err := os.Stat(taskDBPath); os.IsNotExist(err) {
+		t.Fatalf("expected task db file at %s", taskDBPath)
+	}
+
+	// 删除任务
+	if err := svc.DeleteTask(taskInfo.TaskID); err != nil {
+		t.Fatalf("DeleteTask failed: %v", err)
+	}
+
+	// 验证全局库中记录被删除
+	var checkInfo model.TaskInfo
+	if err := globalDB.First(&checkInfo, "task_id = ?", taskInfo.TaskID).Error; err == nil {
+		t.Errorf("expected task record deleted from global db, but found")
+	}
+
+	// 验证物理文件被清理
+	if _, err := os.Stat(taskDBPath); !os.IsNotExist(err) {
+		t.Errorf("expected task db file deleted, but still exists")
+	}
+}
+
 func BenchmarkTaskImportPipeline(b *testing.B) {
 	tmpDir, _ := os.MkdirTemp("", "task_bench_*")
 	defer os.RemoveAll(tmpDir)
@@ -270,4 +433,162 @@ func BenchmarkTaskImportPipeline(b *testing.B) {
 		_, _ = svc.ImportLogs(emptyTask.TaskID, []task.FileUploadItem{item}, "overwrite")
 	}
 }
+
+func TestFileUploadItemStreamingAndCleanup(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_stream_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	emptyTask, err := svc.CreateEmptyTask("StreamingTask", "CloudEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+
+	// 1. 测试从 io.Reader 流式导入
+	readerItem := task.FileUploadItem{
+		FileName: "reader_test.log",
+		FileSize: 100,
+		Reader:   strings.NewReader("Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN.\n"),
+	}
+
+	// 2. 测试从临时文件流式导入并在完成后自动清理
+	tempLogPath := filepath.Join(tmpDir, "temp_log.txt")
+	if err := os.WriteFile(tempLogPath, []byte("Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session down.\n"), 0644); err != nil {
+		t.Fatalf("write temp log file failed: %v", err)
+	}
+
+	fileItem := task.FileUploadItem{
+		FileName: "temp_file.log",
+		FileSize: 100,
+		FilePath: tempLogPath,
+		TempFile: true,
+	}
+
+	taskInfo, err := svc.ImportLogs(emptyTask.TaskID, []task.FileUploadItem{readerItem, fileItem}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogs failed: %v", err)
+	}
+
+	if taskInfo.LogCount != 2 {
+		t.Errorf("expected 2 logs, got %d", taskInfo.LogCount)
+	}
+
+	// 验证临时文件已被 Cleanup() 删除
+	if _, err := os.Stat(tempLogPath); !os.IsNotExist(err) {
+		t.Errorf("expected temp file %s to be deleted after ImportLogs, but it still exists", tempLogPath)
+	}
+}
+
+func TestGenerateHTMLReportDetailed(t *testing.T) {
+	// 1. Test nil task
+	nilHTML := task.GenerateHTMLReport(nil, nil, nil)
+	if !strings.Contains(nilHTML, "Task not found") {
+		t.Errorf("expected 'Task not found' for nil task, got: %s", nilHTML)
+	}
+
+	// 2. Test valid task with records and RCAs
+	taskInfo := &model.TaskInfo{
+		TaskID:       "task12345678",
+		TaskName:     "Test HTML Report & <Escaping>",
+		DeviceType:   "CloudEngine 16800",
+		LogCount:     150,
+		MatchedCount: 75,
+	}
+
+	records := make([]model.LogRecord, 120)
+	for i := 0; i < 120; i++ {
+		sev := (i % 8) + 1
+		var kid uint
+		var matchTier string
+		if i%2 == 0 {
+			kid = uint(i + 1)
+			matchTier = "EXACT"
+		}
+		records[i] = model.LogRecord{
+			ID:          uint(i + 1),
+			Timestamp:   time.Date(2026, 8, 26, 12, 0, i%60, 0, time.UTC),
+			Hostname:    "SW-CORE-01",
+			Severity:    sev,
+			Module:      "BGP",
+			Brief:       "PEER_BACKWARD",
+			RawLog:      "BGP peer 1.1.1.1 went down <critical>",
+			KnowledgeID: kid,
+			MatchTier:   matchTier,
+		}
+	}
+
+	rcas := []model.RCAEvent{
+		{
+			ID:                1,
+			RootLogID:         10,
+			RootTimestamp:     "2026-08-26 12:00:00",
+			RootModule:        "IFNET",
+			RootBrief:         "IF_DOWN",
+			Confidence:        0.95,
+			RootCauseSummary:  "Interface 100GE1/0/1 physical link down.",
+			RecommendedAction: "Check physical fiber optics and transceivers.",
+		},
+	}
+
+	htmlReport := task.GenerateHTMLReport(taskInfo, records, rcas)
+
+	// Verify escaping of task name
+	if strings.Contains(htmlReport, "<Escaping>") {
+		t.Errorf("expected HTML escaping for task name, got raw '<Escaping>'")
+	}
+	if !strings.Contains(htmlReport, "&lt;Escaping&gt;") && !strings.Contains(htmlReport, "Test HTML Report") {
+		t.Errorf("expected escaped task name in report")
+	}
+
+	// Verify coverage percent: 75 / 150 = 50.0%
+	if !strings.Contains(htmlReport, "50.0%") {
+		t.Errorf("expected '50.0%%' in report, got: %s", htmlReport)
+	}
+
+	// Verify RCA section is present
+	if !strings.Contains(htmlReport, "根因分析（RCA）排查建议") {
+		t.Errorf("expected RCA section in report")
+	}
+	if !strings.Contains(htmlReport, "95%") {
+		t.Errorf("expected '95%%' confidence in report")
+	}
+
+	// Verify table records limit (max 100)
+	if !strings.Contains(htmlReport, "SW-CORE-01") {
+		t.Errorf("expected records table in report")
+	}
+
+	// 3. Test empty records and empty RCAs
+	emptyTask := &model.TaskInfo{
+		TaskID:       "empty12345678",
+		TaskName:     "Empty Task",
+		DeviceType:   "USG6000",
+		LogCount:     0,
+		MatchedCount: 0,
+	}
+	emptyHTML := task.GenerateHTMLReport(emptyTask, nil, nil)
+	if strings.Contains(emptyHTML, "根因分析（RCA）排查建议") {
+		t.Errorf("expected no RCA section when rcas is empty")
+	}
+	if !strings.Contains(emptyHTML, "0.0%") {
+		t.Errorf("expected '0.0%%' coverage for 0 log count")
+	}
+}
+
+
 

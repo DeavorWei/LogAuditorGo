@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -16,12 +17,26 @@ import (
 )
 
 var (
-	taskDBPool = make(map[string]*gorm.DB)
-	poolMu     sync.RWMutex
+	taskDBPool  = make(map[string]*gorm.DB)
+	poolMu      sync.RWMutex
+	taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
 )
+
+// IsValidTaskID 校验任务ID格式是否合法，防止路径遍历与注入攻击
+func IsValidTaskID(taskID string) bool {
+	return taskIDRegex.MatchString(taskID)
+}
+
+func isValidTaskID(taskID string) bool {
+	return IsValidTaskID(taskID)
+}
 
 // GetOrCreateTaskDB 获取或创建任务专属 SQLite 数据库
 func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) {
+	if !isValidTaskID(taskID) {
+		return nil, "", fmt.Errorf("invalid task id: %s", taskID)
+	}
+
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
@@ -80,23 +95,36 @@ func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) 
 
 // CloseTaskDB 关闭并移除任务 DB 连接
 func CloseTaskDB(taskID string) error {
+	if !isValidTaskID(taskID) {
+		return fmt.Errorf("invalid task id: %s", taskID)
+	}
+
 	poolMu.Lock()
 	defer poolMu.Unlock()
 
 	if db, exists := taskDBPool[taskID]; exists {
-		if sqlDB, err := db.DB(); err == nil {
-			_ = sqlDB.Close()
-		}
 		delete(taskDBPool, taskID)
+		if sqlDB, err := db.DB(); err == nil {
+			if closeErr := sqlDB.Close(); closeErr != nil {
+				logger.Log.Warnf("close sql.DB for task %s failed: %v", taskID, closeErr)
+			}
+		}
 	}
 	return nil
 }
 
 // DeleteTaskDB 删除任务数据库物理文件并关闭连接
 func DeleteTaskDB(taskDir string, taskID string) error {
+	if !isValidTaskID(taskID) {
+		return fmt.Errorf("invalid task id: %s", taskID)
+	}
+
 	_ = CloseTaskDB(taskID)
 	dbPath := filepath.Join(taskDir, fmt.Sprintf("task_%s.db", taskID))
 	_ = os.Remove(dbPath + "-wal")
 	_ = os.Remove(dbPath + "-shm")
-	return os.Remove(dbPath)
+	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove task db file (%s) failed: %w", dbPath, err)
+	}
+	return nil
 }

@@ -131,3 +131,80 @@ func TestBleveIndexerDefensive(t *testing.T) {
 		t.Errorf("expected error on nil indexer Search")
 	}
 }
+
+func TestBleveIndexerConcurrentCloseAndInit(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bleve_concurrent_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	indexPath := filepath.Join(tmpDir, "test.bleve")
+
+	for i := 0; i < 20; i++ {
+		idx, err := search.InitIndexer(indexPath)
+		if err != nil {
+			t.Fatalf("InitIndexer failed on iteration %d: %v", i, err)
+		}
+
+		done := make(chan struct{})
+		go func() {
+			_ = idx.Close()
+			close(done)
+		}()
+
+		go func() {
+			_, _ = search.InitIndexer(indexPath)
+		}()
+
+		<-done
+		_ = idx.Close()
+	}
+}
+
+func TestBleveIndexerChunkedBatching(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "bleve_chunk_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	indexPath := filepath.Join(tmpDir, "test_chunk.bleve")
+	indexer, err := search.InitIndexer(indexPath)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	// 构造 1200 条知识，跨越多个 500-item batch
+	items := make([]model.Knowledge, 1200)
+	for i := 0; i < 1200; i++ {
+		items[i] = model.Knowledge{
+			ID:          uint(i + 1),
+			EntryType:   model.EntryTypeLog,
+			Module:      "SYSTEM",
+			Severity:    4,
+			Brief:       "SYS_CHUNK_TEST",
+			Message:     "System chunk batching test item.",
+			Description: "Chunking verification doc",
+		}
+	}
+
+	if err := indexer.IndexKnowledge(items); err != nil {
+		t.Fatalf("IndexKnowledge failed for 1200 items: %v", err)
+	}
+
+	res, err := indexer.Search(search.SearchFilter{
+		Module:   "SYSTEM",
+		PageSize: 10,
+	})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	if res.Total != 1200 {
+		t.Errorf("expected total 1200 hits, got %d", res.Total)
+	}
+}
+

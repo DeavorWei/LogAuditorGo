@@ -139,14 +139,10 @@ func (idx *Indexer) Close() error {
 	if idx == nil {
 		return nil
 	}
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	if idx.index == nil {
-		return nil
-	}
 
 	indexerMu.Lock()
+	idx.mu.Lock()
+
 	for k, v := range indexerMap {
 		if v == idx {
 			delete(indexerMap, k)
@@ -154,12 +150,18 @@ func (idx *Indexer) Close() error {
 	}
 	indexerMu.Unlock()
 
+	defer idx.mu.Unlock()
+
+	if idx.index == nil {
+		return nil
+	}
+
 	err := idx.index.Close()
 	idx.index = nil
 	return err
 }
 
-// IndexKnowledge 批量为知识列表建立全文索引
+// IndexKnowledge 批量为知识列表建立全文索引（按 500 条分块提交，防止单批超大导致内存激增 OOM）
 func (idx *Indexer) IndexKnowledge(items []model.Knowledge) error {
 	if idx == nil {
 		return fmt.Errorf("indexer is nil")
@@ -171,44 +173,60 @@ func (idx *Indexer) IndexKnowledge(items []model.Knowledge) error {
 		return fmt.Errorf("indexer is closed")
 	}
 
-	batch := idx.index.NewBatch()
-	for _, k := range items {
-		var products []string
-		var versions []string
-		for _, v := range k.Versions {
-			if v.ProductType != "" {
-				products = append(products, v.ProductType)
-			}
-			if v.ProductVersion != "" {
-				versions = append(versions, v.ProductVersion)
-			}
-		}
-
-		doc := BleveIndexDoc{
-			ID:          strconv.Itoa(int(k.ID)),
-			EntryType:   string(k.EntryType),
-			Module:      strings.ToUpper(strings.TrimSpace(k.Module)),
-			Severity:    float64(k.Severity),
-			Brief:       strings.TrimSpace(k.Brief),
-			TrapOID:     strings.TrimSpace(k.TrapOID),
-			Message:     k.Message,
-			Description: k.Description,
-			Cause:       k.Cause,
-			Action:      k.Action,
-			ProductList: products,
-			VersionList: versions,
-		}
-
-		if err := batch.Index(doc.ID, doc); err != nil {
-			logger.Log.Warnf("batch index knowledge ID %d failed: %v", k.ID, err)
-		}
+	if len(items) == 0 {
+		return nil
 	}
 
-	if err := idx.index.Batch(batch); err != nil {
-		return err
+	const batchSize = 500
+	totalIndexed := 0
+
+	for i := 0; i < len(items); i += batchSize {
+		end := i + batchSize
+		if end > len(items) {
+			end = len(items)
+		}
+		chunk := items[i:end]
+
+		batch := idx.index.NewBatch()
+		for _, k := range chunk {
+			var products []string
+			var versions []string
+			for _, v := range k.Versions {
+				if v.ProductType != "" {
+					products = append(products, v.ProductType)
+				}
+				if v.ProductVersion != "" {
+					versions = append(versions, v.ProductVersion)
+				}
+			}
+
+			doc := BleveIndexDoc{
+				ID:          strconv.Itoa(int(k.ID)),
+				EntryType:   string(k.EntryType),
+				Module:      strings.ToUpper(strings.TrimSpace(k.Module)),
+				Severity:    float64(k.Severity),
+				Brief:       strings.TrimSpace(k.Brief),
+				TrapOID:     strings.TrimSpace(k.TrapOID),
+				Message:     k.Message,
+				Description: k.Description,
+				Cause:       k.Cause,
+				Action:      k.Action,
+				ProductList: products,
+				VersionList: versions,
+			}
+
+			if err := batch.Index(doc.ID, doc); err != nil {
+				logger.Log.Warnf("batch index knowledge ID %d failed: %v", k.ID, err)
+			}
+		}
+
+		if err := idx.index.Batch(batch); err != nil {
+			return err
+		}
+		totalIndexed += len(chunk)
 	}
 
-	logger.Log.Debugf("[Bleve Indexer] Successfully indexed batch of %d knowledge items into Bleve", len(items))
+	logger.Log.Debugf("[Bleve Indexer] Successfully indexed batch of %d knowledge items into Bleve", totalIndexed)
 	return nil
 }
 

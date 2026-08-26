@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -23,6 +26,21 @@ import (
 	"logauditorgo/pkg/progress"
 )
 
+var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
+
+// isValidTaskID 校验任务ID格式是否合法，防止路径遍历与注入攻击
+func isValidTaskID(taskID string) bool {
+	return taskIDRegex.MatchString(taskID)
+}
+
+// escapeLikePattern 转义 LIKE 模糊匹配中的特殊通配符
+func escapeLikePattern(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `%`, `\%`)
+	s = strings.ReplaceAll(s, `_`, `\_`)
+	return s
+}
+
 // LogAuditStages 日志导入与审计分析全流程预设阶段
 var LogAuditStages = []progress.StageDef{
 	{Key: "RECEIVE", Name: "日志文件预处理"},
@@ -37,6 +55,30 @@ type FileUploadItem struct {
 	FileName string
 	FileSize int64
 	Content  string
+	Reader   io.Reader
+	FilePath string
+	TempFile bool // 标识是否为处理完毕后需清理的临时文件
+}
+
+// Open 打开数据流 Reader
+func (item *FileUploadItem) Open() (io.ReadCloser, error) {
+	if item.Reader != nil {
+		if rc, ok := item.Reader.(io.ReadCloser); ok {
+			return rc, nil
+		}
+		return io.NopCloser(item.Reader), nil
+	}
+	if item.FilePath != "" {
+		return os.Open(item.FilePath)
+	}
+	return io.NopCloser(strings.NewReader(item.Content)), nil
+}
+
+// Cleanup 清理临时文件（如果有）
+func (item *FileUploadItem) Cleanup() {
+	if item.TempFile && item.FilePath != "" {
+		_ = os.Remove(item.FilePath)
+	}
 }
 
 type Service struct {
@@ -58,6 +100,9 @@ func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEng
 // CreateEmptyTask 创建初始状态为 PENDING 的空审计任务
 func (s *Service) CreateEmptyTask(taskName string, deviceType string) (*model.TaskInfo, error) {
 	taskID := strings.ReplaceAll(uuid.New().String(), "-", "")[:16]
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
 	if taskName == "" {
 		taskName = fmt.Sprintf("Audit-%s", time.Now().Format("20060102-150405"))
 	}
@@ -113,6 +158,9 @@ func (s *Service) CreateAndRunTask(taskName string, deviceType string, logConten
 
 // GetTaskFiles 获取任务中已上传的文件列表
 func (s *Service) GetTaskFiles(taskID string) ([]model.TaskFile, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
 		return nil, err
@@ -125,9 +173,22 @@ func (s *Service) GetTaskFiles(taskID string) ([]model.TaskFile, error) {
 
 // ImportLogs 导入/补充导入日志文件，支持全流程阶段进度实时追踪
 func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
+	defer func() {
+		for i := range items {
+			items[i].Cleanup()
+		}
+	}()
+
 	var tr *progress.JobTracker
 	if len(tracker) > 0 && tracker[0] != nil {
 		tr = tracker[0]
+	}
+
+	if !isValidTaskID(taskID) {
+		if tr != nil {
+			tr.Fail(fmt.Errorf("invalid task id: %s", taskID), "任务ID非法")
+		}
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
 	}
 
 	if tr != nil {
@@ -159,8 +220,12 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 	}
 
 	taskInfo.Status = model.TaskStatusProcessing
-	s.globalDB.Save(&taskInfo)
-	taskDB.Save(&taskInfo)
+	if err := s.globalDB.Save(&taskInfo).Error; err != nil {
+		logger.Log.Errorf("save task info to global db failed: %v", err)
+	}
+	if err := taskDB.Save(&taskInfo).Error; err != nil {
+		logger.Log.Errorf("save task info to task db failed: %v", err)
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -168,8 +233,12 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 			logger.Log.Errorf("[Task Service] %s", errStr)
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = errStr
-			s.globalDB.Save(&taskInfo)
-			taskDB.Save(&taskInfo)
+			if err := s.globalDB.Save(&taskInfo).Error; err != nil {
+				logger.Log.Errorf("save task info to global db failed: %v", err)
+			}
+			if err := taskDB.Save(&taskInfo).Error; err != nil {
+				logger.Log.Errorf("save task info to task db failed: %v", err)
+			}
 			if tr != nil {
 				tr.Fail(fmt.Errorf("%s", errStr), "日志处理异常中断")
 			}
@@ -178,7 +247,9 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 
 	// 获取已存在的文件记录
 	var existingFileList []model.TaskFile
-	taskDB.Find(&existingFileList)
+	if err := taskDB.Find(&existingFileList).Error; err != nil {
+		logger.Log.Warnf("[Task Service] Find existing task files warning: %v", err)
+	}
 	existingMap := make(map[string]model.TaskFile)
 	for _, f := range existingFileList {
 		existingMap[f.FileName] = f
@@ -212,13 +283,23 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 				if tr != nil {
 					tr.AddLog("info", "清理覆盖旧同名文件数据: %s", cleanName)
 				}
-				taskDB.Where("source_file = ?", cleanName).Delete(&model.LogRecord{})
-				taskDB.Where("task_id = ? AND file_name = ?", taskID, cleanName).Delete(&model.TaskFile{})
+				if err := taskDB.Where("source_file = ?", cleanName).Delete(&model.LogRecord{}).Error; err != nil {
+					logger.Log.Warnf("[Task Service] Delete old log records for %s failed: %v", cleanName, err)
+				}
+				if err := taskDB.Where("task_id = ? AND file_name = ?", taskID, cleanName).Delete(&model.TaskFile{}).Error; err != nil {
+					logger.Log.Warnf("[Task Service] Delete old task file for %s failed: %v", cleanName, err)
+				}
 			}
 		}
 
+		rc, err := item.Open()
+		if err != nil {
+			logger.Log.Warnf("[Task Service] Failed to open upload item %s: %v", item.FileName, err)
+			continue
+		}
+
 		var validLines []string
-		scanner := bufio.NewScanner(strings.NewReader(item.Content))
+		scanner := bufio.NewScanner(rc)
 		scanBuf := make([]byte, 64*1024)
 		scanner.Buffer(scanBuf, 1024*1024)
 		for scanner.Scan() {
@@ -227,6 +308,7 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 				validLines = append(validLines, l)
 			}
 		}
+		_ = rc.Close()
 
 		totalValidLines += int64(len(validLines))
 		bundles = append(bundles, fileLineBundle{
@@ -296,73 +378,103 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 				defer wg.Done()
 				defer func() {
 					if r := recover(); r != nil {
-						logger.Log.Errorf("Recovered in log parse worker: %v", r)
+						logger.Log.Errorf("Unexpected panic in log parse worker: %v", r)
 					}
 				}()
 
 				for job := range jobs {
-					norm, err := logparser.ParseLine(job.line)
-					if err != nil {
-						norm = &model.NormalizedLog{
-							RawLog:      job.line,
-							Timestamp:   time.Now(),
-							MessageBody: job.line,
-							Module:      "UNKNOWN",
-							Brief:       "UNPARSED",
-							Severity:    8, // 解析失败的日志等级设为最低级 (8)
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Log.Errorf("Recovered panic while parsing line (job %d): %v", job.index, r)
+								fallbackRec := model.LogRecord{
+									Timestamp:       time.Now(),
+									Module:          "UNKNOWN",
+									Severity:        8,
+									Brief:           "PARSE_ERROR",
+									SourceFile:      job.cleanName,
+									RawLog:          job.line,
+									MessageBody:     job.line,
+									ParametersJSON:  "{}",
+									MatchTier:       matcher.TierUnmatch,
+									MatchConfidence: 0.0,
+								}
+								results <- logParseResult{
+									index:   job.index,
+									record:  fallbackRec,
+									matched: false,
+								}
+							}
+						}()
+
+						norm, err := logparser.ParseLine(job.line)
+						if err != nil {
+							norm = &model.NormalizedLog{
+								RawLog:      job.line,
+								Timestamp:   time.Now(),
+								MessageBody: job.line,
+								Module:      "UNKNOWN",
+								Brief:       "UNPARSED",
+								Severity:    8, // 解析失败的日志等级设为最低级 (8)
+							}
 						}
-					}
-					norm.SourceFile = job.cleanName
+						norm.SourceFile = job.cleanName
 
-					// 知识库多级匹配（纯内存极速检索 + 负缓存）
-					k, tier, conf := s.matchEngine.Match(norm, taskInfo.DeviceType, "")
-					matched := false
-					if k != nil && k.ID > 0 {
-						norm.KnowledgeID = k.ID
-						norm.MatchTier = tier
-						norm.MatchConfidence = conf
-						matched = true
-					} else {
-						norm.KnowledgeID = 0
-						norm.MatchTier = matcher.TierUnmatch
-						norm.MatchConfidence = 0.0
-						// 无法匹配知识库的日志，等级调整为最低级 (8)
-						norm.Severity = 8
-					}
-
-					// 兜底保障：若 Severity 缺失或不在 1~8 范围内，默认设为最低级 8
-					if norm.Severity < 1 || norm.Severity > 8 {
-						norm.Severity = 8
-					}
-
-					paramJSONStr := "{}"
-					if len(norm.Parameters) > 0 {
-						if b, err := json.Marshal(norm.Parameters); err == nil {
-							paramJSONStr = string(b)
+						// 知识库多级匹配（纯内存极速检索 + 负缓存）
+						var k *model.Knowledge
+						var tier string
+						var conf float64
+						if s.matchEngine != nil {
+							k, tier, conf = s.matchEngine.Match(norm, taskInfo.DeviceType, "")
 						}
-					}
+						matched := false
+						if k != nil && k.ID > 0 {
+							norm.KnowledgeID = k.ID
+							norm.MatchTier = tier
+							norm.MatchConfidence = conf
+							matched = true
+						} else {
+							norm.KnowledgeID = 0
+							norm.MatchTier = matcher.TierUnmatch
+							norm.MatchConfidence = 0.0
+							// 无法匹配知识库的日志，等级调整为最低级 (8)
+							norm.Severity = 8
+						}
 
-					rec := model.LogRecord{
-						Timestamp:       norm.Timestamp,
-						Hostname:        norm.Hostname,
-						Module:          norm.Module,
-						Severity:        norm.Severity,
-						Brief:           norm.Brief,
-						SlotInfo:        norm.SlotInfo,
-						SourceFile:      job.cleanName,
-						RawLog:          norm.RawLog,
-						MessageBody:     norm.MessageBody,
-						ParametersJSON:  paramJSONStr,
-						KnowledgeID:     norm.KnowledgeID,
-						MatchTier:       norm.MatchTier,
-						MatchConfidence: norm.MatchConfidence,
-					}
+						// 兜底保障：若 Severity 缺失或不在 1~8 范围内，默认设为最低级 8
+						if norm.Severity < 1 || norm.Severity > 8 {
+							norm.Severity = 8
+						}
 
-					results <- logParseResult{
-						index:   job.index,
-						record:  rec,
-						matched: matched,
-					}
+						paramJSONStr := "{}"
+						if len(norm.Parameters) > 0 {
+							if b, err := json.Marshal(norm.Parameters); err == nil {
+								paramJSONStr = string(b)
+							}
+						}
+
+						rec := model.LogRecord{
+							Timestamp:       norm.Timestamp,
+							Hostname:        norm.Hostname,
+							Module:          norm.Module,
+							Severity:        norm.Severity,
+							Brief:           norm.Brief,
+							SlotInfo:        norm.SlotInfo,
+							SourceFile:      job.cleanName,
+							RawLog:          norm.RawLog,
+							MessageBody:     norm.MessageBody,
+							ParametersJSON:  paramJSONStr,
+							KnowledgeID:     norm.KnowledgeID,
+							MatchTier:       norm.MatchTier,
+							MatchConfidence: norm.MatchConfidence,
+						}
+
+						results <- logParseResult{
+							index:   job.index,
+							record:  rec,
+							matched: matched,
+						}
+					}()
 				}
 			}()
 		}
@@ -410,6 +522,18 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		})
 		if err != nil {
 			logger.Log.Errorf("batch insert log records failed: %v", err)
+			taskInfo.Status = model.TaskStatusFailed
+			taskInfo.ErrorMessage = fmt.Sprintf("batch insert log records failed: %v", err)
+			if saveErr := s.globalDB.Save(&taskInfo).Error; saveErr != nil {
+				logger.Log.Errorf("save task info to global db failed: %v", saveErr)
+			}
+			if saveErr := taskDB.Save(&taskInfo).Error; saveErr != nil {
+				logger.Log.Errorf("save task info to task db failed: %v", saveErr)
+			}
+			if tr != nil {
+				tr.Fail(err, "批量写入日志数据失败")
+			}
+			return nil, fmt.Errorf("batch insert log records failed: %w", err)
 		}
 	}
 
@@ -418,62 +542,83 @@ func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode
 		tr.AddLog("info", "开始 RCA 根因分析计算...")
 	}
 
-	// 全量重新聚合并执行 RCA 根因拓扑分析
-	var fullLogRecords []model.LogRecord
-	taskDB.Order("timestamp asc, id asc").Find(&fullLogRecords)
-
+	// 全量重新聚合并执行 RCA 根因拓扑分析（基于 GORM 游标流式读取，避免百万级日志全量切片内存激增）
 	var normLogsForRCA []*model.NormalizedLog
 	matchedCount := 0
-	for _, rec := range fullLogRecords {
-		if rec.KnowledgeID > 0 {
-			matchedCount++
+	totalLogCount := 0
+
+	rows, err := taskDB.Model(&model.LogRecord{}).Order("timestamp asc, id asc").Rows()
+	if err != nil {
+		logger.Log.Errorf("[Task Service] Failed to query log records for RCA: %v", err)
+	} else {
+		defer rows.Close()
+		for rows.Next() {
+			var rec model.LogRecord
+			if err := taskDB.ScanRows(rows, &rec); err != nil {
+				logger.Log.Warnf("[Task Service] Scan row for RCA failed: %v", err)
+				continue
+			}
+			totalLogCount++
+			if rec.KnowledgeID > 0 {
+				matchedCount++
+			}
+			var params map[string]string
+			if rec.ParametersJSON != "" {
+				_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
+			}
+			nl := &model.NormalizedLog{
+				ID:              rec.ID,
+				RawLog:          rec.RawLog,
+				Timestamp:       rec.Timestamp,
+				Hostname:        rec.Hostname,
+				Module:          rec.Module,
+				Severity:        rec.Severity,
+				Brief:           rec.Brief,
+				SlotInfo:        rec.SlotInfo,
+				SourceFile:      rec.SourceFile,
+				MessageBody:     rec.MessageBody,
+				Parameters:      params,
+				KnowledgeID:     rec.KnowledgeID,
+				MatchTier:       rec.MatchTier,
+				MatchConfidence: rec.MatchConfidence,
+			}
+			normLogsForRCA = append(normLogsForRCA, nl)
 		}
-		var params map[string]string
-		if rec.ParametersJSON != "" {
-			_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
-		}
-		nl := &model.NormalizedLog{
-			ID:              rec.ID,
-			RawLog:          rec.RawLog,
-			Timestamp:       rec.Timestamp,
-			Hostname:        rec.Hostname,
-			Module:          rec.Module,
-			Severity:        rec.Severity,
-			Brief:           rec.Brief,
-			SlotInfo:        rec.SlotInfo,
-			SourceFile:      rec.SourceFile,
-			MessageBody:     rec.MessageBody,
-			Parameters:      params,
-			KnowledgeID:     rec.KnowledgeID,
-			MatchTier:       rec.MatchTier,
-			MatchConfidence: rec.MatchConfidence,
-		}
-		normLogsForRCA = append(normLogsForRCA, nl)
 	}
 
 	// 清理旧 RCA 并重新分析
-	taskDB.Where("1 = 1").Delete(&model.RCAEvent{})
+	if err := taskDB.Where("1 = 1").Delete(&model.RCAEvent{}).Error; err != nil {
+		logger.Log.Warnf("[Task Service] Delete old RCA events failed: %v", err)
+	}
 	var rcaEvents []model.RCAEvent
 	if len(normLogsForRCA) > 0 {
 		rcaEvents = s.rcaEngine.Analyze(normLogsForRCA, 300)
 		if len(rcaEvents) > 0 {
-			taskDB.Create(&rcaEvents)
+			if err := taskDB.Create(&rcaEvents).Error; err != nil {
+				logger.Log.Errorf("[Task Service] Create RCA events failed: %v", err)
+			}
 		}
 	}
 
 	var currentFileCount int64
-	taskDB.Model(&model.TaskFile{}).Count(&currentFileCount)
+	if err := taskDB.Model(&model.TaskFile{}).Count(&currentFileCount).Error; err != nil {
+		logger.Log.Warnf("[Task Service] Count task files warning: %v", err)
+	}
 
 	now := time.Now()
 	taskInfo.FileCount = int(currentFileCount)
-	taskInfo.LogCount = len(fullLogRecords)
+	taskInfo.LogCount = totalLogCount
 	taskInfo.MatchedCount = matchedCount
 	taskInfo.RcaCount = len(rcaEvents)
 	taskInfo.Status = model.TaskStatusCompleted
 	taskInfo.FinishTime = &now
 
-	s.globalDB.Save(&taskInfo)
-	taskDB.Save(&taskInfo)
+	if err := s.globalDB.Save(&taskInfo).Error; err != nil {
+		logger.Log.Errorf("save task info to global db failed: %v", err)
+	}
+	if err := taskDB.Save(&taskInfo).Error; err != nil {
+		logger.Log.Errorf("save task info to task db failed: %v", err)
+	}
 
 	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched, %d rca events",
 		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
@@ -497,6 +642,9 @@ func (s *Service) GetTaskList() ([]model.TaskInfo, error) {
 
 // GetTaskByID 获取单个任务元信息
 func (s *Service) GetTaskByID(taskID string) (*model.TaskInfo, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
 	var task model.TaskInfo
 	err := s.globalDB.First(&task, "task_id = ?", taskID).Error
 	return &task, err
@@ -504,6 +652,9 @@ func (s *Service) GetTaskByID(taskID string) (*model.TaskInfo, error) {
 
 // QueryTaskLogs 分页及多维度过滤查询任务内日志
 func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]model.LogRecord, int64, error) {
+	if !isValidTaskID(taskID) {
+		return nil, 0, fmt.Errorf("invalid task id: %s", taskID)
+	}
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
 		return nil, 0, err
@@ -518,16 +669,17 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 		query = query.Where("severity <= ?", *filter.Severity)
 	}
 	if filter.Brief != "" {
-		query = query.Where("brief LIKE ?", "%"+filter.Brief+"%")
+		query = query.Where("brief LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Brief)+"%")
 	}
 	if filter.Hostname != "" {
-		query = query.Where("hostname LIKE ?", "%"+filter.Hostname+"%")
+		query = query.Where("hostname LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Hostname)+"%")
 	}
 	if filter.SourceFile != "" {
 		query = query.Where("source_file = ?", filter.SourceFile)
 	}
 	if filter.Keyword != "" {
-		query = query.Where("raw_log LIKE ? OR message_body LIKE ?", "%"+filter.Keyword+"%", "%"+filter.Keyword+"%")
+		escaped := escapeLikePattern(filter.Keyword)
+		query = query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\')", "%"+escaped+"%", "%"+escaped+"%")
 	}
 	if filter.Matched != nil {
 		if *filter.Matched {
@@ -574,6 +726,9 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 
 // GetTaskRCAEvents 获取任务的 RCA 分析事件
 func (s *Service) GetTaskRCAEvents(taskID string) ([]model.RCAEvent, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
 		return nil, err
@@ -586,6 +741,9 @@ func (s *Service) GetTaskRCAEvents(taskID string) ([]model.RCAEvent, error) {
 
 // ExportTaskHTML 导出任务 HTML 报告
 func (s *Service) ExportTaskHTML(taskID string) (string, error) {
+	if !isValidTaskID(taskID) {
+		return "", fmt.Errorf("invalid task id: %s", taskID)
+	}
 	task, err := s.GetTaskByID(taskID)
 	if err != nil {
 		return "", err
@@ -608,6 +766,16 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 
 // DeleteTask 删除任务及物理数据库
 func (s *Service) DeleteTask(taskID string) error {
-	_ = s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskInfo{})
-	return storage.DeleteTaskDB(s.taskDir, taskID)
+	if !isValidTaskID(taskID) {
+		return fmt.Errorf("invalid task id: %s", taskID)
+	}
+	if err := s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskInfo{}).Error; err != nil {
+		logger.Log.Errorf("delete task from global db failed: %v", err)
+		return fmt.Errorf("delete task from global db failed: %w", err)
+	}
+	if err := storage.DeleteTaskDB(s.taskDir, taskID); err != nil {
+		logger.Log.Errorf("delete task db failed: %v", err)
+		return fmt.Errorf("delete task db failed: %w", err)
+	}
+	return nil
 }

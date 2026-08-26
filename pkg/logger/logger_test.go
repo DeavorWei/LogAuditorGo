@@ -282,3 +282,34 @@ func TestLogger_InitWithConfig_And_DynamicUpdates(t *testing.T) {
 		t.Fatalf("expected non-zero current size in log.log, got %d", stats.CurrentSize)
 	}
 }
+
+func TestRotatingFileWriter_ConcurrentCleanOldLogs(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "logger_test_clean_concurrent_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	w, err := NewRotatingFileWriter(tempDir, 1, 10)
+	if err != nil {
+		t.Fatalf("init writer failed: %v", err)
+	}
+	defer w.Close()
+
+	// 创建几个历史归档文件
+	for i := 0; i < 10; i++ {
+		dummyFile := filepath.Join(tempDir, fmt.Sprintf("log_2026010%d_12000000.log", i))
+		_ = os.WriteFile(dummyFile, bytes.Repeat([]byte("A"), 200*1024), 0644)
+	}
+
+	var wg sync.WaitGroup
+	workers := 20
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w.CleanOldLogs()
+		}()
+	}
+	wg.Wait()
+}

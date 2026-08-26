@@ -10,6 +10,7 @@ import (
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
 	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
 
 func TestRealHDXImportAndDeduplication(t *testing.T) {
@@ -224,4 +225,192 @@ func TestBatchDirectoryImport(t *testing.T) {
 		t.Errorf("expected 10 documents in db, got %d", len(docs))
 	}
 }
+
+func TestConcurrentDocumentImport(t *testing.T) {
+	logger.Init("debug", "console")
+
+	usgDir := filepath.FromSlash("../../原始产品文档/HiSecEngine USG6000F, USG6000G_V600R025C10_01_zh_AZQ01091")
+	ceDir := filepath.FromSlash("../../原始产品文档/CloudEngine 16800_V200R025C00_05_zh_AZP10147")
+	if _, err := os.Stat(usgDir); os.IsNotExist(err) {
+		t.Skipf("sample doc dir not found, skipping test")
+	}
+	if _, err := os.Stat(ceDir); os.IsNotExist(err) {
+		t.Skipf("sample doc dir not found, skipping test")
+	}
+
+	tmpDir, err := os.MkdirTemp("", "knowledge_concurrent_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "concurrent_knowledge.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	service := knowledge.NewService(db)
+
+	stat1Ch := make(chan *knowledge.ImportStats, 1)
+	stat2Ch := make(chan *knowledge.ImportStats, 1)
+	errCh := make(chan error, 2)
+
+	go func() {
+		st, err := service.ImportDocumentFromDir(usgDir)
+		stat1Ch <- st
+		errCh <- err
+	}()
+	go func() {
+		st, err := service.ImportDocumentFromDir(ceDir)
+		stat2Ch <- st
+		errCh <- err
+	}()
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent import failed: %v", err)
+		}
+	}
+
+	st1 := <-stat1Ch
+	st2 := <-stat2Ch
+	if st1 == nil || st1.TotalDocuments != 1 {
+		t.Errorf("expected 1 doc for st1, got %+v", st1)
+	}
+	if st2 == nil || st2.TotalDocuments != 1 {
+		t.Errorf("expected 1 doc for st2, got %+v", st2)
+	}
+}
+
+func TestBatchKnowledgeQueries(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "knowledge_batch_query_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "batch_query_knowledge.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	service := knowledge.NewService(db)
+
+	// 1. 空 ID 列表
+	list0, err := service.GetKnowledgeByIDs(nil)
+	if err != nil || len(list0) != 0 {
+		t.Errorf("expected empty slice, got err=%v, len=%d", err, len(list0))
+	}
+	map0, err := service.GetKnowledgeMapByIDs([]uint{})
+	if err != nil || len(map0) != 0 {
+		t.Errorf("expected empty map, got err=%v, len=%d", err, len(map0))
+	}
+
+	// 2. 插入测试数据
+	k1 := &model.Knowledge{
+		Module:      "BGP",
+		Brief:       "BGP_STATE_CHANGE",
+		ContentHash: "hash1",
+		Versions: []model.KnowledgeVersionMapping{
+			{ProductType: "CE16800", ProductVersion: "V200"},
+		},
+	}
+	k2 := &model.Knowledge{
+		Module:      "OSPF",
+		Brief:       "OSPF_NBR_DOWN",
+		ContentHash: "hash2",
+		Versions: []model.KnowledgeVersionMapping{
+			{ProductType: "CE16800", ProductVersion: "V200"},
+		},
+	}
+	db.Create(k1)
+	db.Create(k2)
+
+	// 3. 批量查询
+	list, err := service.GetKnowledgeByIDs([]uint{k1.ID, k2.ID, 9999})
+	if err != nil {
+		t.Fatalf("GetKnowledgeByIDs failed: %v", err)
+	}
+	if len(list) != 2 {
+		t.Errorf("expected 2 items, got %d", len(list))
+	}
+
+	// 4. 批量 Map 查询
+	kMap, err := service.GetKnowledgeMapByIDs([]uint{k1.ID, k2.ID, 9999})
+	if err != nil {
+		t.Fatalf("GetKnowledgeMapByIDs failed: %v", err)
+	}
+	if len(kMap) != 2 {
+		t.Errorf("expected 2 items in map, got %d", len(kMap))
+	}
+	if kMap[k1.ID] == nil || len(kMap[k1.ID].Versions) == 0 {
+		t.Errorf("expected k1 preloaded with versions, got %+v", kMap[k1.ID])
+	}
+	if kMap[k2.ID] == nil || kMap[k2.ID].Brief != "OSPF_NBR_DOWN" {
+		t.Errorf("expected k2 brief OSPF_NBR_DOWN, got %+v", kMap[k2.ID])
+	}
+}
+
+func TestImportFunctionalOptions(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "knowledge_opts_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "opts_knowledge.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	service := knowledge.NewService(db)
+
+	usgDir := filepath.FromSlash("../../原始产品文档/HiSecEngine USG6000F, USG6000G_V600R025C10_01_zh_AZQ01091")
+	if _, err := os.Stat(usgDir); os.IsNotExist(err) {
+		t.Skipf("sample doc dir not found, skipping test")
+	}
+
+	// 1. 使用 Functional Options 导入 (WithTracker + WithConflictMode)
+	tracker1 := progress.NewJobTracker("test_job_1", "task_1", "hdx", knowledge.HDXImportStages)
+	stats1, err := service.ImportDocumentFromDir(usgDir, knowledge.WithConflictMode("overwrite"), knowledge.WithTracker(tracker1))
+	if err != nil {
+		t.Fatalf("import with functional options failed: %v", err)
+	}
+	if stats1.LeafLogCount <= 0 {
+		t.Errorf("expected > 0 leaf logs, got %d", stats1.LeafLogCount)
+	}
+	snap1 := tracker1.GetSnapshot()
+	if snap1.Status != progress.JobCompleted {
+		t.Errorf("expected tracker status %s, got %s", progress.JobCompleted, snap1.Status)
+	}
+
+	// 2. 测试 WithConflictMode("skip") 跳过已导入文档
+	tracker2 := progress.NewJobTracker("test_job_2", "task_2", "hdx", knowledge.HDXImportStages)
+	stats2, err := service.ImportDocumentFromDir(usgDir, knowledge.WithConflictMode("skip"), knowledge.WithTracker(tracker2))
+	if err != nil {
+		t.Fatalf("import with skip option failed: %v", err)
+	}
+	if len(stats2.SkippedDocs) != 1 {
+		t.Errorf("expected 1 skipped doc, got %d", len(stats2.SkippedDocs))
+	}
+
+	// 3. 测试向前兼容的传统参数传入方式 (string + *progress.JobTracker)
+	tracker3 := progress.NewJobTracker("test_job_3", "task_3", "hdx", knowledge.HDXImportStages)
+	stats3, err := service.ImportDocumentFromDir(usgDir, "skip", tracker3)
+	if err != nil {
+		t.Fatalf("import with legacy args failed: %v", err)
+	}
+	if len(stats3.SkippedDocs) != 1 {
+		t.Errorf("expected 1 skipped doc with legacy args, got %d", len(stats3.SkippedDocs))
+	}
+}
+
+
 

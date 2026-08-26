@@ -62,6 +62,7 @@ type LogStats struct {
 // RotatingFileWriter 支持启动转储、写时10MB轮转、留存自动清理的写入器
 type RotatingFileWriter struct {
 	mu            sync.Mutex
+	cleanMu       sync.Mutex
 	dir           string
 	filename      string
 	file          *os.File
@@ -249,6 +250,9 @@ func (w *RotatingFileWriter) rotateLocked() error {
 // CleanOldLogs 执行日志留存策略检查与清理 (规则 4)
 // 默认最大保留 1G 日志，保留 180 天日志，先达到哪个条件就按日期从旧的文件开始清理
 func (w *RotatingFileWriter) CleanOldLogs() {
+	w.cleanMu.Lock()
+	defer w.cleanMu.Unlock()
+
 	w.mu.Lock()
 	dir := w.dir
 	maxSizeMB := w.maxSizeMB

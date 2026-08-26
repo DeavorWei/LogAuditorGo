@@ -139,3 +139,42 @@ storage:
 		t.Errorf("expected task db file deleted, but still exists")
 	}
 }
+
+func TestTaskDBValidation(t *testing.T) {
+	invalidIDs := []string{
+		"../../etc/passwd",
+		"short",
+		"task with spaces",
+		"task*with*wildcards",
+		"task/slash",
+		"task\\backslash",
+		"",
+	}
+
+	for _, badID := range invalidIDs {
+		if storage.IsValidTaskID(badID) {
+			t.Errorf("expected IsValidTaskID to be false for '%s'", badID)
+		}
+		if _, _, err := storage.GetOrCreateTaskDB("tasks", badID); err == nil {
+			t.Errorf("expected GetOrCreateTaskDB to fail for '%s'", badID)
+		}
+		if err := storage.CloseTaskDB(badID); err == nil {
+			t.Errorf("expected CloseTaskDB to fail for '%s'", badID)
+		}
+		if err := storage.DeleteTaskDB("tasks", badID); err == nil {
+			t.Errorf("expected DeleteTaskDB to fail for '%s'", badID)
+		}
+	}
+
+	validIDs := []string{
+		"task_test_001",
+		"12345678",
+		"Task-ID_12345",
+	}
+	for _, goodID := range validIDs {
+		if !storage.IsValidTaskID(goodID) {
+			t.Errorf("expected IsValidTaskID to be true for '%s'", goodID)
+		}
+	}
+}
+

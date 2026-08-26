@@ -114,9 +114,17 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 
 			targetPath := filepath.Join(batchTempDir, filepath.FromSlash(relName))
 			// 路径安全防护（防越界 traversal）
-			cleanDest := filepath.Clean(batchTempDir) + string(os.PathSeparator)
-			if !strings.HasPrefix(filepath.Clean(targetPath)+string(os.PathSeparator), cleanDest) && filepath.Clean(targetPath) != filepath.Clean(batchTempDir) {
-				targetPath = filepath.Join(batchTempDir, filepath.Base(relName))
+			cleanBase := filepath.Clean(batchTempDir)
+			cleanTarget := filepath.Clean(targetPath)
+			rel, err := filepath.Rel(cleanBase, cleanTarget)
+			if err != nil || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." || rel == "." {
+				base := filepath.Base(relName)
+				if base == "." || base == "/" || base == "\\" || base == "" {
+					continue
+				}
+				targetPath = filepath.Join(cleanBase, base)
+			} else {
+				targetPath = cleanTarget
 			}
 
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
@@ -148,7 +156,6 @@ func (h *DocumentHandler) UploadHDX(c *gin.Context) {
 				if r := recover(); r != nil {
 					tracker.Fail(fmt.Errorf("panic in upload HDX process: %v", r))
 				}
-				time.Sleep(2 * time.Second)
 				_ = os.RemoveAll(batchTempDir)
 			}()
 

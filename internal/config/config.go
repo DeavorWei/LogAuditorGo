@@ -8,7 +8,6 @@ import (
 
 	"github.com/goccy/go-yaml"
 	"github.com/spf13/viper"
-	"logauditorgo/pkg/logger"
 )
 
 type Config struct {
@@ -38,11 +37,24 @@ type LogConfig struct {
 	MaxDays   int    `mapstructure:"max_days" json:"max_days" yaml:"max_days"`
 }
 
+// LogUpdateHook 定义日志配置变更时的通知钩子函数
+type LogUpdateHook func(maxSizeMB, maxDays int, level, format string)
+
 var (
 	GlobalConfig   *Config
 	ConfigFileUsed string
 	configMu       sync.RWMutex
+
+	logUpdateHooks []LogUpdateHook
+	hooksMu        sync.Mutex
 )
+
+// RegisterLogUpdateHook 注册日志配置更新回调钩子
+func RegisterLogUpdateHook(hook LogUpdateHook) {
+	hooksMu.Lock()
+	defer hooksMu.Unlock()
+	logUpdateHooks = append(logUpdateHooks, hook)
+}
 
 const DefaultDataDir = "LogAuditorGoData"
 
@@ -98,7 +110,7 @@ func Load(configPath string) (*Config, error) {
 		if configDir != "" && configDir != "." {
 			_ = os.MkdirAll(configDir, 0755)
 		}
-		_ = os.WriteFile(targetConfigFile, []byte(defaultConfigFileTemplate), 0644)
+		_ = os.WriteFile(targetConfigFile, []byte(defaultConfigFileTemplate), 0600)
 	}
 
 	v.SetConfigFile(targetConfigFile)
@@ -196,14 +208,14 @@ func Save(configPath string) error {
 		return fmt.Errorf("marshal config to yaml failed: %w", err)
 	}
 
-	if err := os.WriteFile(targetPath, data, 0644); err != nil {
+	if err := os.WriteFile(targetPath, data, 0600); err != nil {
 		return fmt.Errorf("write config file %s failed: %w", targetPath, err)
 	}
 
 	return nil
 }
 
-// UpdateLogConfig 动态更新日志配置，同步至运行期 Logger 并持久化保存到配置文件
+// UpdateLogConfig 动态更新日志配置，通知所有已注册的回调钩子并持久化保存到配置文件
 func UpdateLogConfig(maxSizeMB, maxDays int, level, format string) (*LogConfig, error) {
 	configMu.Lock()
 	if GlobalConfig == nil {
@@ -227,10 +239,16 @@ func UpdateLogConfig(maxSizeMB, maxDays int, level, format string) (*LogConfig, 
 	currentLogCfg := GlobalConfig.Log
 	configMu.Unlock()
 
-	// 同步更新底层 logger
-	logger.UpdatePolicy(currentLogCfg.MaxSizeMB, currentLogCfg.MaxDays)
-	if currentLogCfg.Level != "" {
-		logger.SetLevel(currentLogCfg.Level)
+	// 触发所有已注册的日志更新钩子
+	hooksMu.Lock()
+	hooks := make([]LogUpdateHook, len(logUpdateHooks))
+	copy(hooks, logUpdateHooks)
+	hooksMu.Unlock()
+
+	for _, hook := range hooks {
+		if hook != nil {
+			hook(currentLogCfg.MaxSizeMB, currentLogCfg.MaxDays, currentLogCfg.Level, currentLogCfg.Format)
+		}
 	}
 
 	// 持久化保存
