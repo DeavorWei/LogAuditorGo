@@ -125,6 +125,35 @@ func TestRealDeviceLogLine(t *testing.T) {
 	}
 }
 
+func TestMlagDeviceLogLine(t *testing.T) {
+	line := "May 19 2026 09:33:32+08:00 SZ_PS_DMZLeaf_2Z29-34U-CE8865-01 %%01M-LAG/4/hwMlagPortDown_active(l):CID=0x81de0458-alarmID=0x0ae52007;M-LAG member interfaces with the same M-LAG ID on both M-LAG devices are Down. (M-LAG ID=10, LocalIfname=Eth-Trunk10, LocalSystemMAC=1ce6-39c7-3c31, RemoteSystemMAC=1ce6-3990-1711)"
+	norm, err := logparser.ParseLine(line)
+	if err != nil {
+		t.Fatalf("parse M-LAG line failed: %v", err)
+	}
+	if norm.Hostname != "SZ_PS_DMZLeaf_2Z29-34U-CE8865-01" {
+		t.Errorf("expected hostname 'SZ_PS_DMZLeaf_2Z29-34U-CE8865-01', got '%s'", norm.Hostname)
+	}
+	if norm.Module != "M-LAG" {
+		t.Errorf("expected module 'M-LAG', got '%s'", norm.Module)
+	}
+	if norm.Severity != 4 {
+		t.Errorf("expected severity 4, got %d", norm.Severity)
+	}
+	if norm.Brief != "hwMlagPortDown_active" {
+		t.Errorf("expected brief 'hwMlagPortDown_active', got '%s'", norm.Brief)
+	}
+	if norm.Timestamp.IsZero() {
+		t.Fatalf("timestamp was not parsed, got zero time")
+	}
+	if norm.Timestamp.Year() != 2026 || norm.Timestamp.Month() != time.May || norm.Timestamp.Day() != 19 || norm.Timestamp.Hour() != 9 || norm.Timestamp.Minute() != 33 || norm.Timestamp.Second() != 32 {
+		t.Errorf("unexpected timestamp: %v", norm.Timestamp)
+	}
+	if norm.LogType != "l" {
+		t.Errorf("expected log type 'l', got '%s'", norm.LogType)
+	}
+}
+
 func BenchmarkParseLine(b *testing.B) {
 	line := "Apr 15 2026 14:23:10 HUAWEI-CORE-SW01 %%01BGP/4/BGP_AUTH_FAILED(l)[1042][Slot=1/1]: BGP session authentication failed. (PeerID=192.168.1.2, TcpConnSocket=12, ReturnCode=3, SourceInterface=GE1/0/1)"
 	b.ResetTimer()

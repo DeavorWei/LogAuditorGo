@@ -12,7 +12,7 @@ import (
 // USG 安全日志格式正则
 // 匹配 USG 防火墙 UTM 会话/策略/攻击日志:
 // e.g. 2026-04-15 14:00:00 USG6000F-FW %%01SEC/4/SESSION_CLOSE(l): Protocol=TCP, SrcIP=10.1.1.1, DstIP=192.168.1.1, Policy=default
-var usgSecRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?(?P<time>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_]+)\(s\):\s*(?P<msg>.*)$`)
+var usgSecRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?(?P<time>\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)\(s\):\s*(?P<msg>.*)$`)
 
 var (
 	usgSecPriIdx     = usgSecRegex.SubexpIndex("pri")
