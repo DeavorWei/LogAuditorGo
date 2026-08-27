@@ -85,6 +85,7 @@
     <div v-show="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
       <DeviceManager
         v-if="currentTaskId"
+        :key="currentTaskId + '_devices_' + refreshTrigger"
         :task-id="currentTaskId"
         @device-updated="handleDeviceUpdated"
         @open-progress="openProgressModalWithId"
@@ -93,17 +94,30 @@
 
     <!-- 视图 2：多设备时间线视图 -->
     <div v-show="currentTaskId && currentViewMode === 'multi-timeline'" class="workbench-sub-view">
-      <MultiDeviceTimeline v-if="currentTaskId" :task-id="currentTaskId" />
+      <MultiDeviceTimeline
+        v-if="currentTaskId"
+        :key="currentTaskId + '_timeline_' + refreshTrigger"
+        :task-id="currentTaskId"
+      />
     </div>
 
     <!-- 视图 3：独立 RCA 故障联动分析中心 -->
     <div v-show="currentTaskId && currentViewMode === 'rca'" class="workbench-sub-view">
-      <RcaCenter v-if="currentTaskId" :task-id="currentTaskId" @jump-to-log="handleJumpToLog" />
+      <RcaCenter
+        v-if="currentTaskId"
+        :key="currentTaskId + '_rca_' + refreshTrigger"
+        :task-id="currentTaskId"
+        @jump-to-log="handleJumpToLog"
+      />
     </div>
 
     <!-- 视图 4：多设备对比诊断报告视图 -->
     <div v-show="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
-      <MultiDeviceReport v-if="currentTaskId" :task-id="currentTaskId" />
+      <MultiDeviceReport
+        v-if="currentTaskId"
+        :key="currentTaskId + '_report_' + refreshTrigger"
+        :task-id="currentTaskId"
+      />
     </div>
 
     <!-- 视图 5：经典日志审计工作台视图 -->
@@ -653,11 +667,14 @@ const currentTask = ref(null)
 const currentViewMode = ref('workbench')
 const taskFiles = ref([])
 const showFilesDrawer = ref(false)
+const refreshTrigger = ref(0)
 
-const handleDeviceUpdated = (devices) => {
+const handleDeviceUpdated = async (devices) => {
   if (currentTask.value) {
     currentTask.value.device_count = devices.length
   }
+  await fetchTaskDevices()
+  refreshTrigger.value++
 }
 
 const openProgressModalWithId = (jobId) => {
@@ -1405,8 +1422,20 @@ const handleLogImportCompleted = async (result) => {
   await fetchTasks()
   if (currentTaskId.value) {
     await handleTaskChange(currentTaskId.value)
+    refreshTrigger.value++
   }
 }
+
+// 监听视图模式切换：确保切换到多设备时间线、设备管理、RCA分析等子视图时展示最新数据
+watch(currentViewMode, async (newMode) => {
+  if (!currentTaskId.value) return
+  if (newMode === 'devices') {
+    await fetchTaskDevices()
+  } else if (newMode === 'workbench') {
+    await fetchLogs()
+    await fetchTaskFiles()
+  }
+})
 
 const formatTime = (ts) => {
   if (!ts || ts.startsWith('0001-01-01') || ts === '0001-01-01T00:00:00Z') return '无法解析'

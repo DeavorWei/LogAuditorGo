@@ -928,6 +928,82 @@ func TestTaskImportConcurrencyLock(t *testing.T) {
 	}
 }
 
+func TestDuplicateFileNameImportAndOverwrite(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_dup_name_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	taskInfo, err := svc.CreateEmptyTask("Dup-Name-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create empty task failed: %v", err)
+	}
+
+	// 1. 同批次同时上传两份同名为 log.log 的日志 (分别属于 SW-01 和 SW-02)
+	item1 := task.FileUploadItem{
+		FileName: "log.log",
+		Content:  "Apr 15 2026 14:00:01 SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 down.",
+	}
+	item2 := task.FileUploadItem{
+		FileName: "log.log",
+		Content:  "Apr 15 2026 14:00:02 SW-02 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/2 down.",
+	}
+
+	tUpdated, err := svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item1, item2}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogs with duplicate file names failed: %v", err)
+	}
+
+	// 验证两个文件均被保存，日志总数为 2
+	if tUpdated.FileCount != 2 {
+		t.Errorf("expected 2 files imported, got %d", tUpdated.FileCount)
+	}
+	if tUpdated.LogCount != 2 {
+		t.Errorf("expected 2 logs imported, got %d", tUpdated.LogCount)
+	}
+
+	// 验证自动创建了两个设备 SW-01 和 SW-02
+	devs, err := svc.ListDevices(taskInfo.TaskID)
+	if err != nil || len(devs) != 2 {
+		t.Fatalf("expected 2 auto devices recognized, got %d (err: %v)", len(devs), err)
+	}
+
+	// 2. 补充导入第三份同名日志 log.log (来自新设备 SW-03)
+	item3 := task.FileUploadItem{
+		FileName: "log.log",
+		Content:  "Apr 15 2026 14:00:03 SW-03 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/3 down.",
+	}
+	tUpdated2, err := svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item3}, "overwrite")
+	if err != nil {
+		t.Fatalf("supplementary ImportLogs failed: %v", err)
+	}
+
+	if tUpdated2.FileCount != 3 {
+		t.Errorf("expected 3 files after supplementary import, got %d", tUpdated2.FileCount)
+	}
+	if tUpdated2.LogCount != 3 {
+		t.Errorf("expected 3 logs after supplementary import, got %d", tUpdated2.LogCount)
+	}
+
+	// 验证设备管理中自动识别出了 SW-03
+	devs2, err := svc.ListDevices(taskInfo.TaskID)
+	if err != nil || len(devs2) != 3 {
+		t.Fatalf("expected 3 auto devices recognized including SW-03, got %d", len(devs2))
+	}
+}
+
 
 
 

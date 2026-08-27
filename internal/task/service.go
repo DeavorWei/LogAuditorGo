@@ -291,10 +291,12 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	if err := taskDB.Find(&existingFileList).Error; err != nil {
 		logger.Log.Warnf("[Task Service] Find existing task files warning: %v", err)
 	}
-	existingMap := make(map[string]model.TaskFile)
+	dbFilesMap := make(map[string]model.TaskFile, len(existingFileList))
 	for _, f := range existingFileList {
-		existingMap[f.FileName] = f
+		dbFilesMap[f.FileName] = f
 	}
+	// 记录当前导入批次中已分配占用的文件名，防止同批次文件之间相互覆盖或命名冲突
+	batchAssignedNames := make(map[string]bool)
 
 	// 预估所有文件的有效行数
 	type fileLineBundle struct {
@@ -372,18 +374,20 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 			cleanName = prefix + cleanName
 		}
 
-		// 3. 同名文件冲突处理 (支持 skip, overwrite, 以及默认 rename)
+		// 3. 同名文件冲突处理 (支持 skip, overwrite, 以及智能防重 rename)
 		if conflictMode == "skip" {
-			if _, exists := existingMap[cleanName]; exists {
+			if _, exists := dbFilesMap[cleanName]; exists || batchAssignedNames[cleanName] {
 				logger.Log.Infof("[Task Service] Skipping existing file %s for task %s", cleanName, taskID)
 				if tr != nil {
 					tr.AddLog("warning", "跳过已存在的同名文件: %s", cleanName)
 				}
 				continue
 			}
+			batchAssignedNames[cleanName] = true
 		} else if conflictMode == "overwrite" {
-			if _, exists := existingMap[cleanName]; exists {
-				logger.Log.Infof("[Task Service] Overwriting existing file %s for task %s", cleanName, taskID)
+			// 如果该文件名属于历史数据库中的已有文件，且在当前批次中尚未覆盖过，则执行清理历史旧数据
+			if _, exists := dbFilesMap[cleanName]; exists && !batchAssignedNames[cleanName] {
+				logger.Log.Infof("[Task Service] Overwriting existing historical file %s for task %s", cleanName, taskID)
 				if tr != nil {
 					tr.AddLog("info", "清理覆盖旧同名文件数据: %s", cleanName)
 				}
@@ -403,26 +407,45 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 					}
 					return nil, delErr
 				}
-			}
-		} else {
-			// 默认 rename 模式：同名文件自动追加序号，支持多文件共存
-			if _, exists := existingMap[cleanName]; exists {
+				delete(dbFilesMap, cleanName)
+				batchAssignedNames[cleanName] = true
+			} else if batchAssignedNames[cleanName] {
+				// 用户在同一批次中同时上传了多个同名文件！意图是全部导入，绝不互相覆盖，自动追加序号
 				ext := filepath.Ext(cleanName)
 				base := strings.TrimSuffix(cleanName, ext)
 				for seq := 2; ; seq++ {
 					candidate := fmt.Sprintf("%s_%d%s", base, seq, ext)
-					if _, dup := existingMap[candidate]; !dup {
+					if !batchAssignedNames[candidate] && dbFilesMap[candidate].FileName == "" {
+						cleanName = candidate
+						break
+					}
+				}
+				batchAssignedNames[cleanName] = true
+				if tr != nil {
+					tr.AddLog("info", "检测到同批次存在同名文件，已自动区分为: %s", cleanName)
+				}
+			} else {
+				batchAssignedNames[cleanName] = true
+			}
+		} else {
+			// 默认 rename 模式：在历史文件或当前批次中已存在时，自动追加序号多文件共存
+			if _, exists := dbFilesMap[cleanName]; exists || batchAssignedNames[cleanName] {
+				ext := filepath.Ext(cleanName)
+				base := strings.TrimSuffix(cleanName, ext)
+				for seq := 2; ; seq++ {
+					candidate := fmt.Sprintf("%s_%d%s", base, seq, ext)
+					if !batchAssignedNames[candidate] && dbFilesMap[candidate].FileName == "" {
 						cleanName = candidate
 						break
 					}
 				}
 			}
+			batchAssignedNames[cleanName] = true
 		}
-		existingMap[cleanName] = model.TaskFile{FileName: cleanName}
 
 		// 4. 自动关联或创建设备实体
 		fileDevID := deviceID
-		if fileDevID == 0 && targetDevName != "" {
+		if targetDevName != "" {
 			var dev model.Device
 			err := taskDB.Where("task_id = ? AND (device_name = ? OR hostname = ?)", taskID, targetDevName, targetDevName).First(&dev).Error
 			if err != nil {
@@ -431,7 +454,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 					DeviceName: targetDevName,
 					DeviceType: "Router",
 					Hostname:   detectedHost,
-					Color:      DeviceDefaultColors[len(existingMap)%len(DeviceDefaultColors)],
+					Color:      DeviceDefaultColors[len(batchAssignedNames)%len(DeviceDefaultColors)],
 					CreatedAt:  time.Now(),
 					UpdatedAt:  time.Now(),
 				}
@@ -439,6 +462,10 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 					fileDevID = dev.ID
 				}
 			} else {
+				if dev.Hostname == "" && detectedHost != "" {
+					dev.Hostname = detectedHost
+					_ = taskDB.Save(&dev)
+				}
 				fileDevID = dev.ID
 			}
 		}
@@ -1310,9 +1337,20 @@ func (s *Service) AutoAssignDevices(taskID string) ([]model.Device, error) {
 			}
 		}
 
+		// 统一归属绑定：凡是解析出该主机名的日志，对齐到对应设备
 		taskDB.Model(&model.LogRecord{}).
-			Where("hostname = ? AND (device_id = 0 OR device_id IS NULL)", h).
+			Where("hostname = ?", h).
 			Update("device_id", dev.ID)
+
+		// 实时刷新该设备的日志量与匹配量统计
+		var devLogs, devMatched int64
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ?", dev.ID).Count(&devLogs)
+		taskDB.Model(&model.LogRecord{}).Where("device_id = ? AND knowledge_id > 0", dev.ID).Count(&devMatched)
+		taskDB.Model(&model.Device{}).Where("id = ?", dev.ID).Updates(map[string]interface{}{
+			"log_count":     int(devLogs),
+			"matched_count": int(devMatched),
+			"updated_at":    time.Now(),
+		})
 	}
 
 	s.syncTaskDeviceCount(taskID, taskDB)
