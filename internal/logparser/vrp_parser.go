@@ -10,9 +10,7 @@ import (
 	"logauditorgo/pkg/logger"
 )
 
-// VRP 标准 Syslog 正则表达式
-// 匹配: [PRI] Time Hostname %%[Version]Module/Severity/Brief(Type)[Seq][Slot]: Message
-var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>(?:[A-Za-z]{3}\s+\d+\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+)?|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|UTC[+-]\d{1,2}(?::?\d{2})?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?))\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>(?:[A-Za-z]{3}\s+\d+\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|UTC[+-]\d{1,2}(?::?\d{2})?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?))\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 var (
 	vrpPriIdx     = vrpRegex.SubexpIndex("pri")

@@ -68,22 +68,60 @@ func TestVRPParser(t *testing.T) {
 }
 
 func TestTimeParser(t *testing.T) {
-	cases := []string{
-		"2026-04-15 14:23:10+08:00",
-		"2026-04-15 14:23:10",
-		"2026-04-15T14:23:10+08:00",
-		"Apr 15 2026 14:23:10",
-		"UTC+08:00 2026-04-15 14:23:10",
+	cases := []struct {
+		raw   string
+		year  int
+		month time.Month
+		day   int
+	}{
+		{"2026-04-15 14:23:10+08:00", 2026, time.April, 15},
+		{"2026-04-15 14:23:10", 2026, time.April, 15},
+		{"2026-04-15T14:23:10+08:00", 2026, time.April, 15},
+		{"Apr 15 2026 14:23:10", 2026, time.April, 15},
+		{"UTC+08:00 2026-04-15 14:23:10", 2026, time.April, 15},
+		{"Aug  8 2026 18:07:30+08:00", 2026, time.August, 8},
+		{"Aug 18 2026 18:07:30+08:00", 2026, time.August, 18},
+		{"Aug  8 2026 18:07:30", 2026, time.August, 8},
 	}
 
 	for _, c := range cases {
-		tm, err := logparser.ParseHuaweiTimestamp(c)
+		tm, err := logparser.ParseHuaweiTimestamp(c.raw)
 		if err != nil {
-			t.Errorf("failed to parse timestamp '%s': %v", c, err)
+			t.Errorf("failed to parse timestamp '%s': %v", c.raw, err)
+			continue
 		}
-		if tm.Year() != 2026 || tm.Month() != time.April || tm.Day() != 15 {
-			t.Errorf("unexpected time parsed from '%s': %v", c, tm)
+		if tm.Year() != c.year || tm.Month() != c.month || tm.Day() != c.day {
+			t.Errorf("unexpected time parsed from '%s': got %v, expected %d-%02d-%02d", c.raw, tm, c.year, c.month, c.day)
 		}
+	}
+}
+
+func TestRealDeviceLogLine(t *testing.T) {
+	line := "Aug  8 2026 18:07:30+08:00 SZ_PS_LAS_4D_32-CE6865E-03 %%01CLI/5/CMDRECORD(s):Recorded user behaviors. (Task=VTY1, Ip=10.17.11.26, User=admin, Command=display clock)"
+	norm, err := logparser.ParseLine(line)
+	if err != nil {
+		t.Fatalf("parse real line failed: %v", err)
+	}
+	if norm.Hostname != "SZ_PS_LAS_4D_32-CE6865E-03" {
+		t.Errorf("expected hostname 'SZ_PS_LAS_4D_32-CE6865E-03', got '%s'", norm.Hostname)
+	}
+	if norm.Module != "CLI" {
+		t.Errorf("expected module 'CLI', got '%s'", norm.Module)
+	}
+	if norm.Severity != 5 {
+		t.Errorf("expected severity 5, got %d", norm.Severity)
+	}
+	if norm.Brief != "CMDRECORD" {
+		t.Errorf("expected brief 'CMDRECORD', got '%s'", norm.Brief)
+	}
+	if norm.Timestamp.IsZero() {
+		t.Errorf("timestamp was not parsed, got zero time")
+	}
+	if norm.Timestamp.Year() != 2026 || norm.Timestamp.Month() != time.August || norm.Timestamp.Day() != 8 {
+		t.Errorf("unexpected timestamp: %v", norm.Timestamp)
+	}
+	if norm.Parameters["Task"] != "VTY1" {
+		t.Errorf("expected Task 'VTY1', got '%s'", norm.Parameters["Task"])
 	}
 }
 

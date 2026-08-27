@@ -25,6 +25,7 @@ type NormalizedLog struct {
 	MatchConfidence float64 `json:"match_confidence,omitempty"` // 0.0 ~ 1.0
 
 	DeviceID uint `json:"device_id,omitempty"` // 关联设备ID
+	EventSummary string `json:"event_summary,omitempty"` // 中文事件摘要
 }
 
 // LogRecord 任务数据库中的日志存储实体
@@ -44,5 +45,6 @@ type LogRecord struct {
 	KnowledgeID     uint      `gorm:"index" json:"knowledge_id"`
 	MatchTier       string    `gorm:"size:32" json:"match_tier"`
 	MatchConfidence float64   `json:"match_confidence"`
+	EventSummary    string    `gorm:"-" json:"event_summary,omitempty"` // 动态生成的中文语义摘要，不持久化到表
 }
 

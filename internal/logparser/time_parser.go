@@ -51,24 +51,44 @@ var timePatterns = []struct {
 		layout: "2006-01-02T15:04:05",
 		regex:  regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$`),
 	},
+	// Apr 15 2026 14:23:10.123+08:00
+	{
+		layout: "Jan _2 2006 15:04:05.999999-07:00",
+		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:?\d{2}$`),
+	},
+	// Apr 15 2026 14:23:10+08:00
+	{
+		layout: "Jan _2 2006 15:04:05-07:00",
+		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2}$`),
+	},
 	// Apr 15 2026 14:23:10.123
 	{
-		layout: "Jan 02 2006 15:04:05.999999",
+		layout: "Jan _2 2006 15:04:05.999999",
 		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}\.\d+$`),
 	},
 	// Apr 15 2026 14:23:10
 	{
-		layout: "Jan 02 2006 15:04:05",
+		layout: "Jan _2 2006 15:04:05",
 		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{4}\s+\d{2}:\d{2}:\d{2}$`),
+	},
+	// Apr 15 14:23:10.123+08:00 (默认当年)
+	{
+		layout: "Jan _2 15:04:05.999999-07:00",
+		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:?\d{2}$`),
+	},
+	// Apr 15 14:23:10+08:00 (默认当年)
+	{
+		layout: "Jan _2 15:04:05-07:00",
+		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}[+-]\d{2}:?\d{2}$`),
 	},
 	// Apr 15 14:23:10.123 (默认当年)
 	{
-		layout: "Jan 02 15:04:05.999999",
+		layout: "Jan _2 15:04:05.999999",
 		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\.\d+$`),
 	},
 	// Apr 15 14:23:10 (默认当年)
 	{
-		layout: "Jan 02 15:04:05",
+		layout: "Jan _2 15:04:05",
 		regex:  regexp.MustCompile(`^[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}$`),
 	},
 }
@@ -132,31 +152,51 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 		}
 	}
 
-	// Fast-path 2: Syslog BSD 格式 (e.g. Apr 15 2026 14:23:10 或 Apr 15 14:23:10)
+	// Fast-path 2: Syslog BSD 格式 (e.g. Aug  8 2026 18:07:30+08:00, Apr 15 2026 14:23:10 或 Apr 15 14:23:10)
 	if (raw[0] >= 'A' && raw[0] <= 'Z') || (raw[0] >= 'a' && raw[0] <= 'z') {
-		// 尝试带年份
-		if t, err := time.ParseInLocation("Jan 02 2006 15:04:05.999999", raw, time.Local); err == nil {
-			return t, nil
+		// 尝试带年份（优先带时区，支持 Jan _2 与 Jan 02）
+		layoutsWithYear := []string{
+			"Jan _2 2006 15:04:05.999999-07:00",
+			"Jan _2 2006 15:04:05-07:00",
+			"Jan 02 2006 15:04:05.999999-07:00",
+			"Jan 02 2006 15:04:05-07:00",
+			"Jan _2 2006 15:04:05.999999-0700",
+			"Jan _2 2006 15:04:05-0700",
+			"Jan 02 2006 15:04:05.999999-0700",
+			"Jan 02 2006 15:04:05-0700",
+			"Jan _2 2006 15:04:05.999999",
+			"Jan _2 2006 15:04:05",
+			"Jan 02 2006 15:04:05.999999",
+			"Jan 02 2006 15:04:05",
+			"Jan  2 2006 15:04:05",
 		}
-		if t, err := time.ParseInLocation("Jan 02 2006 15:04:05", raw, time.Local); err == nil {
-			return t, nil
-		}
-		if t, err := time.ParseInLocation("Jan  2 2006 15:04:05", raw, time.Local); err == nil {
-			return t, nil
+		for _, layout := range layoutsWithYear {
+			if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+				return t, nil
+			}
 		}
 
 		// 尝试不带年份（默认当年）
-		if t, err := time.ParseInLocation("Jan 02 15:04:05.999999", raw, time.Local); err == nil {
-			currentYear := time.Now().Year()
-			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+		layoutsNoYear := []string{
+			"Jan _2 15:04:05.999999-07:00",
+			"Jan _2 15:04:05-07:00",
+			"Jan 02 15:04:05.999999-07:00",
+			"Jan 02 15:04:05-07:00",
+			"Jan _2 15:04:05.999999-0700",
+			"Jan _2 15:04:05-0700",
+			"Jan 02 15:04:05.999999-0700",
+			"Jan 02 15:04:05-0700",
+			"Jan _2 15:04:05.999999",
+			"Jan _2 15:04:05",
+			"Jan 02 15:04:05.999999",
+			"Jan 02 15:04:05",
+			"Jan  2 15:04:05",
 		}
-		if t, err := time.ParseInLocation("Jan 02 15:04:05", raw, time.Local); err == nil {
-			currentYear := time.Now().Year()
-			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
-		}
-		if t, err := time.ParseInLocation("Jan  2 15:04:05", raw, time.Local); err == nil {
-			currentYear := time.Now().Year()
-			return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+		for _, layout := range layoutsNoYear {
+			if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
+				currentYear := time.Now().Year()
+				return time.Date(currentYear, t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location()), nil
+			}
 		}
 	}
 

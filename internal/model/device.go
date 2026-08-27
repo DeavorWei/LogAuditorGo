@@ -54,6 +54,7 @@ type DeviceTimelineEvent struct {
 	MatchTier       string            `json:"match_tier,omitempty"`
 	MatchConfidence float64           `json:"match_confidence,omitempty"`
 	Parameters      map[string]string `json:"parameters,omitempty"`
+	EventSummary    string            `json:"event_summary,omitempty"`
 }
 
 // ModuleCount 模块日志统计项

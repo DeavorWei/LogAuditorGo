@@ -213,6 +213,9 @@
               <span class="log-mod">{{ rec.module }}/{{ rec.brief }}</span>
               <span v-if="rec.knowledge_id > 0" class="match-tag">{{ rec.match_tier }}</span>
             </div>
+            <div v-if="rec.event_summary" class="log-card-msg" :title="rec.event_summary">
+              {{ rec.event_summary }}
+            </div>
             <div class="log-card-footer">
               <span class="log-time">{{ formatTime(rec.timestamp) }}</span>
               <span v-if="rec.hostname" class="host-tag">{{ rec.hostname }}</span>
@@ -264,6 +267,15 @@
           <div class="section-box">
             <div class="box-title">原始 Syslog 报文</div>
             <div class="raw-code">{{ selectedLog.raw_log }}</div>
+          </div>
+
+          <!-- 事件语义解析摘要 -->
+          <div v-if="selectedLog.event_summary" class="section-box event-summary-box-wb">
+            <div class="box-title">事件语义解析摘要</div>
+            <div class="event-summary-highlight-wb">
+              <el-icon color="#0284c7" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
+              <span class="summary-text-wb">{{ selectedLog.event_summary }}</span>
+            </div>
           </div>
 
           <!-- 结构化字段表格 -->
@@ -1606,6 +1618,23 @@ onMounted(() => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   line-height: 1.4;
+}
+.event-summary-box-wb {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+}
+.event-summary-highlight-wb {
+  display: flex;
+  align-items: flex-start;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0369a1;
+  line-height: 1.5;
+  padding: 4px 0;
+}
+.summary-text-wb {
+  word-break: break-word;
 }
 .log-card-footer {
   font-size: 10px;

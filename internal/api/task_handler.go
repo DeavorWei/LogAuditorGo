@@ -14,6 +14,7 @@ import (
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/summary"
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
@@ -375,13 +376,15 @@ func (h *TaskHandler) enrichRecords(records []model.LogRecord) []EnrichedRecord 
 	enrichedList := make([]EnrichedRecord, 0, len(records))
 	for _, rec := range records {
 		er := EnrichedRecord{LogRecord: rec}
+		rawParams := ParseParametersJSON(rec.ParametersJSON)
+		er.EventSummary = summary.GenerateSummary(rec.Module, rec.Brief, rec.Severity, rec.MessageBody, rawParams)
+
 		if rec.KnowledgeID > 0 && knowledgeMap != nil {
 			kb := knowledgeMap[rec.KnowledgeID]
 			er.Knowledge = kb
 			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, kb)
 			er.ContextualizedKB = ContextualizeKnowledge(kb, rec.ParametersJSON)
 			if kb != nil && kb.Message != "" {
-				rawParams := ParseParametersJSON(rec.ParametersJSON)
 				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
 			}
 		} else if rec.ParametersJSON != "" {

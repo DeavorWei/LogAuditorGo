@@ -23,6 +23,7 @@ import (
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/storage"
+	"logauditorgo/internal/summary"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
 )
@@ -1421,6 +1422,7 @@ func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLo
 			MatchTier:       r.MatchTier,
 			MatchConfidence: r.MatchConfidence,
 			Parameters:      params,
+			EventSummary:    summary.GenerateSummary(r.Module, r.Brief, r.Severity, r.MessageBody, params),
 		}
 	}
 

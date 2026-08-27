@@ -1,9 +1,13 @@
 package logparser_test
 
 import (
+	"bufio"
+	"os"
+	"strings"
 	"testing"
-	"logauditorgo/internal/logparser"
 	"time"
+
+	"logauditorgo/internal/logparser"
 )
 
 func TestEdgeCases(t *testing.T) {
@@ -68,4 +72,49 @@ func TestEdgeCases(t *testing.T) {
 	if len(errs) != 1 {
 		t.Errorf("expected 1 error, got %d", len(errs))
 	}
+}
+
+func TestRealDeviceLogFile(t *testing.T) {
+	logPath := "../../build/设备log.log"
+	file, err := os.Open(logPath)
+	if err != nil {
+		t.Skipf("sample log file not found at %s: %v", logPath, err)
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineCount := 0
+	parsedCount := 0
+	zeroTimeCount := 0
+
+	for scanner.Scan() && lineCount < 200 {
+		line := scanner.Text()
+		lineCount++
+		if !strings.Contains(line, "%%") {
+			continue
+		}
+
+		norm, err := logparser.ParseLine(line)
+		if err != nil {
+			t.Errorf("line %d: failed to parse: %v\nLine: %s", lineCount, err, line)
+			continue
+		}
+		parsedCount++
+		if norm.Timestamp.IsZero() {
+			zeroTimeCount++
+			t.Errorf("line %d: timestamp is zero! Raw: %s", lineCount, line)
+		}
+		if norm.Module == "" || norm.Brief == "" {
+			t.Errorf("line %d: missing module/brief: %+v", lineCount, norm)
+		}
+	}
+
+	if parsedCount == 0 {
+		t.Errorf("no syslog lines were found in first 200 lines")
+	}
+	if zeroTimeCount > 0 {
+		t.Errorf("found %d logs with unparsed zero timestamp out of %d parsed", zeroTimeCount, parsedCount)
+	}
+	t.Logf("Successfully verified %d real device log lines with 100%% timestamp parsed", parsedCount)
 }

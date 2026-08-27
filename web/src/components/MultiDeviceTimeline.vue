@@ -457,6 +457,11 @@ const showEventDetail = async (ev) => {
 
 const formatEventSummary = (ev) => {
   if (!ev) return '-'
+  // 优先使用后端统一解析引擎生成的中文事件摘要
+  if (ev.event_summary) {
+    return ev.event_summary
+  }
+
   const mod = (ev.module || '').toUpperCase()
   const brief = (ev.brief || '').toUpperCase()
   const params = ev.parameters || {}

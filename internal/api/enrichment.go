@@ -6,7 +6,14 @@ import (
 	"strings"
 
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/summary"
 )
+
+// GenerateEventSummary 从日志基本字段与 ParametersJSON 生成中文事件摘要
+func GenerateEventSummary(module, brief string, severity int, rawMsg string, paramsJSON string) string {
+	params := ParseParametersJSON(paramsJSON)
+	return summary.GenerateSummary(module, brief, severity, rawMsg, params)
+}
 
 // EnrichedParameter 表示变量与其官方文档说明融合后的实体
 type EnrichedParameter struct {
