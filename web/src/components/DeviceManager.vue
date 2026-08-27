@@ -263,7 +263,6 @@ const fetchDevices = async () => {
     const res = await api.getDevices(props.taskId)
     if (res.code === 0) {
       deviceList.value = res.data || []
-      emit('device-updated', deviceList.value)
     }
   } catch (e) {
     console.error('Fetch devices failed:', e)
@@ -280,6 +279,7 @@ const handleAutoAssign = async () => {
     if (res.code === 0) {
       ElMessage.success(res.message || '已成功从日志中自动识别并创建设备')
       await fetchDevices()
+      emit('device-updated', deviceList.value)
     }
   } catch (e) {
     console.error('Auto assign failed:', e)
@@ -329,14 +329,16 @@ const saveDevice = async () => {
       if (res.code === 0) {
         ElMessage.success('设备更新成功')
         showDeviceDialog.value = false
-        fetchDevices()
+        await fetchDevices()
+        emit('device-updated', deviceList.value)
       }
     } else {
       const res = await api.createDevice(props.taskId, deviceForm.value)
       if (res.code === 0) {
         ElMessage.success('设备创建成功')
         showDeviceDialog.value = false
-        fetchDevices()
+        await fetchDevices()
+        emit('device-updated', deviceList.value)
       }
     }
   } catch (e) {
@@ -351,7 +353,8 @@ const handleDelete = async (deviceId) => {
     const res = await api.deleteDevice(props.taskId, deviceId)
     if (res.code === 0) {
       ElMessage.success('设备已删除')
-      fetchDevices()
+      await fetchDevices()
+      emit('device-updated', deviceList.value)
     }
   } catch (e) {
     console.error('Delete device failed:', e)
@@ -442,6 +445,10 @@ watch(() => props.taskId, (newVal) => {
 
 onMounted(() => {
   fetchDevices()
+})
+
+defineExpose({
+  fetchDevices
 })
 </script>
 

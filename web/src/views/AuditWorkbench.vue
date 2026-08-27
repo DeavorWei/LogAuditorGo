@@ -84,8 +84,8 @@
     <!-- 视图 1：设备管理视图 -->
     <div v-show="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
       <DeviceManager
+        ref="deviceManagerRef"
         v-if="currentTaskId"
-        :key="currentTaskId + '_devices_' + refreshTrigger"
         :task-id="currentTaskId"
         @device-updated="handleDeviceUpdated"
         @open-progress="openProgressModalWithId"
@@ -668,12 +668,13 @@ const currentViewMode = ref('workbench')
 const taskFiles = ref([])
 const showFilesDrawer = ref(false)
 const refreshTrigger = ref(0)
+const deviceManagerRef = ref(null)
 
 const handleDeviceUpdated = async (devices) => {
   if (currentTask.value) {
-    currentTask.value.device_count = devices.length
+    currentTask.value.device_count = devices ? devices.length : 0
   }
-  await fetchTaskDevices()
+  taskDevices.value = devices || []
   refreshTrigger.value++
 }
 
@@ -1423,6 +1424,7 @@ const handleLogImportCompleted = async (result) => {
   if (currentTaskId.value) {
     await handleTaskChange(currentTaskId.value)
     refreshTrigger.value++
+    deviceManagerRef.value?.fetchDevices?.()
   }
 }
 
@@ -1431,6 +1433,7 @@ watch(currentViewMode, async (newMode) => {
   if (!currentTaskId.value) return
   if (newMode === 'devices') {
     await fetchTaskDevices()
+    deviceManagerRef.value?.fetchDevices?.()
   } else if (newMode === 'workbench') {
     await fetchLogs()
     await fetchTaskFiles()
