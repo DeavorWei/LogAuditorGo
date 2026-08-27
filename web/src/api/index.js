@@ -136,6 +136,14 @@ export default {
   queryTaskLogs(taskId, params) {
     return request.get(`/tasks/${taskId}/logs`, { params })
   },
+  getTaskModules(taskId) {
+    return request.get(`/tasks/${taskId}/modules`)
+  },
+  reanalyzeTask(taskId, isAsync = true) {
+    return request.post(`/tasks/${taskId}/reanalyze`, { async: isAsync }, {
+      params: isAsync ? { async: 'true' } : {}
+    })
+  },
   getTaskRCA(taskId) {
     return request.get(`/tasks/${taskId}/rca`)
   },

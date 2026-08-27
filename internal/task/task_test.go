@@ -172,10 +172,10 @@ Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state
 	if len(files) != 2 {
 		t.Fatalf("expected 2 task files, got %d", len(files))
 	}
-	if files[0].FileName != "sw01.log" || files[0].LineCount != 2 {
+	if !strings.HasSuffix(files[0].FileName, "sw01.log") || files[0].LineCount != 2 {
 		t.Errorf("unexpected file1 info: %+v", files[0])
 	}
-	if files[1].FileName != "fw02.log" || files[1].LineCount != 1 {
+	if !strings.HasSuffix(files[1].FileName, "fw02.log") || files[1].LineCount != 1 {
 		t.Errorf("unexpected file2 info: %+v", files[1])
 	}
 
@@ -768,6 +768,86 @@ Apr 15 2026 10:00:01 PE-Router-B %%01OSPF/4/OSPF_NBR_CHG(l)[1]: OSPF neighbor do
 	autoDevs, err := svc.AutoAssignDevices(taskInfoAuto.TaskID)
 	if err != nil || len(autoDevs) != 2 {
 		t.Fatalf("AutoAssignDevices failed, expected 2 devices, got %d (err: %v)", len(autoDevs), err)
+	}
+}
+
+func TestReanalyzeTask(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "reanalyze_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	indexPath := filepath.Join(tmpDir, "test.bleve")
+	indexer, _ := search.InitIndexer(indexPath)
+	defer indexer.Close()
+
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	// 1. 创建任务并导入日志（此时知识库没有任何条目，匹配数为0）
+	taskInfo, err := svc.CreateEmptyTask("Reanalyze-Task-Test", "CloudEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+
+	logContent := `
+Apr 15 2026 14:00:01 CORE-SW-01 %%01CUSTOMMOD/4/CUSTOM_ALERT(l)[1]: Custom alert triggered.
+Apr 15 2026 14:00:02 CORE-SW-01 %%01CUSTOMMOD/2/CUSTOM_ERR(l)[2]: Custom error occurred.
+`
+	updatedTask, err := svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{
+		{FileName: "test.log", Content: logContent},
+	}, "overwrite")
+	if err != nil {
+		t.Fatalf("ImportLogs failed: %v", err)
+	}
+
+	if updatedTask.MatchedCount != 0 {
+		t.Fatalf("expected 0 matched initially, got %d", updatedTask.MatchedCount)
+	}
+
+	// 2. 模拟知识库后来导入了新知识
+	k := model.Knowledge{
+		ID:          999,
+		Module:      "CUSTOMMOD",
+		Brief:       "CUSTOM_ALERT",
+		Message:     "Custom alert triggered.",
+		Description: "自定义告警",
+		ContentHash: "hash_reanalyze_custom_alert",
+	}
+	globalDB.Create(&k)
+	matchEngine.Reload()
+
+	// 3. 执行基于任务维度的重新分析
+	reanalyzedTask, err := svc.ReanalyzeTask(taskInfo.TaskID, nil)
+	if err != nil {
+		t.Fatalf("ReanalyzeTask failed: %v", err)
+	}
+
+	if reanalyzedTask.MatchedCount != 1 {
+		t.Fatalf("expected 1 matched after reanalyze, got %d", reanalyzedTask.MatchedCount)
+	}
+	if reanalyzedTask.Status != model.TaskStatusCompleted {
+		t.Fatalf("expected status COMPLETED, got %s", reanalyzedTask.Status)
+	}
+
+	// 4. 验证数据库中 LogRecord 确实被更新
+	logs, _, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Module: "CUSTOMMOD", Brief: "CUSTOM_ALERT"})
+	if err != nil || len(logs) == 0 {
+		t.Fatalf("QueryTaskLogs failed: %v", err)
+	}
+	if logs[0].KnowledgeID != 999 {
+		t.Errorf("expected LogRecord KnowledgeID to be 999, got %d", logs[0].KnowledgeID)
 	}
 }
 

@@ -51,10 +51,11 @@
             {{ formatTime(row.start_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="260" align="center">
+        <el-table-column label="操作" width="320" align="center">
           <template #default="{ row }">
             <el-button v-if="row.status === 'PENDING'" type="primary" size="small" @click="openTask(row.task_id)">导入日志</el-button>
             <el-button v-else type="primary" link size="small" @click="openTask(row.task_id)">查看审计</el-button>
+            <el-button v-if="row.status !== 'PENDING'" type="warning" link size="small" :disabled="row.log_count === 0" @click="handleReanalyze(row)">重新分析</el-button>
             <el-button type="success" link size="small" :disabled="row.status === 'PENDING'" @click="exportHTML(row.task_id)">导出报告</el-button>
             <el-button v-if="row.device_count > 1" type="warning" link size="small" :disabled="row.status === 'PENDING'" @click="exportMultiHTML(row.task_id)">多设备报告</el-button>
             <el-popconfirm title="确定彻底删除该任务数据库吗？" @confirm="handleDelete(row.task_id)">
@@ -66,18 +67,28 @@
         </el-table-column>
       </el-table>
     </el-card>
+
+    <!-- 重新分析全流程进度追踪弹窗 -->
+    <ImportProgressModal
+      v-model="showProgressModal"
+      :job-id="currentJobId"
+      @complete="handleProgressComplete"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import api from '@/api'
 
 const router = useRouter()
 const loading = ref(false)
 const taskList = ref([])
+const showProgressModal = ref(false)
+const currentJobId = ref('')
 
 const fetchTasks = async () => {
   loading.value = true
@@ -101,6 +112,36 @@ const exportHTML = (taskId) => {
 
 const exportMultiHTML = (taskId) => {
   window.open(`/api/v1/tasks/${taskId}/multi-device/export?format=html`, '_blank')
+}
+
+const handleReanalyze = (row) => {
+  ElMessageBox.confirm(
+    `确认对任务【${row.task_name}】的全部 ${row.log_count} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？`,
+    '重新分析确认',
+    {
+      confirmButtonText: '开始重新分析',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      const res = await api.reanalyzeTask(row.task_id, true)
+      if (res.code === 0 && res.data?.job_id) {
+        currentJobId.value = res.data.job_id
+        showProgressModal.value = true
+      } else {
+        ElMessage.success('重新分析请求已提交')
+        fetchTasks()
+      }
+    } catch (e) {
+      ElMessage.error('触发重新分析失败: ' + (e.message || '网络异常'))
+    }
+  }).catch(() => {})
+}
+
+const handleProgressComplete = () => {
+  ElMessage.success('重新分析已全部完成！')
+  fetchTasks()
 }
 
 const handleDelete = async (taskId) => {

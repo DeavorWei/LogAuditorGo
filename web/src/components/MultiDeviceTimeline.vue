@@ -48,18 +48,17 @@
           multiple
           collapse-tags
           collapse-tags-tooltip
-          placeholder="协议/模块 (如 OSPF, BGP)"
+          placeholder="协议/模块 (动态加载)"
           clearable
           style="width: 240px;"
           @change="fetchTimeline"
         >
-          <el-option label="OSPF (动态路由协议)" value="OSPF" />
-          <el-option label="BGP (边界网关协议)" value="BGP" />
-          <el-option label="BFD (双向转发检测)" value="BFD" />
-          <el-option label="IFNET / PORT (接口链路)" value="IFNET" />
-          <el-option label="ISIS (中间系统路由)" value="ISIS" />
-          <el-option label="LAG / TRUNK (链路聚合)" value="LAG" />
-          <el-option label="AAA / RADIUS (安全认证)" value="AAA" />
+          <el-option
+            v-for="mod in availableModules"
+            :key="mod"
+            :label="getModuleLabel(mod)"
+            :value="mod"
+          />
         </el-select>
 
         <el-select
@@ -103,11 +102,14 @@
             (已选择 {{ selectedDeviceIds.length }} 台设备，按绝对时间升序排列)
           </span>
         </div>
-        <div>
+        <div style="display: flex; align-items: center; gap: 10px;">
           <el-radio-group v-model="viewMode" size="small">
             <el-radio-button label="timeline">时间线视图</el-radio-button>
             <el-radio-button label="table">明细列表</el-radio-button>
           </el-radio-group>
+          <el-button type="success" size="small" :icon="Download" @click="exportCSV">
+            导出 CSV
+          </el-button>
         </div>
       </div>
 
@@ -147,8 +149,12 @@
                 </div>
               </div>
 
-              <div class="raw-log-box">
-                {{ ev.raw_log || ev.message_body }}
+              <!-- 结构化解析事件摘要 -->
+              <div class="event-summary-box">
+                <div class="summary-line">
+                  <span class="summary-badge">解析摘要</span>
+                  <span class="summary-content">{{ formatEventSummary(ev) }}</span>
+                </div>
               </div>
 
               <!-- 提取的关键动态变量参数徽章 -->
@@ -191,9 +197,9 @@
             </template>
           </el-table-column>
 
-          <el-table-column prop="raw_log" label="日志报文" min-width="260">
+          <el-table-column label="事件解析摘要" min-width="280">
             <template #default="{ row }">
-              <div class="table-code">{{ row.raw_log }}</div>
+              <div class="table-summary">{{ formatEventSummary(row) }}</div>
             </template>
           </el-table-column>
 
@@ -270,6 +276,8 @@
 
 <script setup>
 import { ref, onMounted, defineProps, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { Download } from '@element-plus/icons-vue'
 import api from '@/api'
 
 const props = defineProps({
@@ -284,6 +292,49 @@ const deviceList = ref([])
 const selectedDeviceIds = ref([])
 const checkAll = ref(true)
 const isIndeterminate = ref(false)
+const availableModules = ref([])
+
+const moduleNameMap = {
+  'OSPF': 'OSPF (动态路由协议)',
+  'BGP': 'BGP (边界网关协议)',
+  'BFD': 'BFD (双向转发检测)',
+  'IFNET': 'IFNET (接口链路)',
+  'PORT': 'PORT (物理端口)',
+  'ISIS': 'ISIS (中间系统路由)',
+  'LAG': 'LAG / Eth-Trunk (链路聚合)',
+  'ETH-TRUNK': 'Eth-Trunk (链路聚合)',
+  'AAA': 'AAA (认证计费)',
+  'RADIUS': 'RADIUS (认证服务器)',
+  'SSH': 'SSH (远程管理)',
+  'STP': 'STP / RSTP / MSTP (生成树)',
+  'MSTP': 'MSTP (多生成树)',
+  'RSTP': 'RSTP (快速生成树)',
+  'ARP': 'ARP (地址解析)',
+  'VRRP': 'VRRP (虚拟路由冗余)',
+  'MPLS': 'MPLS (多协议标签交换)',
+  'LDP': 'LDP (标签分发)',
+  'SYS': 'SYS (系统底层)',
+  'SHELL': 'SHELL (管理配置)',
+  'DEVM': 'DEVM (设备硬件管理)',
+  'INFO': 'INFO (信息中心)'
+}
+
+const getModuleLabel = (mod) => {
+  const upper = (mod || '').toUpperCase()
+  return moduleNameMap[upper] || mod
+}
+
+const fetchModules = async () => {
+  if (!props.taskId) return
+  try {
+    const res = await api.getTaskModules(props.taskId)
+    if (res.code === 0 && Array.isArray(res.data)) {
+      availableModules.value = res.data
+    }
+  } catch (e) {
+    console.error('Fetch task modules failed:', e)
+  }
+}
 
 const viewMode = ref('timeline')
 const timelineEvents = ref([])
@@ -404,6 +455,158 @@ const showEventDetail = async (ev) => {
   }
 }
 
+const formatEventSummary = (ev) => {
+  if (!ev) return '-'
+  const mod = (ev.module || '').toUpperCase()
+  const brief = (ev.brief || '').toUpperCase()
+  const params = ev.parameters || {}
+
+  // 辅助查找参数（不区分大小写与下划线）
+  const getParam = (...keys) => {
+    for (const k of keys) {
+      if (params[k] !== undefined && params[k] !== '') return params[k]
+      const normK = k.toLowerCase().replace(/[-_\s]/g, '')
+      for (const [pk, pv] of Object.entries(params)) {
+        if (pk.toLowerCase().replace(/[-_\s]/g, '') === normK && pv !== '') {
+          return pv
+        }
+      }
+    }
+    return ''
+  }
+
+  // 1. BGP 协议
+  if (mod === 'BGP') {
+    const peer = getParam('bgpPeerRemoteAddr', 'PeerID', 'PeerRemoteAddr', 'Neighbor', 'PeerAddr', 'RemoteAddr')
+    const local = getParam('bgpPeerLocalAddr', 'LocalAddr', 'LocalAddress', 'LocalIP')
+    const reason = getParam('NotifyReason', 'Reason', 'ErrorCode', 'ErrorSubCode', 'bgpPeerLastState', 'LastState')
+
+    if (brief.includes('DOWN') || brief.includes('BACKWARD') || brief.includes('RESET') || brief.includes('HOLD_TIME')) {
+      let desc = `BGP邻居中断: 对端[${peer || '未捕获'}]`
+      if (local) desc += `, 本端[${local}]`
+      desc += `，中断原因: ${reason || 'HoldTimer超时或对端重置会话'}`
+      return desc
+    }
+    if (brief.includes('ESTABLISHED') || brief.includes('FORWARD') || brief.includes('UP')) {
+      let desc = `BGP邻居建立: 对端[${peer || '未捕获'}]`
+      if (local) desc += `, 本端[${local}]`
+      desc += `，状态已转换为 ESTABLISHED`
+      return desc
+    }
+    if (brief.includes('FLAP') || brief.includes('DAMP')) {
+      return `BGP路由震荡: 对端[${peer || '未捕获'}] 路由频繁抖动`
+    }
+    return `BGP事件 [${ev.brief}]: 对端[${peer || '未知'}]${reason ? '，原因: ' + reason : ''}`
+  }
+
+  // 2. OSPF 协议
+  if (mod === 'OSPF') {
+    const nbr = getParam('RouterID', 'NbrRouterId', 'NeighborRouterId', 'Neighbor', 'NbrIp')
+    const iface = getParam('InterfaceName', 'Interface', 'IfName', 'PortName')
+    const reason = getParam('Reason', 'EventReason', 'NbrState', 'State')
+
+    if (brief.includes('DOWN') || brief.includes('ADJCHANGE') || brief.includes('RESET')) {
+      return `OSPF邻居中断: 接口[${iface || '未捕获'}] 邻居Router-ID[${nbr || '未捕获'}]，原因: ${reason || '邻居失效超时或接口Down'}`
+    }
+    if (brief.includes('FULL') || brief.includes('UP') || brief.includes('ESTABLISHED')) {
+      return `OSPF邻居建立: 接口[${iface || '未捕获'}] 与邻居Router-ID[${nbr || '未捕获'}] 达到 Full 状态`
+    }
+    return `OSPF事件 [${ev.brief}]: 接口[${iface || '未捕获'}]${nbr ? '，邻居: ' + nbr : ''}${reason ? '，原因: ' + reason : ''}`
+  }
+
+  // 3. BFD 协议
+  if (mod === 'BFD') {
+    const peer = getParam('PeerAddr', 'Destination', 'PeerIP', 'DstIP', 'SessId')
+    const iface = getParam('InterfaceName', 'Interface', 'IfName')
+    const diag = getParam('Diag', 'Diagnostic', 'Reason', 'DiagCode')
+
+    if (brief.includes('DOWN') || brief.includes('FAIL') || brief.includes('TIMEOUT')) {
+      return `BFD会话中断: 对端[${peer || '未捕获'}]${iface ? ' 接口[' + iface + ']' : ''}，检测原因: ${diag || '链路回显超时或对端Down'}`
+    }
+    if (brief.includes('UP') || brief.includes('ESTABLISHED')) {
+      return `BFD会话建立: 对端[${peer || '未捕获'}] 双向连通状态恢复正常`
+    }
+    return `BFD状态变更 [${ev.brief}]: 对端[${peer || '未知'}]${diag ? '，诊断: ' + diag : ''}`
+  }
+
+  // 4. IFNET / PORT 接口协议
+  if (mod === 'IFNET' || mod === 'PORT' || mod === 'ETHBASE') {
+    const iface = getParam('InterfaceName', 'Interface', 'IfName', 'PortName')
+    const reason = getParam('Reason', 'ErrorReason', 'LineProtocolStatus', 'Cause')
+
+    if (brief.includes('DOWN') || brief.includes('ERRORDOWN') || brief.includes('FAIL')) {
+      return `接口链路中断: 接口[${iface || '未捕获'}] 状态变更为 DOWN，原因: ${reason || '物理光电信号丢失或人为关闭'}`
+    }
+    if (brief.includes('UP')) {
+      return `接口链路恢复: 接口[${iface || '未捕获'}] 物理与协议状态已转换为 UP`
+    }
+    return `接口事件 [${ev.brief}]: 接口[${iface || '未知'}]${reason ? '，原因: ' + reason : ''}`
+  }
+
+  // 5. ISIS 协议
+  if (mod === 'ISIS') {
+    const nbr = getParam('NeighborSystemId', 'SystemId', 'Neighbor', 'NbrId')
+    const iface = getParam('InterfaceName', 'Interface', 'IfName')
+    const reason = getParam('Reason', 'CircuitId')
+
+    if (brief.includes('DOWN') || brief.includes('RESET')) {
+      return `ISIS邻居中断: 接口[${iface || '未捕获'}] 邻居System-ID[${nbr || '未捕获'}]，原因: ${reason || 'HoldTime超时'}`
+    }
+    if (brief.includes('UP') || brief.includes('ESTABLISHED')) {
+      return `ISIS邻居建立: 接口[${iface || '未捕获'}] 与邻居[${nbr || '未捕获'}] 邻接关系正常`
+    }
+    return `ISIS事件 [${ev.brief}]: 邻居[${nbr || '未知'}]${reason ? '，原因: ' + reason : ''}`
+  }
+
+  // 6. LAG / Eth-Trunk 链路聚合
+  if (mod === 'LAG' || mod === 'TRUNK' || mod === 'ETH-TRUNK') {
+    const trunk = getParam('TrunkId', 'LagName', 'EthTrunk', 'TrunkName')
+    const port = getParam('PortName', 'Interface', 'IfName', 'MemberPort')
+    const reason = getParam('Reason', 'Cause')
+
+    if (brief.includes('DOWN') || brief.includes('DEL') || brief.includes('REMOVE')) {
+      return `聚合链路告警: 聚合组[${trunk || 'Eth-Trunk'}] 成员端口[${port || '未捕获'}] 异常退出，原因: ${reason || '物理状态Down'}`
+    }
+    if (brief.includes('UP') || brief.includes('ADD')) {
+      return `聚合链路变动: 聚合组[${trunk || 'Eth-Trunk'}] 成员端口[${port || '未捕获'}] 成功加入聚合`
+    }
+    return `链路聚合事件 [${ev.brief}]: ${trunk || 'Trunk'}${port ? ' 端口: ' + port : ''}`
+  }
+
+  // 7. AAA / RADIUS / 安全认证
+  if (mod === 'AAA' || mod === 'RADIUS' || mod === 'HWTACACS') {
+    const server = getParam('ServerIP', 'ServerAddr', 'Server', 'RadiusServer')
+    const user = getParam('UserName', 'User', 'Account')
+    const reason = getParam('Reason', 'FailReason', 'ErrorCode')
+
+    if (brief.includes('DOWN') || brief.includes('TIMEOUT') || brief.includes('UNREACHABLE')) {
+      return `AAA服务器异常: 认证服务器[${server || '未捕获'}] 状态不可达/无响应，原因: ${reason || '网络中断或服务停止'}`
+    }
+    if (brief.includes('FAIL') || brief.includes('DENY') || brief.includes('REJECT')) {
+      return `AAA认证失败: 用户[${user || '未捕获'}] 认证被拒绝${server ? ' (服务器: ' + server + ')' : ''}，原因: ${reason || '密码错误或策略限制'}`
+    }
+    return `AAA/RADIUS事件 [${ev.brief}]: ${user ? '用户: ' + user : ''}${server ? ' 服务器: ' + server : ''}`
+  }
+
+  // 8. 硬件与环境 (DEVM / FAN / POWER / CPU)
+  if (mod === 'DEVM' || mod === 'FAN' || mod === 'POWER' || mod === 'ENVIRONMENT') {
+    const component = getParam('EntityName', 'Slot', 'SubSlot', 'FanId', 'PowerId', 'CpuId')
+    const reason = getParam('Reason', 'CurrentState', 'Threshold')
+    return `设备硬件告警 [${ev.brief}]: 部件[${component || '未知部件'}]，状态/原因: ${reason || ev.message_body || '硬件指标异常'}`
+  }
+
+  // 通用兜底：如果存在提取到的结构化参数，拼接展示
+  if (params && Object.keys(params).length > 0) {
+    const pStr = Object.entries(params)
+      .slice(0, 4)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(' | ')
+    return `[${ev.module}/${ev.brief}] ${pStr}`
+  }
+
+  return ev.message_body || ev.raw_log || '-'
+}
+
 const formatParamsArray = (paramsObj) => {
   if (!paramsObj) return []
   return Object.keys(paramsObj).map(k => ({
@@ -413,7 +616,7 @@ const formatParamsArray = (paramsObj) => {
 }
 
 const formatTime = (ts) => {
-  if (!ts) return '-'
+  if (!ts || ts.startsWith('0001-01-01') || ts === '0001-01-01T00:00:00Z') return '无法解析'
   return ts.replace('T', ' ').substring(0, 19)
 }
 
@@ -424,14 +627,65 @@ const severityClass = (sev) => {
   return 'sev-info'
 }
 
+// 导出为 CSV 格式
+const exportCSV = () => {
+  if (!timelineEvents.value || timelineEvents.value.length === 0) {
+    ElMessage.warning('当前时间线无数据可导出')
+    return
+  }
+
+  const headers = [
+    '发生时间',
+    '所属设备',
+    '主机名',
+    '级别',
+    '模块',
+    '事件简名',
+    '解析事件摘要',
+    '知识库匹配',
+    '来源文件'
+  ]
+
+  const rows = timelineEvents.value.map(ev => [
+    formatTime(ev.timestamp),
+    ev.device_name || '',
+    ev.hostname || '',
+    ev.severity ?? '',
+    ev.module || '',
+    ev.brief || '',
+    formatEventSummary(ev),
+    ev.knowledge_id ? '是' : '否',
+    ev.source_file || ''
+  ])
+
+  const BOM = '\uFEFF' // Excel UTF-8 兼容BOM
+  const csvBody = [headers, ...rows]
+    .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .join('\r\n')
+
+  const blob = new Blob([BOM + csvBody], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  const dateStr = new Date().toISOString().replace(/[-:T.]/g, '').substring(0, 14)
+  link.href = url
+  link.setAttribute('download', `多设备时序协同分析_${props.taskId}_${dateStr}.csv`)
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+  ElMessage.success(`成功导出 ${timelineEvents.value.length} 条时序事件为 CSV 文件`)
+}
+
 watch(() => props.taskId, (newVal) => {
   if (newVal) {
     fetchDevices()
+    fetchModules()
   }
 })
 
 onMounted(() => {
   fetchDevices()
+  fetchModules()
 })
 </script>
 
@@ -490,7 +744,13 @@ onMounted(() => {
   margin-left: 8px;
 }
 .timeline-stream {
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
   padding: 10px 20px 20px 10px;
+}
+.table-stream {
+  max-height: calc(100vh - 280px);
+  overflow-y: auto;
 }
 .event-card {
   border: 1px solid #e2e8f0;
@@ -533,15 +793,41 @@ onMounted(() => {
   padding: 2px 6px;
   border-radius: 4px;
 }
-.raw-log-box {
-  font-family: monospace;
-  font-size: 12px;
-  color: #334155;
+.event-summary-box {
   background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid #3b82f6;
+  border-radius: 4px;
   padding: 8px 12px;
-  border-radius: 6px;
-  border: 1px solid #f1f5f9;
-  word-break: break-all;
+  margin: 4px 0 6px 0;
+}
+.summary-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.summary-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #2563eb;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.summary-content {
+  font-size: 13px;
+  font-weight: 600;
+  color: #0f172a;
+  line-height: 1.5;
+}
+.table-summary {
+  font-size: 12px;
+  color: #0f172a;
+  font-weight: 500;
+  line-height: 1.4;
 }
 .params-badge-row {
   display: flex;

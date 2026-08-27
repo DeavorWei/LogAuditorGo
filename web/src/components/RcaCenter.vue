@@ -625,6 +625,8 @@ onMounted(() => {
   font-size: 13px;
   color: #334155;
   line-height: 1.6;
+  white-space: pre-line;
+  word-break: break-word;
 }
 .action-text {
   background: #eff6ff;
@@ -634,5 +636,7 @@ onMounted(() => {
   font-size: 13px;
   color: #1e40af;
   line-height: 1.6;
+  white-space: pre-line;
+  word-break: break-word;
 }
 </style>

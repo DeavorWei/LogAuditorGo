@@ -25,6 +25,34 @@ func CleanText(s string) string {
 	return whitespaceRegex.ReplaceAllString(s, " ")
 }
 
+// CleanMultilineText 保留换行并清洗多余水平空格
+func CleanMultilineText(s string) string {
+	s = strings.ReplaceAll(s, "\u00a0", " ")
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	lines := strings.Split(s, "\n")
+	var cleanLines []string
+	for _, l := range lines {
+		trimmed := strings.TrimSpace(whitespaceRegex.ReplaceAllString(l, " "))
+		if trimmed != "" {
+			cleanLines = append(cleanLines, trimmed)
+		}
+	}
+	return strings.Join(cleanLines, "\n")
+}
+
+// ExtractBlockText 提取HTML元素内部文本，保留段落、换行与列表
+func ExtractBlockText(sel *goquery.Selection) string {
+	if sel == nil || sel.Length() == 0 {
+		return ""
+	}
+	sel.Find("br").ReplaceWithHtml("\n")
+	sel.Find("p, li, tr, dt, dd, div").Each(func(_ int, s *goquery.Selection) {
+		s.AppendHtml("\n")
+	})
+	return CleanMultilineText(sel.Text())
+}
+
 // ParseHTMLKnowledge 解析单个 HTML 文件提取知识
 func ParseHTMLKnowledge(docRootDir string, item LeafNaviItem) (k *model.Knowledge, err error) {
 	defer func() {
@@ -124,25 +152,26 @@ func parseLogRef(doc *goquery.Document, k *model.Knowledge, dcTitle string) {
 	}
 
 	// 4. 可能原因（Cause）
-	cause := doc.Find("div.logRefCause .logRefCausebody").Text()
+	cause := ExtractBlockText(doc.Find("div.logRefCause .logRefCausebody"))
 	if cause == "" {
-		cause = doc.Find("div.logRefCause").Text()
+		cause = ExtractBlockText(doc.Find("div.logRefCause"))
 	}
-	k.Cause = CleanText(cause)
+	k.Cause = cause
 
 	// 5. 处理步骤（Action）
 	action := ""
 	doc.Find("div.section").Each(func(i int, s *goquery.Selection) {
 		title := s.Find("h4.sectiontitle, h2.sectiontitle").Text()
 		if strings.Contains(title, "处理步骤") || strings.Contains(title, "恢复步骤") {
-			action = s.Text()
-			action = strings.TrimPrefix(action, title)
+			action = ExtractBlockText(s)
+			action = strings.TrimPrefix(action, CleanMultilineText(title))
+			action = strings.TrimSpace(action)
 		}
 	})
 	if action == "" {
-		action = doc.Find("div.section").Last().Text()
+		action = ExtractBlockText(doc.Find("div.section").Last())
 	}
-	k.Action = CleanText(action)
+	k.Action = action
 
 	// 仅在缺少 Module 或 Brief 时，且 dcTitle 严格符合 Module/Severity/Brief 规范时才作为兜底
 	trimmedTitle := strings.TrimSpace(dcTitle)
@@ -245,23 +274,27 @@ func parseAlarmRef(doc *goquery.Document, k *model.Knowledge, dcTitle string) {
 	}
 
 	// 4. 对系统的影响（Impact）
-	k.Impact = CleanText(doc.Find("div.impactonsystem .impactonsystembody").Text())
+	k.Impact = ExtractBlockText(doc.Find("div.impactonsystem .impactonsystembody"))
 
 	// 5. 可能原因（Cause）
-	cause := doc.Find("div.possiblecauses .alarmpossbody").Text()
+	cause := ExtractBlockText(doc.Find("div.possiblecauses .alarmpossbody"))
 	if cause == "" {
-		cause = doc.Find("div.possiblecauses").Text()
+		cause = ExtractBlockText(doc.Find("div.possiblecauses"))
 	}
-	k.Cause = CleanText(cause)
+	k.Cause = cause
 
 	// 6. 处理步骤（Action）
 	action := ""
 	doc.Find("div.section").Each(func(i int, s *goquery.Selection) {
 		title := s.Find("h4.sectiontitle, h2.sectiontitle").Text()
 		if strings.Contains(title, "处理步骤") || strings.Contains(title, "恢复步骤") {
-			action = s.Text()
-			action = strings.TrimPrefix(action, title)
+			action = ExtractBlockText(s)
+			action = strings.TrimPrefix(action, CleanMultilineText(title))
+			action = strings.TrimSpace(action)
 		}
 	})
-	k.Action = CleanText(action)
+	if action == "" {
+		action = ExtractBlockText(doc.Find("div.section").Last())
+	}
+	k.Action = action
 }

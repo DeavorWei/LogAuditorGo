@@ -77,7 +77,7 @@ var timePatterns = []struct {
 func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return time.Now(), fmt.Errorf("empty timestamp string")
+		return time.Time{}, fmt.Errorf("empty timestamp string")
 	}
 
 	// 转换前缀时区如 UTC+08:00 2026-04-15 14:23:10 为 2026-04-15 14:23:10+08:00
@@ -175,5 +175,5 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 		}
 	}
 
-	return time.Now(), fmt.Errorf("unable to parse timestamp: %s", raw)
+	return time.Time{}, fmt.Errorf("unable to parse timestamp: %s", raw)
 }

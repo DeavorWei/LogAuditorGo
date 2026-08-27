@@ -39,6 +39,9 @@
       <div class="header-right">
         <el-button-group>
           <el-button icon="Refresh" :disabled="!currentTaskId" @click="fetchLogs">刷新日志</el-button>
+          <el-button type="warning" icon="Opportunity" :disabled="!currentTaskId || currentTask?.status === 'PENDING' || currentTask?.log_count === 0" @click="handleReanalyzeTask">
+            重新分析
+          </el-button>
           <el-button type="primary" icon="Upload" :disabled="!currentTaskId" @click="openImportDialog">
             {{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}
           </el-button>
@@ -79,8 +82,9 @@
     </div>
 
     <!-- 视图 1：设备管理视图 -->
-    <div v-if="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
+    <div v-show="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
       <DeviceManager
+        v-if="currentTaskId"
         :task-id="currentTaskId"
         @device-updated="handleDeviceUpdated"
         @open-progress="openProgressModalWithId"
@@ -88,22 +92,22 @@
     </div>
 
     <!-- 视图 2：多设备时间线视图 -->
-    <div v-else-if="currentTaskId && currentViewMode === 'multi-timeline'" class="workbench-sub-view">
-      <MultiDeviceTimeline :task-id="currentTaskId" />
+    <div v-show="currentTaskId && currentViewMode === 'multi-timeline'" class="workbench-sub-view">
+      <MultiDeviceTimeline v-if="currentTaskId" :task-id="currentTaskId" />
     </div>
 
     <!-- 视图 3：独立 RCA 故障联动分析中心 -->
-    <div v-else-if="currentTaskId && currentViewMode === 'rca'" class="workbench-sub-view">
-      <RcaCenter :task-id="currentTaskId" @jump-to-log="handleJumpToLog" />
+    <div v-show="currentTaskId && currentViewMode === 'rca'" class="workbench-sub-view">
+      <RcaCenter v-if="currentTaskId" :task-id="currentTaskId" @jump-to-log="handleJumpToLog" />
     </div>
 
     <!-- 视图 4：多设备对比诊断报告视图 -->
-    <div v-else-if="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
-      <MultiDeviceReport :task-id="currentTaskId" />
+    <div v-show="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
+      <MultiDeviceReport v-if="currentTaskId" :task-id="currentTaskId" />
     </div>
 
-    <!-- 视图 4：经典日志审计工作台视图 -->
-    <template v-else>
+    <!-- 视图 5：经典日志审计工作台视图 -->
+    <div v-show="currentTaskId && (currentViewMode === 'workbench' || !currentViewMode)">
       <!-- 空任务（PENDING 状态）引导卡片 -->
       <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
         <el-card shadow="never" class="guide-card">
@@ -166,6 +170,24 @@
               <el-option label="未匹配" :value="false" />
             </el-select>
           </div>
+          <div v-if="taskDevices.length > 0" class="filter-row">
+            <el-select
+              v-model="filter.deviceId"
+              placeholder="按设备筛选"
+              clearable
+              size="small"
+              style="width: 100%;"
+              @change="onFilterChange"
+            >
+              <el-option label="全部设备" :value="null" />
+              <el-option
+                v-for="d in taskDevices"
+                :key="d.id"
+                :label="`${d.device_name} (${d.log_count}条)`"
+                :value="d.id"
+              />
+            </el-select>
+          </div>
           <div v-if="taskFiles.length > 1" class="filter-row">
             <el-select v-model="filter.sourceFile" placeholder="按来源文件筛选" clearable size="small" style="width: 100%;" @change="onFilterChange">
               <el-option label="全部文件来源" value="" />
@@ -191,9 +213,9 @@
               <span class="log-mod">{{ rec.module }}/{{ rec.brief }}</span>
               <span v-if="rec.knowledge_id > 0" class="match-tag">{{ rec.match_tier }}</span>
             </div>
-            <div class="log-card-msg">{{ rec.raw_log }}</div>
             <div class="log-card-footer">
-              <span>{{ formatTime(rec.timestamp) }}</span>
+              <span class="log-time">{{ formatTime(rec.timestamp) }}</span>
+              <span v-if="rec.hostname" class="host-tag">{{ rec.hostname }}</span>
               <span v-if="rec.source_file" class="file-tag" :title="`来源文件: ${rec.source_file}`">
                 📄 {{ rec.source_file }}
               </span>
@@ -277,7 +299,12 @@
               >
                 <div class="param-card-top">
                   <span class="p-key">{{ p.name }}</span>
-                  <el-tooltip v-if="p.description" :content="`官方文档定义: ${p.description}`" placement="top">
+                  <el-tooltip
+                    v-if="p.description"
+                    placement="top"
+                    raw-content
+                    :content="formatTooltipHtml(p.description)"
+                  >
                     <span class="p-desc-badge">📖 {{ p.description }}</span>
                   </el-tooltip>
                 </div>
@@ -423,7 +450,7 @@
         </div>
       </div>
     </div>
-    </template>
+    </div>
 
     <!-- 已导入日志文件抽屉 -->
     <el-drawer v-model="showFilesDrawer" title="已导入日志文件清单" size="480px">
@@ -566,11 +593,14 @@
       </div>
       <template #footer>
         <el-button @click="showConflictDialog = false">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="executeImportWithConflict('rename')">
+          自动重命名共存 (推荐)
+        </el-button>
         <el-button type="warning" :loading="submitting" @click="executeImportWithConflict('skip')">
-          跳过同名文件 (仅导入新文件)
+          跳过同名文件
         </el-button>
         <el-button type="danger" :loading="submitting" @click="executeImportWithConflict('overwrite')">
-          覆盖已有同名文件
+          覆盖已有文件
         </el-button>
       </template>
     </el-dialog>
@@ -592,8 +622,8 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
@@ -646,13 +676,16 @@ const selectedLog = ref(null)
 const rcaEvents = ref([])
 const activeTab = ref('knowledge')
 
+const taskDevices = ref([])
+
 const filter = ref({
   page: 1,
   pageSize: 50,
   keyword: '',
   severity: null,
   matched: null,
-  sourceFile: ''
+  sourceFile: '',
+  deviceId: null
 })
 
 // 新建任务相关
@@ -706,6 +739,18 @@ const escapeHtml = (text) => {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;')
+}
+
+// 格式化 tooltip 内容，支持换行并限制最大显示范围
+const formatTooltipHtml = (text) => {
+  if (!text) return ''
+  const escaped = escapeHtml(text).replace(/\r?\n/g, '<br/>')
+  return `<div style="max-width: 420px; max-height: 280px; overflow-y: auto; white-space: normal; line-height: 1.6; font-size: 12px; padding: 2px 4px;"><strong>官方文档定义:</strong><br/>${escaped}</div>`
+}
+
+const escapeRegExp = (str) => {
+  if (!str) return ''
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // 动态变量与官方文档参数定义融合
@@ -773,14 +818,78 @@ const renderedTemplateHtml = computed(() => {
   if (!log || !log.knowledge || !log.knowledge.message) return ''
 
   const rawTemplate = log.knowledge.message
-  const params = parsedParameters.value || {}
+
+  // 1. 构建所有可用参数字典，融合 enrichedParameters 与 parsedParameters
+  const params = { ...(parsedParameters.value || {}) }
+  if (Array.isArray(enrichedParameters.value)) {
+    for (const ep of enrichedParameters.value) {
+      if (ep.name && ep.value !== undefined && ep.value !== '') {
+        params[ep.name] = ep.value
+      }
+    }
+  }
+
+  // 2. 构建规范化映射表
   const normParams = new Map()
   for (const [k, v] of Object.entries(params)) {
     normParams.set(normalizeParamKey(k), v)
   }
 
-  // 匹配类似 [PeerID], <PeerID>, {PeerID}, %PeerID%, $PeerID 占位符
-  const placeholderRegex = /(\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))/g
+  // 3. 构建华为常见变量别名同义词映射表 (双向匹配)
+  const aliasGroups = [
+    ['bgppeerremoteaddr', 'peerid', 'peeraddr', 'neighbor', 'remoteaddr', 'peerip', 'peeraddress', 'peer'],
+    ['bgppeerlocaladdr', 'localaddr', 'localaddress', 'localip', 'local'],
+    ['bgppeerlasterror', 'errorcode', 'errorsubcode', 'notifyreason', 'reason', 'lasterror'],
+    ['bgppeerstate', 'state', 'laststate', 'currentstate', 'peerstate'],
+    ['interfacename', 'interface', 'ifname', 'port', 'portname', 'ifnet'],
+    ['nbrrouterid', 'routerid', 'neighborrouterid', 'neighbor', 'nbrip', 'nbr'],
+    ['bfddiag', 'diag', 'diagnostic', 'reason', 'diagcode'],
+    ['sessid', 'sessionid', 'session']
+  ]
+
+  const findActualVal = (keyName) => {
+    if (!keyName) return undefined
+    // 优先精确匹配
+    if (params[keyName] !== undefined) return params[keyName]
+    const normK = normalizeParamKey(keyName)
+    if (normParams.has(normK)) return normParams.get(normK)
+
+    // 尝试别名群组匹配
+    for (const group of aliasGroups) {
+      if (group.includes(normK)) {
+        for (const alias of group) {
+          if (normParams.has(alias)) {
+            return normParams.get(alias)
+          }
+        }
+      }
+    }
+
+    // 尝试在官方参数定义中寻找关联描述
+    if (log.knowledge && log.knowledge.parameters) {
+      try {
+        const defs = typeof log.knowledge.parameters === 'string' ? JSON.parse(log.knowledge.parameters) : log.knowledge.parameters
+        if (Array.isArray(defs)) {
+          for (const d of defs) {
+            const dName = normalizeParamKey(d.name || d.Name || '')
+            const dDesc = normalizeParamKey(d.description || d.Description || '')
+            if (dName === normK || dDesc.includes(normK)) {
+              for (const [pk, pv] of normParams.entries()) {
+                if (dDesc.includes(pk) || dName === pk) {
+                  return pv
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    return undefined
+  }
+
+  // 4. 允许括号内包含空格的占位符正则，支持 [Var], <Var>, {Var}, %Var%, $Var
+  const placeholderRegex = /(\[\s*([a-zA-Z0-9_\-]+)\s*\]|<\s*([a-zA-Z0-9_\-]+)\s*>|\{\s*([a-zA-Z0-9_\-]+)\s*\}|%\s*([a-zA-Z0-9_\-]+)\s*%|\$\s*([a-zA-Z0-9_\-]+))/g
 
   let lastIdx = 0
   let html = ''
@@ -796,11 +905,7 @@ const renderedTemplateHtml = computed(() => {
     html += escapeHtml(rawTemplate.substring(lastIdx, start))
 
     // 查找实际值
-    let actualVal = params[keyName]
-    if (actualVal === undefined) {
-      actualVal = normParams.get(normalizeParamKey(keyName))
-    }
-
+    const actualVal = findActualVal(keyName)
     if (actualVal !== undefined) {
       html += `<span class="inst-param-injected" title="参数: ${escapeHtml(keyName)} = ${escapeHtml(actualVal)}">${escapeHtml(actualVal)}</span>`
     } else {
@@ -813,17 +918,43 @@ const renderedTemplateHtml = computed(() => {
 
   // 添加剩余文本
   html += escapeHtml(rawTemplate.substring(lastIdx))
+
+  // 5. 如果模板中还包含未加括号的已知变量名（如独立单词 bgpPeerRemoteAddr），进行二次替换
+  for (const [pKey, pVal] of Object.entries(params)) {
+    if (!pVal || pKey.length < 4) continue
+    const escapedKey = escapeRegExp(pKey)
+    const bareRegex = new RegExp(`(?<![a-zA-Z0-9_\-])(${escapedKey})(?![a-zA-Z0-9_\-])(?![^<]*>|[^<>]*<\/span>)`, 'g')
+    html = html.replace(bareRegex, `<span class="inst-param-injected" title="参数: ${escapeHtml(pKey)} = ${escapeHtml(pVal)}">${escapeHtml(pVal)}</span>`)
+  }
+
   return html
 })
 
 // 现场排查上下文参数注入开关
 const contextualizeMode = ref(true)
 
-// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染
+// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染，并保证换行清晰展示
 const renderContextualizedHtml = (text) => {
   if (!text) return ''
+
+  // 1. 归一化换行符（处理字面量 \n 以及 \r\n）
+  let normalized = String(text)
+    .replace(/\\r\\n/g, '\n')
+    .replace(/\\n/g, '\n')
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+
+  // 2. 如果缺少换行但包含步骤序号（如 " 1. "、" 2. " 或 " 步骤1" 或 " 原因1"），智能补全换行
+  if (!normalized.includes('\n')) {
+    normalized = normalized
+      .replace(/(\s+)(\d+[\.、]\s*)/g, '\n$2')
+      .replace(/(\s+)(步骤\s*\d+[\.、:：]?\s*)/g, '\n$2')
+      .replace(/(\s+)(原因\s*\d+[\.、:：]?\s*)/g, '\n$2')
+      .trim()
+  }
+
   if (!contextualizeMode.value) {
-    return escapeHtml(text).replace(/\n/g, '<br/>')
+    return escapeHtml(normalized).replace(/\n/g, '<br/>')
   }
 
   const params = parsedParameters.value || {}
@@ -838,13 +969,13 @@ const renderContextualizedHtml = (text) => {
   let html = ''
   let match
 
-  while ((match = placeholderRegex.exec(text)) !== null) {
+  while ((match = placeholderRegex.exec(normalized)) !== null) {
     const start = match.index
     const end = placeholderRegex.lastIndex
     const fullMatch = match[0]
     const keyName = match[2] || match[3] || match[4] || match[5] || match[6]
 
-    html += escapeHtml(text.substring(lastIdx, start)).replace(/\n/g, '<br/>')
+    html += escapeHtml(normalized.substring(lastIdx, start)).replace(/\n/g, '<br/>')
 
     let actualVal = params[keyName]
     if (actualVal === undefined) {
@@ -860,7 +991,7 @@ const renderContextualizedHtml = (text) => {
     lastIdx = end
   }
 
-  html += escapeHtml(text.substring(lastIdx)).replace(/\n/g, '<br/>')
+  html += escapeHtml(normalized.substring(lastIdx)).replace(/\n/g, '<br/>')
   return html
 }
 
@@ -936,8 +1067,10 @@ const handleTaskChange = async (taskId) => {
   currentTask.value = taskList.value.find(t => t.task_id === taskId)
   filter.value.page = 1
   filter.value.sourceFile = ''
+  filter.value.deviceId = null
   selectedLog.value = null
   await fetchTaskFiles()
+  await fetchTaskDevices()
   await fetchLogs()
   await fetchRCA()
 }
@@ -952,6 +1085,18 @@ const fetchTaskFiles = async () => {
   } catch (e) {}
 }
 
+const fetchTaskDevices = async () => {
+  if (!currentTaskId.value) return
+  try {
+    const res = await api.getDevices(currentTaskId.value)
+    if (res.code === 0) {
+      taskDevices.value = res.data || []
+    }
+  } catch (e) {
+    console.error('Fetch task devices failed:', e)
+  }
+}
+
 const onFilterChange = async () => {
   filter.value.page = 1
   await fetchLogs()
@@ -961,14 +1106,18 @@ const fetchLogs = async () => {
   if (!currentTaskId.value) return
   loadingLogs.value = true
   try {
-    const res = await api.queryTaskLogs(currentTaskId.value, {
+    const params = {
       page: filter.value.page,
       page_size: filter.value.pageSize,
       keyword: filter.value.keyword,
       severity: filter.value.severity,
       matched: filter.value.matched,
       source_file: filter.value.sourceFile
-    })
+    }
+    if (filter.value.deviceId !== null && filter.value.deviceId !== undefined && filter.value.deviceId !== '') {
+      params.device_id = filter.value.deviceId
+    }
+    const res = await api.queryTaskLogs(currentTaskId.value, params)
     if (res.code === 0) {
       logRecords.value = res.data.records
       totalLogs.value = res.data.total
@@ -1163,7 +1312,7 @@ const handleCheckAndStartImport = () => {
     conflictingFileNames.value = conflicts
     showConflictDialog.value = true
   } else {
-    executeImportWithConflict('overwrite')
+    executeImportWithConflict('rename')
   }
 }
 
@@ -1206,6 +1355,33 @@ const executeImportWithConflict = async (conflictMode) => {
   }
 }
 
+// 触发当前任务全量重新分析
+const handleReanalyzeTask = () => {
+  if (!currentTaskId.value || !currentTask.value) return
+  ElMessageBox.confirm(
+    `确认对任务【${currentTask.value.task_name}】的全部 ${currentTask.value.log_count} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？`,
+    '重新分析确认',
+    {
+      confirmButtonText: '开始重新分析',
+      cancelButtonText: '取消',
+      type: 'warning'
+    }
+  ).then(async () => {
+    try {
+      const res = await api.reanalyzeTask(currentTaskId.value, true)
+      if (res.code === 0 && res.data?.job_id) {
+        currentJobId.value = res.data.job_id
+        showProgressModal.value = true
+      } else {
+        ElMessage.success('重新分析请求已提交')
+        await handleLogImportCompleted(res.data)
+      }
+    } catch (e) {
+      ElMessage.error('触发重新分析失败: ' + (e.message || '网络异常'))
+    }
+  }).catch(() => {})
+}
+
 // 日志导入完成回调：自动刷新并无缝载入审计工作台
 const handleLogImportCompleted = async (result) => {
   ElMessage.success({
@@ -1219,7 +1395,7 @@ const handleLogImportCompleted = async (result) => {
 }
 
 const formatTime = (ts) => {
-  if (!ts) return '-'
+  if (!ts || ts.startsWith('0001-01-01') || ts === '0001-01-01T00:00:00Z') return '无法解析'
   return ts.replace('T', ' ').substring(0, 19)
 }
 
@@ -1424,6 +1600,21 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   gap: 4px;
+  margin-top: 4px;
+}
+.log-time {
+  font-family: monospace;
+  color: #64748b;
+}
+.host-tag {
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 0 4px;
+  border-radius: 2px;
+  max-width: 90px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .file-tag {
   background: #f1f5f9;
@@ -1701,6 +1892,8 @@ onMounted(() => {
   font-size: 13px;
   color: #475569;
   line-height: 1.6;
+  white-space: pre-line;
+  word-break: break-word;
 }
 .action-box {
   background: #f8fafc;
@@ -1741,6 +1934,8 @@ onMounted(() => {
   padding: 12px;
   font-size: 13px;
   color: #9a3412;
+  white-space: pre-line;
+  word-break: break-word;
 }
 .guide-title {
   font-weight: bold;

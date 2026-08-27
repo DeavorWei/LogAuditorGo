@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"logauditorgo/internal/model"
 )
@@ -53,7 +52,6 @@ func (p *USGSecurityParser) Parse(line string) (*model.NormalizedLog, error) {
 		RawLog:     line,
 		DeviceType: "Huawei-USG-Firewall",
 		LogType:    "s",
-		Timestamp:  time.Now(),
 	}
 
 	if usgSecTimeIdx >= 0 && usgSecTimeIdx < len(match) && match[usgSecTimeIdx] != "" {

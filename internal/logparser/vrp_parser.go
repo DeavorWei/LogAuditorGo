@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"logauditorgo/internal/model"
 	"logauditorgo/pkg/logger"
@@ -63,7 +62,6 @@ func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
 	norm := &model.NormalizedLog{
 		RawLog:     line,
 		DeviceType: "Huawei-VRP",
-		Timestamp:  time.Now(),
 	}
 
 	if match := vrpRegex.FindStringSubmatch(line); match != nil {

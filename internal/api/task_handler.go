@@ -188,9 +188,9 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
-	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
+	conflictMode := c.DefaultPostForm("conflict_mode", "rename")
 	if conflictMode == "" {
-		conflictMode = "overwrite"
+		conflictMode = "rename"
 	}
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
@@ -663,9 +663,9 @@ func (h *TaskHandler) ImportLogsToDevice(c *gin.Context) {
 		return
 	}
 
-	conflictMode := c.DefaultPostForm("conflict_mode", "overwrite")
+	conflictMode := c.DefaultPostForm("conflict_mode", "rename")
 	if conflictMode == "" {
-		conflictMode = "overwrite"
+		conflictMode = "rename"
 	}
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
@@ -900,5 +900,68 @@ func (h *TaskHandler) ExportMultiDeviceReport(c *gin.Context) {
 	c.Header("Content-Type", "text/html; charset=utf-8")
 	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=multi_device_report_%s.html", taskID))
 	c.String(http.StatusOK, htmlContent)
+}
+
+// GetTaskModules 获取指定任务日志中实际出现的所有模块名称列表
+func (h *TaskHandler) GetTaskModules(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	modules, err := h.taskSvc.GetDistinctModules(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, modules)
+}
+
+// ReanalyzeTask 基于任务已持久化的日志记录重新执行知识库匹配与 RCA 根因拓扑分析
+func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
+	var req struct {
+		Async bool `json:"async"`
+	}
+	if err := c.ShouldBindJSON(&req); err == nil && req.Async {
+		isAsync = true
+	}
+
+	tracker := progress.GetHub().NewJob("log", taskID, task.LogAuditStages)
+	tracker.AddLog("info", "启动任务 %s 的重新分析...", taskID)
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in reanalyze task: %v", r))
+				}
+			}()
+			_, _ = h.taskSvc.ReanalyzeTask(taskID, tracker)
+		}()
+
+		SuccessResponse(c, gin.H{
+			"task_id":  taskID,
+			"job_id":   tracker.JobID(),
+			"is_async": true,
+		}, "Task reanalysis job started")
+		return
+	}
+
+	taskInfo, err := h.taskSvc.ReanalyzeTask(taskID, tracker)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Reanalyze task failed: "+err.Error())
+		return
+	}
+
+	SuccessResponse(c, taskInfo, "Task reanalyzed successfully")
 }
 
