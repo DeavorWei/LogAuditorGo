@@ -120,7 +120,7 @@ func RenderMessageTemplate(template string, rawParams map[string]string) string 
 		var keyName string
 		for i := 1; i < len(submatches); i++ {
 			if submatches[i] != "" {
-				keyName = submatches[i]
+				keyName = strings.TrimSpace(submatches[i])
 				break
 			}
 		}

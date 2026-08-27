@@ -73,6 +73,19 @@ func TestRenderMessageTemplate(t *testing.T) {
 	if rendered != expected {
 		t.Errorf("RenderMessageTemplate mismatch:\ngot:      %s\nexpected: %s", rendered, expected)
 	}
+
+	// 验证形如 remoteip=[remoteip] 的键值结构，键名不会被误替换
+	tpl2 := "BGP notification: remoteip=[remoteip], LocalIfname=[LocalIfname], M-LAG ID=[M-LAG ID]"
+	params2 := map[string]string{
+		"remoteip":    "1.1.1.1",
+		"LocalIfname": "Eth-Trunk10",
+		"M-LAG ID":    "10",
+	}
+	rendered2 := RenderMessageTemplate(tpl2, params2)
+	expected2 := "BGP notification: remoteip=1.1.1.1, LocalIfname=Eth-Trunk10, M-LAG ID=10"
+	if rendered2 != expected2 {
+		t.Errorf("RenderMessageTemplate mismatch:\ngot:      %s\nexpected: %s", rendered2, expected2)
+	}
 }
 
 func TestContextualizeText(t *testing.T) {

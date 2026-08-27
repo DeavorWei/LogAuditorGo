@@ -901,7 +901,7 @@ const renderedTemplateHtml = computed(() => {
   }
 
   // 4. 允许括号内包含空格的占位符正则，支持 [Var], <Var>, {Var}, %Var%, $Var
-  const placeholderRegex = /(\[\s*([a-zA-Z0-9_\-]+)\s*\]|<\s*([a-zA-Z0-9_\-]+)\s*>|\{\s*([a-zA-Z0-9_\-]+)\s*\}|%\s*([a-zA-Z0-9_\-]+)\s*%|\$\s*([a-zA-Z0-9_\-]+))/g
+  const placeholderRegex = /(\[\s*([a-zA-Z0-9_\-\s]+?)\s*\]|<\s*([a-zA-Z0-9_\-\s]+?)\s*>|\{\s*([a-zA-Z0-9_\-\s]+?)\s*\}|%\s*([a-zA-Z0-9_\-\s]+?)\s*%|\$\s*([a-zA-Z0-9_\-]+))/g
 
   let lastIdx = 0
   let html = ''
@@ -911,7 +911,8 @@ const renderedTemplateHtml = computed(() => {
     const start = match.index
     const end = placeholderRegex.lastIndex
     const fullMatch = match[0]
-    const keyName = match[2] || match[3] || match[4] || match[5] || match[6]
+    const rawKey = match[2] || match[3] || match[4] || match[5] || match[6]
+    const keyName = rawKey ? rawKey.trim() : ''
 
     // 添加前面的普通文本
     html += escapeHtml(rawTemplate.substring(lastIdx, start))
@@ -930,14 +931,6 @@ const renderedTemplateHtml = computed(() => {
 
   // 添加剩余文本
   html += escapeHtml(rawTemplate.substring(lastIdx))
-
-  // 5. 如果模板中还包含未加括号的已知变量名（如独立单词 bgpPeerRemoteAddr），进行二次替换
-  for (const [pKey, pVal] of Object.entries(params)) {
-    if (!pVal || pKey.length < 4) continue
-    const escapedKey = escapeRegExp(pKey)
-    const bareRegex = new RegExp(`(?<![a-zA-Z0-9_\-])(${escapedKey})(?![a-zA-Z0-9_\-])(?![^<]*>|[^<>]*<\/span>)`, 'g')
-    html = html.replace(bareRegex, () => `<span class="inst-param-injected" title="参数: ${escapeHtml(pKey)} = ${escapeHtml(pVal)}">${escapeHtml(pVal)}</span>`)
-  }
 
   return html
 })
