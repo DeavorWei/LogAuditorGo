@@ -1387,6 +1387,17 @@ func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLo
 		return nil, 0, err
 	}
 
+	// 批量收集当前页命中的 KnowledgeID，查出官方知识库实体映射
+	var kidList []uint
+	kidSet := make(map[uint]bool)
+	for _, r := range records {
+		if r.KnowledgeID > 0 && !kidSet[r.KnowledgeID] {
+			kidSet[r.KnowledgeID] = true
+			kidList = append(kidList, r.KnowledgeID)
+		}
+	}
+	kbMap := s.getKnowledgeMap(kidList)
+
 	events := make([]model.DeviceTimelineEvent, len(records))
 	for i, r := range records {
 		var params map[string]string
@@ -1422,11 +1433,26 @@ func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLo
 			MatchTier:       r.MatchTier,
 			MatchConfidence: r.MatchConfidence,
 			Parameters:      params,
-			EventSummary:    summary.GenerateSummary(r.Module, r.Brief, r.Severity, r.MessageBody, params),
+			EventSummary:    summary.GenerateSummary(r.Module, r.Brief, r.Severity, r.MessageBody, params, kbMap[r.KnowledgeID]),
 		}
 	}
 
 	return events, total, nil
+}
+
+// getKnowledgeMap 批量从全局数据库查询 Knowledge 实体映射
+func (s *Service) getKnowledgeMap(kids []uint) map[uint]*model.Knowledge {
+	res := make(map[uint]*model.Knowledge)
+	if len(kids) == 0 || s.globalDB == nil {
+		return res
+	}
+	var list []model.Knowledge
+	if err := s.globalDB.Where("id IN ?", kids).Find(&list).Error; err == nil {
+		for i := range list {
+			res[list[i].ID] = &list[i]
+		}
+	}
+	return res
 }
 
 // GetDeviceTimeline 获取多设备联合时间线事件

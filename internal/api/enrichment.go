@@ -10,9 +10,13 @@ import (
 )
 
 // GenerateEventSummary 从日志基本字段与 ParametersJSON 生成中文事件摘要
-func GenerateEventSummary(module, brief string, severity int, rawMsg string, paramsJSON string) string {
+func GenerateEventSummary(module, brief string, severity int, rawMsg string, paramsJSON string, kb ...*model.Knowledge) string {
 	params := ParseParametersJSON(paramsJSON)
-	return summary.GenerateSummary(module, brief, severity, rawMsg, params)
+	var k *model.Knowledge
+	if len(kb) > 0 && kb[0] != nil {
+		k = kb[0]
+	}
+	return summary.GenerateSummary(module, brief, severity, rawMsg, params, k)
 }
 
 // EnrichedParameter 表示变量与其官方文档说明融合后的实体

@@ -377,14 +377,17 @@ func (h *TaskHandler) enrichRecords(records []model.LogRecord) []EnrichedRecord 
 	for _, rec := range records {
 		er := EnrichedRecord{LogRecord: rec}
 		rawParams := ParseParametersJSON(rec.ParametersJSON)
-		er.EventSummary = summary.GenerateSummary(rec.Module, rec.Brief, rec.Severity, rec.MessageBody, rawParams)
-
+		var kb *model.Knowledge
 		if rec.KnowledgeID > 0 && knowledgeMap != nil {
-			kb := knowledgeMap[rec.KnowledgeID]
+			kb = knowledgeMap[rec.KnowledgeID]
+		}
+		er.EventSummary = summary.GenerateSummary(rec.Module, rec.Brief, rec.Severity, rec.MessageBody, rawParams, kb)
+
+		if kb != nil {
 			er.Knowledge = kb
 			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, kb)
 			er.ContextualizedKB = ContextualizeKnowledge(kb, rec.ParametersJSON)
-			if kb != nil && kb.Message != "" {
+			if kb.Message != "" {
 				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
 			}
 		} else if rec.ParametersJSON != "" {
