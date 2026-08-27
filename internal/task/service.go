@@ -42,6 +42,17 @@ func escapeLikePattern(s string) string {
 	return s
 }
 
+var invalidFileNameChars = regexp.MustCompile(`[\\/:*?"<>|\r\n\t]+`)
+
+// sanitizeFileNameComponent 过滤文件名中的非法字符与路径穿越符
+func sanitizeFileNameComponent(name string) string {
+	s := invalidFileNameChars.ReplaceAllString(strings.TrimSpace(name), "_")
+	if s == "" {
+		return "Device"
+	}
+	return s
+}
+
 // LogAuditStages 日志导入与审计分析全流程预设阶段
 var LogAuditStages = []progress.StageDef{
 	{Key: "RECEIVE", Name: "日志文件预处理"},
@@ -331,7 +342,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		}
 
 		// 2. 日志名带上设备名，以区分不同设备相同日志文件名称
-		prefix := fmt.Sprintf("[%s]_", targetDevName)
+		prefix := fmt.Sprintf("[%s]_", sanitizeFileNameComponent(targetDevName))
 		if !strings.HasPrefix(cleanName, prefix) && !strings.HasPrefix(cleanName, "[") {
 			cleanName = prefix + cleanName
 		}
@@ -1915,6 +1926,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 				MatchConfidence: rec.MatchConfidence,
 			})
 		}
+		_ = rows.Close()
 	}
 
 	var rcaEvents []model.RCAEvent

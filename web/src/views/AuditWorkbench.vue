@@ -924,7 +924,7 @@ const renderedTemplateHtml = computed(() => {
     if (!pVal || pKey.length < 4) continue
     const escapedKey = escapeRegExp(pKey)
     const bareRegex = new RegExp(`(?<![a-zA-Z0-9_\-])(${escapedKey})(?![a-zA-Z0-9_\-])(?![^<]*>|[^<>]*<\/span>)`, 'g')
-    html = html.replace(bareRegex, `<span class="inst-param-injected" title="参数: ${escapeHtml(pKey)} = ${escapeHtml(pVal)}">${escapeHtml(pVal)}</span>`)
+    html = html.replace(bareRegex, () => `<span class="inst-param-injected" title="参数: ${escapeHtml(pKey)} = ${escapeHtml(pVal)}">${escapeHtml(pVal)}</span>`)
   }
 
   return html

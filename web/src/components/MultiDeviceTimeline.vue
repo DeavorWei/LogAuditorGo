@@ -658,9 +658,18 @@ const exportCSV = () => {
     ev.source_file || ''
   ])
 
+  const sanitizeCSVCell = (cell) => {
+    let str = String(cell ?? '')
+    // 防范 CSV/Excel 宏与公式注入攻击（当单元格以 =、+、-、@、制表符等开头时增加单引号转义）
+    if (/^[=+\-@\t\r]/.test(str)) {
+      str = "'" + str
+    }
+    return `"${str.replace(/"/g, '""')}"`
+  }
+
   const BOM = '\uFEFF' // Excel UTF-8 兼容BOM
   const csvBody = [headers, ...rows]
-    .map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+    .map(row => row.map(sanitizeCSVCell).join(','))
     .join('\r\n')
 
   const blob = new Blob([BOM + csvBody], { type: 'text/csv;charset=utf-8;' })
