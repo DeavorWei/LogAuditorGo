@@ -107,7 +107,7 @@
     </div>
 
     <!-- 视图 5：经典日志审计工作台视图 -->
-    <div v-show="currentTaskId && (currentViewMode === 'workbench' || !currentViewMode)">
+    <div v-show="currentTaskId && (currentViewMode === 'workbench' || !currentViewMode)" class="workbench-main-view">
       <!-- 空任务（PENDING 状态）引导卡片 -->
       <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
         <el-card shadow="never" class="guide-card">
@@ -1437,6 +1437,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   padding: 0 16px;
+  flex-shrink: 0;
 }
 .header-left {
   display: flex;
@@ -1511,9 +1512,18 @@ onMounted(() => {
   line-height: 1.4;
 }
 
+.workbench-main-view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
 .workbench-body {
   flex: 1;
   display: flex;
+  min-height: 0;
   overflow: hidden;
 }
 
@@ -1523,6 +1533,8 @@ onMounted(() => {
   border-right: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
+  height: 100%;
+  min-height: 0;
   background: #f8fafc;
 }
 .filter-panel {
@@ -1531,6 +1543,7 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 8px;
+  flex-shrink: 0;
 }
 .filter-row {
   display: flex;
@@ -1538,6 +1551,7 @@ onMounted(() => {
 }
 .log-stream-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding: 8px;
   display: flex;
@@ -1637,6 +1651,7 @@ onMounted(() => {
   justify-content: center;
   border-top: 1px solid #e2e8f0;
   background: #fff;
+  flex-shrink: 0;
 }
 
 /* 中栏 36% */
@@ -1644,6 +1659,8 @@ onMounted(() => {
   width: 36%;
   border-right: 1px solid #e2e8f0;
   overflow-y: auto;
+  height: 100%;
+  min-height: 0;
   padding: 16px;
   background: #ffffff;
 }
@@ -1819,6 +1836,8 @@ onMounted(() => {
 .col-right {
   width: 36%;
   overflow-y: auto;
+  height: 100%;
+  min-height: 0;
   padding: 16px;
   background: #ffffff;
 }
@@ -2039,10 +2058,33 @@ onMounted(() => {
   border-radius: 8px;
   border: 1px solid #e2e8f0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
+  flex-shrink: 0;
 }
 
 .workbench-sub-view {
-  min-height: calc(100vh - 180px);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.log-stream-list::-webkit-scrollbar,
+.col-middle::-webkit-scrollbar,
+.col-right::-webkit-scrollbar,
+.workbench-sub-view::-webkit-scrollbar {
+  width: 6px;
+}
+.log-stream-list::-webkit-scrollbar-thumb,
+.col-middle::-webkit-scrollbar-thumb,
+.col-right::-webkit-scrollbar-thumb,
+.workbench-sub-view::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 3px;
+}
+.log-stream-list::-webkit-scrollbar-thumb:hover,
+.col-middle::-webkit-scrollbar-thumb:hover,
+.col-right::-webkit-scrollbar-thumb:hover,
+.workbench-sub-view::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
 }
 
 .rca-banner-alert {
