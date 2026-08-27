@@ -1812,7 +1812,7 @@ func (s *Service) ExportMultiDeviceHTML(taskID string, deviceIDs []uint) (string
 	return GenerateMultiDeviceHTMLReport(report), nil
 }
 
-// ReanalyzeTask 基于任务维度对已持久化的日志记录重新执行知识库匹配、设备指标同步与 RCA 根因拓扑分析
+// ReanalyzeTask 按照导入日志全流程标准，对任务内所有日志执行全量重新分词解析、参数提取、知识库匹配、入库持久化、设备同步及 RCA 根因拓扑分析
 func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.TaskInfo, error) {
 	if !isValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
@@ -1842,12 +1842,12 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 	}
 
 	if tr != nil {
-		tr.AddLog("info", "启动任务【%s】重新分析，共 %d 条日志待匹配", taskInfo.TaskName, totalLogCount)
-		tr.SetStage("MATCH_NORM", fmt.Sprintf("正在对 %d 条日志重新执行知识库匹配...", totalLogCount))
-		tr.UpdateProgress(0, totalLogCount, "准备执行知识库匹配...")
+		tr.AddLog("info", "启动任务【%s】全流程重新分析，将严格按照导入全流程重新执行解析、匹配与根因诊断 (共 %d 条原始日志)", taskInfo.TaskName, totalLogCount)
+		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在对 %d 条日志重新执行原始文本分行解析与标准化...", totalLogCount))
+		tr.UpdateProgress(0, totalLogCount, "准备执行全量日志解析与匹配...")
 	}
 
-	// 阶段一：流式批量重新匹配 LogRecord
+	// 阶段一：流式批量对所有原始日志重新执行解析（PARSE_NORM）与知识库匹配（MATCH_KB）
 	matchedCount := 0
 	const batchSize = 1000
 	var lastID uint = 0
@@ -1868,25 +1868,23 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 				rec := &records[i]
 				lastID = rec.ID
 
-				var params map[string]string
-				if rec.ParametersJSON != "" {
-					_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
+				// 严格按照导入日志全流程：无条件对原始单行日志重新执行分词解析与参数提取
+				rawLine := rec.RawLog
+				norm, parseErr := logparser.ParseLine(rawLine)
+				if parseErr != nil {
+					norm = &model.NormalizedLog{
+						RawLog:      rawLine,
+						MessageBody: rawLine,
+						Module:      "UNKNOWN",
+						Brief:       "UNPARSED",
+						Severity:    8, // 解析失败的日志等级设为最低级 (8)
+					}
 				}
+				norm.ID = rec.ID
+				norm.SourceFile = rec.SourceFile
+				norm.DeviceID = rec.DeviceID
 
-				norm := &model.NormalizedLog{
-					ID:          rec.ID,
-					RawLog:      rec.RawLog,
-					Timestamp:   rec.Timestamp,
-					Hostname:    rec.Hostname,
-					Module:      rec.Module,
-					Severity:    rec.Severity,
-					Brief:       rec.Brief,
-					SlotInfo:    rec.SlotInfo,
-					SourceFile:  rec.SourceFile,
-					MessageBody: rec.MessageBody,
-					Parameters:  params,
-				}
-
+				// 严格执行知识库多级匹配（纯内存极速检索 + 负缓存）
 				var k *model.Knowledge
 				var tier string
 				var conf float64
@@ -1895,22 +1893,56 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 				}
 
 				if k != nil && k.ID > 0 {
-					rec.KnowledgeID = k.ID
-					rec.MatchTier = tier
-					rec.MatchConfidence = conf
+					norm.KnowledgeID = k.ID
+					norm.MatchTier = tier
+					norm.MatchConfidence = conf
 					matchedCount++
 				} else {
-					rec.KnowledgeID = 0
-					rec.MatchTier = matcher.TierUnmatch
-					rec.MatchConfidence = 0.0
+					norm.KnowledgeID = 0
+					norm.MatchTier = matcher.TierUnmatch
+					norm.MatchConfidence = 0.0
 				}
 
-				if err := tx.Model(&model.LogRecord{}).Where("id = ?", rec.ID).Updates(map[string]interface{}{
+				// 兜底保障：若 Severity 缺失或不在 1~8 范围内，默认设为最低级 8
+				if norm.Severity < 1 || norm.Severity > 8 {
+					norm.Severity = 8
+				}
+
+				paramJSONStr := "{}"
+				if len(norm.Parameters) > 0 {
+					if b, err := json.Marshal(norm.Parameters); err == nil {
+						paramJSONStr = string(b)
+					}
+				}
+
+				// 同步更新实体字段
+				rec.Timestamp = norm.Timestamp
+				rec.Hostname = norm.Hostname
+				rec.Module = norm.Module
+				rec.Severity = norm.Severity
+				rec.Brief = norm.Brief
+				rec.SlotInfo = norm.SlotInfo
+				rec.MessageBody = norm.MessageBody
+				rec.ParametersJSON = paramJSONStr
+				rec.KnowledgeID = norm.KnowledgeID
+				rec.MatchTier = norm.MatchTier
+				rec.MatchConfidence = norm.MatchConfidence
+
+				// 批量持久化更新
+				updateData := map[string]interface{}{
 					"knowledge_id":     rec.KnowledgeID,
 					"match_tier":       rec.MatchTier,
 					"match_confidence": rec.MatchConfidence,
 					"severity":         rec.Severity,
-				}).Error; err != nil {
+					"timestamp":        rec.Timestamp,
+					"hostname":         rec.Hostname,
+					"module":           rec.Module,
+					"brief":            rec.Brief,
+					"slot_info":        rec.SlotInfo,
+					"message_body":     rec.MessageBody,
+					"parameters_json":  rec.ParametersJSON,
+				}
+				if err := tx.Model(&model.LogRecord{}).Where("id = ?", rec.ID).Updates(updateData).Error; err != nil {
 					return err
 				}
 			}
@@ -1920,7 +1952,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 		if err != nil {
 			logger.Log.Errorf("[Task Service] Batch update log records failed: %v", err)
 			if tr != nil {
-				tr.Fail(err, "批量更新日志匹配状态失败")
+				tr.Fail(err, "批量更新重新解析数据失败")
 			}
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = err.Error()
@@ -1931,13 +1963,13 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 
 		processedCount += int64(len(records))
 		if tr != nil {
-			tr.UpdateProgress(processedCount, totalLogCount, fmt.Sprintf("已重新匹配 %d / %d 条 (命中 %d 条)", processedCount, totalLogCount, matchedCount))
+			tr.UpdateProgress(processedCount, totalLogCount, fmt.Sprintf("已全量重新解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalLogCount, matchedCount))
 		}
 	}
 
 	// 阶段二：设备归属与设备指标刷新
 	if tr != nil {
-		tr.SetStage("AUTO_ASSIGN", "正在同步设备归属与各设备统计指标...")
+		tr.SetStage("AUTO_ASSIGN", "正在根据重新解析的设备主机名同步设备归属与统计指标...")
 		tr.AddLog("info", "同步设备归属与统计指标...")
 	}
 	_, _ = s.AutoAssignDevices(taskID)
@@ -1956,10 +1988,10 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 	}
 	s.syncTaskDeviceCount(taskID, taskDB)
 
-	// 阶段三：重建 RCA 根因拓扑分析
+	// 阶段三：基于最新全量解析与时间线重建 RCA 根因拓扑分析
 	if tr != nil {
-		tr.SetStage("RCA_ANALYSIS", "正在基于最新匹配结果重新执行 RCA 根因拓扑分析...")
-		tr.AddLog("info", "清理历史 RCA 事件并重新计算...")
+		tr.SetStage("RCA_ANALYSIS", "正在基于全量重新解析后的时序日志执行 RCA 根因拓扑分析...")
+		tr.AddLog("info", "清理历史 RCA 事件并重新计算拓扑与传播链...")
 	}
 	if err := taskDB.Where("1 = 1").Delete(&model.RCAEvent{}).Error; err != nil {
 		logger.Log.Warnf("[Task Service] Delete old RCA events failed: %v", err)
@@ -2032,10 +2064,10 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 		taskID, taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
 
 	if tr != nil {
-		tr.AddLog("info", "重新分析完成: 共 %d 行日志，最新命中知识库 %d 条，识别出 %d 个 RCA 根因事件",
+		tr.AddLog("info", "全流程重新分析完成: 共 %d 行日志，最新命中知识库 %d 条，识别出 %d 个 RCA 根因事件",
 			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
-		tr.SetStage("COMPLETE", "日志审计重新分析已完成")
-		tr.Complete(&taskInfo, fmt.Sprintf("重新分析就绪！共处理 %d 行日志，命中知识库 %d 条，发现 %d 个 RCA 根因事件",
+		tr.SetStage("COMPLETE", "日志全流程重新解析与审计分析已完成")
+		tr.Complete(&taskInfo, fmt.Sprintf("全流程重新分析就绪！共重新解析 %d 行日志，命中知识库 %d 条，发现 %d 个 RCA 根因事件",
 			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount))
 	}
 

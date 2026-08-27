@@ -858,6 +858,36 @@ Apr 15 2026 14:00:02 CORE-SW-01 %%01CUSTOMMOD/2/CUSTOM_ERR(l)[2]: Custom error o
 	if logs[0].KnowledgeID != 999 {
 		t.Errorf("expected LogRecord KnowledgeID to be 999, got %d", logs[0].KnowledgeID)
 	}
+
+	// 5. 验证之前解析失败（UNPARSED/零时间戳）的日志在重新分析时能被自动补齐重解析
+	taskDB, _, _ := storage.GetOrCreateTaskDB(taskDir, taskInfo.TaskID)
+	unparsedLog := model.LogRecord{
+		RawLog:      "May 19 2026 09:33:32+08:00 SZ_PS_DMZLeaf_2Z29-34U-CE8865-01 %%01M-LAG/4/hwMlagPortDown_active(l):CID=0x81de0458-alarmID=0x0ae52007;M-LAG member interfaces Down.",
+		Brief:       "UNPARSED",
+		Module:      "UNKNOWN",
+		Severity:    8,
+		MessageBody: "May 19 2026 09:33:32+08:00 SZ_PS_DMZLeaf_2Z29-34U-CE8865-01 %%01M-LAG/4/hwMlagPortDown_active(l):CID=0x81de0458-alarmID=0x0ae52007;M-LAG member interfaces Down.",
+	}
+	taskDB.Create(&unparsedLog)
+
+	_, err = svc.ReanalyzeTask(taskInfo.TaskID, nil)
+	if err != nil {
+		t.Fatalf("ReanalyzeTask with unparsed log failed: %v", err)
+	}
+
+	var fixedLog model.LogRecord
+	if err := taskDB.First(&fixedLog, "id = ?", unparsedLog.ID).Error; err != nil {
+		t.Fatalf("query fixed log failed: %v", err)
+	}
+	if fixedLog.Brief != "hwMlagPortDown_active" {
+		t.Errorf("expected fixed brief 'hwMlagPortDown_active', got '%s'", fixedLog.Brief)
+	}
+	if fixedLog.Module != "M-LAG" {
+		t.Errorf("expected fixed module 'M-LAG', got '%s'", fixedLog.Module)
+	}
+	if fixedLog.Timestamp.IsZero() || fixedLog.Timestamp.Year() != 2026 || fixedLog.Timestamp.Month() != time.May || fixedLog.Timestamp.Day() != 19 {
+		t.Errorf("expected timestamp parsed on reanalyze, got: %v", fixedLog.Timestamp)
+	}
 }
 
 // TestTaskImportConcurrencyLock 验证 H-06: 同任务并发导入应被互斥锁拦截，避免重复入库与竞态
