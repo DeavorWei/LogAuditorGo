@@ -230,6 +230,44 @@ func (idx *Indexer) IndexKnowledge(items []model.Knowledge) error {
 	return nil
 }
 
+// Delete 从索引中删除指定单个文档 ID
+func (idx *Indexer) Delete(docID string) error {
+	if idx == nil {
+		return fmt.Errorf("indexer is nil")
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	if idx.index == nil {
+		return fmt.Errorf("indexer is closed")
+	}
+	return idx.index.Delete(docID)
+}
+
+// DeleteBatch 批量从索引中删除多个文档 ID
+func (idx *Indexer) DeleteBatch(docIDs []string) error {
+	if idx == nil {
+		return fmt.Errorf("indexer is nil")
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+
+	if idx.index == nil {
+		return fmt.Errorf("indexer is closed")
+	}
+	if len(docIDs) == 0 {
+		return nil
+	}
+
+	batch := idx.index.NewBatch()
+	for _, id := range docIDs {
+		if id != "" {
+			batch.Delete(id)
+		}
+	}
+	return idx.index.Batch(batch)
+}
+
 // Search 执行多字段检索
 func (idx *Indexer) Search(filter SearchFilter) (*SearchResult, error) {
 	if idx == nil {

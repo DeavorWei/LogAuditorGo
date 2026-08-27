@@ -138,8 +138,8 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	brief := strings.TrimSpace(norm.Brief)
 	upperBrief := strings.ToUpper(brief)
 
-	// 构造缓存 Key
-	cacheKey := module + ":" + brief + ":" + strings.TrimSpace(product) + ":" + strings.TrimSpace(version)
+	// 构造缓存 Key (统一大写避免大小写不一致造成缓存分片)
+	cacheKey := module + ":" + upperBrief + ":" + strings.ToUpper(strings.TrimSpace(product)) + ":" + strings.ToUpper(strings.TrimSpace(version))
 
 	// 1. 优先检查精确命中缓存
 	if m.cache != nil {
@@ -194,16 +194,23 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			}
 		}
 
-		// 其次扫描该模块下是否有以 trimmedUpper 为前缀的候选
+		// 其次扫描该模块下的候选：仅当候选条目剥离对称后缀后与 trimmedBrief 严格一致时才判定为别名命中，严禁随意前缀包含以杜绝反义词条误召回
 		if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
-			var prefixCandidates []*model.Knowledge
+			var mnemonicCandidates []*model.Knowledge
 			for _, cand := range moduleCandidates {
-				if strings.HasPrefix(strings.ToUpper(cand.Brief), trimmedUpper) {
-					prefixCandidates = append(prefixCandidates, cand)
+				candBrief := cand.Brief
+				for _, suf := range suffixes {
+					if strings.HasSuffix(candBrief, suf) {
+						candBrief = strings.TrimSuffix(candBrief, suf)
+						break
+					}
+				}
+				if strings.EqualFold(candBrief, trimmedBrief) {
+					mnemonicCandidates = append(mnemonicCandidates, cand)
 				}
 			}
-			if len(prefixCandidates) > 0 {
-				best := FindBestKnowledgeMatchPtr(prefixCandidates, product, version)
+			if len(mnemonicCandidates) > 0 {
+				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version)
 				if best != nil {
 					if m.cache != nil {
 						m.cache.Put(cacheKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})

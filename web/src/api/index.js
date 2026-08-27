@@ -16,8 +16,17 @@ request.interceptors.response.use(
     }
     return res
   },
-  error => {
-    const msg = error.response?.data?.message || error.response?.data?.error || error.message || '网络请求失败'
+  async error => {
+    let msg = error.message || '网络请求失败'
+    if (error.response?.data instanceof Blob) {
+      try {
+        const text = await error.response.data.text()
+        const json = JSON.parse(text)
+        if (json.message) msg = json.message
+      } catch (e) {}
+    } else if (error.response?.data?.message) {
+      msg = error.response.data.message
+    }
     ElMessage.error(msg)
     return Promise.reject(error)
   }
@@ -195,5 +204,33 @@ export default {
   },
   getMultiDeviceReport(taskId, deviceIds = []) {
     return request.post(`/tasks/${taskId}/multi-device/report`, { device_ids: deviceIds })
+  },
+
+  // 报表导出下载 (基于 Blob，防御重复提交并由拦截器统一弹窗报错)
+  async downloadTaskReport(taskId, format = 'html') {
+    const res = await request.get(`/tasks/${taskId}/export`, {
+      params: { format },
+      responseType: 'blob'
+    })
+    const blob = new Blob([res], { type: 'text/html;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `report_${taskId}.${format}`
+    link.click()
+    window.URL.revokeObjectURL(url)
+  },
+  async downloadMultiDeviceReport(taskId, format = 'html') {
+    const res = await request.get(`/tasks/${taskId}/multi-device/export`, {
+      params: { format },
+      responseType: 'blob'
+    })
+    const blob = new Blob([res], { type: 'text/html;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `multi_device_report_${taskId}.${format}`
+    link.click()
+    window.URL.revokeObjectURL(url)
   }
 }

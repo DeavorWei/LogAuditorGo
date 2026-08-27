@@ -115,8 +115,8 @@ func ExtractCoreContextParams(normParams map[string]string) string {
 	return strings.Join(parts, ", ")
 }
 
-// placeholderRegex 匹配消息模板中的占位符
-var placeholderRegex = regexp.MustCompile(`(?:\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))`)
+// PlaceholderRegex 匹配消息模板中的占位符
+var PlaceholderRegex = regexp.MustCompile(`(?:\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))`)
 
 // RenderTemplateWithParams 将官方文档消息模板占位符替换为提取的真实值
 func RenderTemplateWithParams(template string, rawParams map[string]string, normParams map[string]string) string {
@@ -124,8 +124,8 @@ func RenderTemplateWithParams(template string, rawParams map[string]string, norm
 		return template
 	}
 
-	return placeholderRegex.ReplaceAllStringFunc(template, func(match string) string {
-		submatches := placeholderRegex.FindStringSubmatch(match)
+	return PlaceholderRegex.ReplaceAllStringFunc(template, func(match string) string {
+		submatches := PlaceholderRegex.FindStringSubmatch(match)
 		if len(submatches) < 2 {
 			return match
 		}

@@ -595,23 +595,36 @@ func TestCORSMiddleware(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	// 1. 请求带有 Origin 头，应当返回对应的 Origin、Credentials: true 以及 Vary: Origin
+	// 1. 请求带有受信 Origin 头（如本地前端），应当返回对应的 Origin、Credentials: true 以及 Vary: Origin
 	req1, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
-	req1.Header.Set("Origin", "http://example.com:3000")
+	req1.Header.Set("Origin", "http://localhost:5173")
 	w1 := httptest.NewRecorder()
 	router.ServeHTTP(w1, req1)
 
-	if w1.Header().Get("Access-Control-Allow-Origin") != "http://example.com:3000" {
-		t.Errorf("expected Access-Control-Allow-Origin to match request origin, got %s", w1.Header().Get("Access-Control-Allow-Origin"))
+	if w1.Header().Get("Access-Control-Allow-Origin") != "http://localhost:5173" {
+		t.Errorf("expected Access-Control-Allow-Origin to match allowed origin, got %s", w1.Header().Get("Access-Control-Allow-Origin"))
 	}
 	if w1.Header().Get("Access-Control-Allow-Credentials") != "true" {
-		t.Errorf("expected Access-Control-Allow-Credentials: true when Origin is present, got %s", w1.Header().Get("Access-Control-Allow-Credentials"))
+		t.Errorf("expected Access-Control-Allow-Credentials: true when Origin is allowed, got %s", w1.Header().Get("Access-Control-Allow-Credentials"))
 	}
 	if !strings.Contains(w1.Header().Get("Vary"), "Origin") {
 		t.Errorf("expected Vary header to contain Origin, got %s", w1.Header().Get("Vary"))
 	}
 
-	// 2. 请求不带 Origin 头，应当返回 Allow-Origin: * 且不设置 Allow-Credentials: true
+	// 2. 请求带有非受信 Origin 头（如外部域），应当安全降级为 * 且不带 Credentials (M-08)
+	reqExternal, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
+	reqExternal.Header.Set("Origin", "http://evil.com:3000")
+	wExt := httptest.NewRecorder()
+	router.ServeHTTP(wExt, reqExternal)
+
+	if wExt.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Errorf("expected Access-Control-Allow-Origin: * for untrusted origin, got %s", wExt.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if wExt.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Errorf("expected Access-Control-Allow-Credentials to be empty for untrusted origin, got %s", wExt.Header().Get("Access-Control-Allow-Credentials"))
+	}
+
+	// 3. 请求不带 Origin 头，应当返回 Allow-Origin: * 且不设置 Allow-Credentials: true
 	req2, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)

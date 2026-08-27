@@ -107,6 +107,7 @@
 <script setup>
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
 import { Check } from '@element-plus/icons-vue'
+import { ElNotification } from 'element-plus'
 import api from '@/api'
 
 const props = defineProps({
@@ -236,6 +237,7 @@ const startTracking = (jobId) => {
   if (!jobId) return
 
   // 1. 初始化 SSE
+  // 1. 初始化 SSE
   try {
     eventSource = api.createProgressStream(
       jobId,
@@ -244,6 +246,11 @@ const startTracking = (jobId) => {
       },
       (err) => {
         console.warn('[ImportProgressModal] SSE connection interrupted, falling back to HTTP polling:', err)
+        // 显式断开断线/404 的 SSE，避免原生 EventSource 不断在后台重连请求 (L-15, H-09)
+        if (eventSource) {
+          eventSource.close()
+          eventSource = null
+        }
         startPolling(jobId)
       }
     )
@@ -256,24 +263,51 @@ const startTracking = (jobId) => {
     if (res.code === 0 && res.data) {
       handleSnapshotUpdate(res.data)
     }
-  }).catch(() => {})
+  }).catch((e) => {
+    if (e.response?.status === 404) {
+      handleJobFailed('任务进度不存在或已过期')
+    }
+  })
 }
+
+let pollFailCount = 0
+const isBackgroundRunning = ref(false)
 
 const startPolling = (jobId) => {
   if (pollTimer) return
+  pollFailCount = 0
   pollTimer = setInterval(async () => {
     try {
       const res = await api.getProgress(jobId)
       if (res.code === 0 && res.data) {
+        pollFailCount = 0
         handleSnapshotUpdate(res.data)
         if (res.data.status === 'completed' || res.data.status === 'failed') {
           stopPolling()
         }
+      } else {
+        pollFailCount++
+        if (pollFailCount >= 3) {
+          handleJobFailed('进度查询异常或任务未找到')
+        }
       }
     } catch (e) {
-      stopPolling()
+      pollFailCount++
+      if (pollFailCount >= 3 || e.response?.status === 404) {
+        handleJobFailed('任务进度已失效或网络中断')
+      }
     }
-  }, 600)
+  }, 800)
+}
+
+const handleJobFailed = (reason) => {
+  stopTracking()
+  snapshot.value = {
+    ...snapshot.value,
+    status: 'failed',
+    error: reason
+  }
+  emit('failed', reason)
 }
 
 const stopPolling = () => {
@@ -306,6 +340,15 @@ const handleSnapshotUpdate = (data) => {
   // 检查是否完成
   if (data.status === 'completed') {
     stopTracking()
+    if (isBackgroundRunning.value) {
+      ElNotification({
+        title: '审计分析完成',
+        message: `后台任务【${props.title || '日志分析'}】已处理完毕，工作台已同步刷新`,
+        type: 'success',
+        duration: 4000
+      })
+      isBackgroundRunning.value = false
+    }
     emit('completed', data.result || data)
     // 延时自动关闭
     if (props.autoCloseDelay > 0) {
@@ -315,6 +358,15 @@ const handleSnapshotUpdate = (data) => {
     }
   } else if (data.status === 'failed') {
     stopTracking()
+    if (isBackgroundRunning.value) {
+      ElNotification({
+        title: '分析失败',
+        message: `后台任务【${props.title || '日志分析'}】处理失败: ${data.error || '未知错误'}`,
+        type: 'error',
+        duration: 5000
+      })
+      isBackgroundRunning.value = false
+    }
     emit('failed', data.error || data.message)
   }
 }
@@ -332,8 +384,12 @@ const clearLogs = () => {
   logs.value = []
 }
 
+// 用户点击“后台运行”：隐藏弹窗，保持后台跟踪监听并在完成时推送 (H-08)
 const handleRunInBackground = () => {
-  handleClose()
+  isBackgroundRunning.value = true
+  visible.value = false
+  emit('update:modelValue', false)
+  emit('closed')
 }
 
 const handleFinishNow = () => {
@@ -343,6 +399,7 @@ const handleFinishNow = () => {
 }
 
 const handleClose = () => {
+  isBackgroundRunning.value = false
   stopTracking()
   visible.value = false
   emit('update:modelValue', false)
@@ -353,9 +410,12 @@ watch(
   () => props.modelValue,
   (val) => {
     visible.value = val
-    if (val && props.jobId) {
-      startTracking(props.jobId)
-    } else if (!val) {
+    if (val) {
+      isBackgroundRunning.value = false
+      if (props.jobId) {
+        startTracking(props.jobId)
+      }
+    } else if (!isBackgroundRunning.value) {
       stopTracking()
     }
   }

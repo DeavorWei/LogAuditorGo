@@ -11,7 +11,7 @@
       <div class="header-right">
         <el-button-group>
           <el-button icon="Refresh" @click="fetchReport">刷新报告</el-button>
-          <el-button type="success" icon="Download" @click="exportHTMLReport">
+          <el-button type="success" icon="Download" :loading="exporting" @click="exportHTMLReport">
             导出 HTML 离线报告
           </el-button>
         </el-button-group>
@@ -161,6 +161,7 @@
 import { ref, onMounted, defineProps, watch } from 'vue'
 import { Aim, Monitor, Connection } from '@element-plus/icons-vue'
 import api from '@/api'
+import { ElMessage } from 'element-plus'
 
 const props = defineProps({
   taskId: {
@@ -187,9 +188,18 @@ const fetchReport = async () => {
   }
 }
 
-const exportHTMLReport = () => {
-  if (!props.taskId) return
-  window.open(`/api/v1/tasks/${props.taskId}/multi-device/export?format=html`, '_blank')
+const exporting = ref(false)
+const exportHTMLReport = async () => {
+  if (!props.taskId || exporting.value) return
+  exporting.value = true
+  try {
+    await api.downloadMultiDeviceReport(props.taskId, 'html')
+    ElMessage.success('多设备报表导出成功')
+  } catch (e) {
+    // 错误已由拦截器处理
+  } finally {
+    exporting.value = false
+  }
 }
 
 watch(() => props.taskId, (newVal) => {

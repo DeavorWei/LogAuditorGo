@@ -90,6 +90,19 @@ func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) 
 		return nil, "", fmt.Errorf("auto migrate task tables failed: %w", err)
 	}
 
+	// 控制最大任务连接池缓存量（超过 64 时淘汰最早条目，防句柄泄漏）
+	if len(taskDBPool) >= 64 {
+		for oldID, oldDB := range taskDBPool {
+			if sqlDB, err := oldDB.DB(); err == nil {
+				_ = sqlDB.Close()
+			}
+			delete(taskDBPool, oldID)
+			if len(taskDBPool) < 48 {
+				break
+			}
+		}
+	}
+
 	taskDBPool[taskID] = db
 	return db, dbPath, nil
 }
@@ -112,6 +125,19 @@ func CloseTaskDB(taskID string) error {
 		}
 	}
 	return nil
+}
+
+// CloseAllTaskDBs 关闭所有任务 DB 连接，用于系统停机或资源清理
+func CloseAllTaskDBs() {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+
+	for id, db := range taskDBPool {
+		if sqlDB, err := db.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+		delete(taskDBPool, id)
+	}
 }
 
 // DeleteTaskDB 删除任务数据库物理文件并关闭连接

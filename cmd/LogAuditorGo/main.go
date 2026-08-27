@@ -62,6 +62,7 @@ func main() {
 	// 5. 初始化业务引擎
 	knowledgeSvc := knowledge.NewService(globalDB, indexer)
 	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	knowledgeSvc.SetMatchEngine(matchEngine)
 	rcaEngine := rootcause.NewEngine()
 	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
 
@@ -100,6 +101,9 @@ func main() {
 	// 9. 释放后台任务与存储资源
 	progress.GetHub().Stop()
 	log.Info("Progress hub stopped")
+
+	storage.CloseAllTaskDBs()
+	log.Info("All task SQLite databases closed cleanly")
 
 	if err := indexer.Close(); err != nil {
 		log.Errorf("Failed to close Bleve indexer: %v", err)

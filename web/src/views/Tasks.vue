@@ -106,12 +106,18 @@ const openTask = (taskId) => {
   router.push(`/audit/${taskId}`)
 }
 
-const exportHTML = (taskId) => {
-  window.open(`/api/v1/tasks/${taskId}/export?format=html`, '_blank')
+const exportHTML = async (taskId) => {
+  try {
+    await api.downloadTaskReport(taskId, 'html')
+    ElMessage.success('报告导出完成')
+  } catch (e) {}
 }
 
-const exportMultiHTML = (taskId) => {
-  window.open(`/api/v1/tasks/${taskId}/multi-device/export?format=html`, '_blank')
+const exportMultiHTML = async (taskId) => {
+  try {
+    await api.downloadMultiDeviceReport(taskId, 'html')
+    ElMessage.success('多设备报告导出完成')
+  } catch (e) {}
 }
 
 const handleReanalyze = (row) => {

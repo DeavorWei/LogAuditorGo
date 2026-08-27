@@ -99,6 +99,7 @@ type Service struct {
 	taskDir     string
 	matchEngine *matcher.MatchEngine
 	rcaEngine   *rootcause.Engine
+	taskLocks   sync.Map
 }
 
 func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEngine, rcaEngine *rootcause.Engine) *Service {
@@ -108,6 +109,16 @@ func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEng
 		matchEngine: matchEngine,
 		rcaEngine:   rcaEngine,
 	}
+}
+
+func (s *Service) getTaskLock(taskID string) *sync.Mutex {
+	actual, _ := s.taskLocks.LoadOrStore(taskID, &sync.Mutex{})
+	return actual.(*sync.Mutex)
+}
+
+// GetTaskLockForTest 用于单元测试获取任务互斥锁
+func (s *Service) GetTaskLockForTest(taskID string) *sync.Mutex {
+	return s.getTaskLock(taskID)
 }
 
 // CreateEmptyTask 创建初始状态为 PENDING 的空审计任务
@@ -214,12 +225,19 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
 	}
 
+	// 任务并发互斥锁：防止同一任务被并发多次导入导致数据重复与竞态 (H-06)
+	taskLock := s.getTaskLock(taskID)
+	if !taskLock.TryLock() {
+		err := fmt.Errorf("task %s is already processing another import job", taskID)
+		if tr != nil {
+			tr.Fail(err, "当前任务正在执行其他导入任务，请等待其完成后再试")
+		}
+		return nil, err
+	}
+	defer taskLock.Unlock()
+
 	if tr != nil {
 		tr.SetStage("RECEIVE", "正在加载并预处理待导入日志文件...")
-	}
-
-	if s.matchEngine != nil {
-		s.matchEngine.Reload()
 	}
 
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
@@ -311,6 +329,12 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 				validLines = append(validLines, l)
 			}
 		}
+		if scanErr := scanner.Err(); scanErr != nil {
+			logger.Log.Warnf("[Task Service] Scanner error while reading item %s: %v", item.FileName, scanErr)
+			if tr != nil {
+				tr.AddLog("warning", "文件 %s 读取过程遇到异常或单行超长(>1MB): %v", item.FileName, scanErr)
+			}
+		}
 		_ = rc.Close()
 
 		if len(validLines) == 0 {
@@ -363,8 +387,22 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 				if tr != nil {
 					tr.AddLog("info", "清理覆盖旧同名文件数据: %s", cleanName)
 				}
-				_ = taskDB.Where("source_file = ?", cleanName).Delete(&model.LogRecord{}).Error
-				_ = taskDB.Where("task_id = ? AND file_name = ?", taskID, cleanName).Delete(&model.TaskFile{}).Error
+				delErr := taskDB.Transaction(func(tx *gorm.DB) error {
+					if err := tx.Where("source_file = ?", cleanName).Delete(&model.LogRecord{}).Error; err != nil {
+						return fmt.Errorf("delete old log records failed: %w", err)
+					}
+					if err := tx.Where("task_id = ? AND file_name = ?", taskID, cleanName).Delete(&model.TaskFile{}).Error; err != nil {
+						return fmt.Errorf("delete old task file failed: %w", err)
+					}
+					return nil
+				})
+				if delErr != nil {
+					logger.Log.Errorf("[Task Service] Overwrite failed to delete existing data for %s: %v", cleanName, delErr)
+					if tr != nil {
+						tr.AddLog("error", "清理覆盖旧同名文件 %s 失败: %v", cleanName, delErr)
+					}
+					return nil, delErr
+				}
 			}
 		} else {
 			// 默认 rename 模式：同名文件自动追加序号，支持多文件共存
@@ -533,8 +571,6 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 							norm.KnowledgeID = 0
 							norm.MatchTier = matcher.TierUnmatch
 							norm.MatchConfidence = 0.0
-							// 无法匹配知识库的日志，等级调整为最低级 (8)
-							norm.Severity = 8
 						}
 
 						// 兜底保障：若 Severity 缺失或不在 1~8 范围内，默认设为最低级 8
@@ -910,7 +946,9 @@ func (s *Service) GetEnrichedRCAEvents(taskID string) ([]model.EnrichedRCAEvent,
 	logRecordMap := make(map[uint]model.LogRecord)
 	if len(allLogIDs) > 0 {
 		var records []model.LogRecord
-		taskDB.Where("id IN ?", allLogIDs).Find(&records)
+		if err := taskDB.Where("id IN ?", allLogIDs).Find(&records).Error; err != nil {
+			return nil, fmt.Errorf("find log records for rca failed: %w", err)
+		}
 		for _, r := range records {
 			logRecordMap[r.ID] = r
 		}
@@ -918,7 +956,9 @@ func (s *Service) GetEnrichedRCAEvents(taskID string) ([]model.EnrichedRCAEvent,
 
 	// 批量加载设备映射
 	var devList []model.Device
-	taskDB.Find(&devList)
+	if err := taskDB.Find(&devList).Error; err != nil {
+		return nil, fmt.Errorf("find devices for rca failed: %w", err)
+	}
 	devMap := make(map[uint]model.Device)
 	for _, d := range devList {
 		devMap[d.ID] = d
@@ -1049,10 +1089,14 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 	}
 
 	var records []model.LogRecord
-	taskDB.Order("id asc").Find(&records)
+	if err := taskDB.Order("id asc").Limit(100).Find(&records).Error; err != nil {
+		return "", fmt.Errorf("load log records for html export failed: %w", err)
+	}
 
 	var rcas []model.RCAEvent
-	taskDB.Find(&rcas)
+	if err := taskDB.Find(&rcas).Error; err != nil {
+		return "", fmt.Errorf("load rca events for html export failed: %w", err)
+	}
 
 	html := GenerateHTMLReport(task, records, rcas)
 	return html, nil
@@ -1859,7 +1903,6 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (*model.
 					rec.KnowledgeID = 0
 					rec.MatchTier = matcher.TierUnmatch
 					rec.MatchConfidence = 0.0
-					rec.Severity = 8
 				}
 
 				if err := tx.Model(&model.LogRecord{}).Where("id = ?", rec.ID).Updates(map[string]interface{}{

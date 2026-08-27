@@ -45,7 +45,7 @@
           <el-button type="primary" icon="Upload" :disabled="!currentTaskId" @click="openImportDialog">
             {{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}
           </el-button>
-          <el-button type="success" icon="Download" :disabled="!currentTaskId || currentTask?.status === 'PENDING'" @click="handleExportHTML">
+          <el-button type="success" icon="Download" :loading="exportingHTML" :disabled="!currentTaskId || currentTask?.status === 'PENDING'" @click="handleExportHTML">
             导出报告
           </el-button>
           <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">新建任务</el-button>
@@ -1161,9 +1161,18 @@ const selectLog = (log) => {
   selectedLog.value = log
 }
 
-const handleExportHTML = () => {
-  if (!currentTaskId.value) return
-  window.open(`/api/v1/tasks/${currentTaskId.value}/export?format=html`, '_blank')
+const exportingHTML = ref(false)
+const handleExportHTML = async () => {
+  if (!currentTaskId.value || exportingHTML.value) return
+  exportingHTML.value = true
+  try {
+    await api.downloadTaskReport(currentTaskId.value, 'html')
+    ElMessage.success('HTML 报告已成功导出并下载')
+  } catch (e) {
+    // 错误已由 api 统一拦截器弹出提示
+  } finally {
+    exportingHTML.value = false
+  }
 }
 
 // 新建任务

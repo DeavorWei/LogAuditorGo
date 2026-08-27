@@ -447,4 +447,23 @@ func TestExtractAllArchivesWithTracker(t *testing.T) {
 	}
 }
 
+// TestDecompressionLimit2GB 验证 H-04: 单文件解压尺寸超过 2GB 时被安全拒绝 (防御 Zip Bomb)
+func TestDecompressionLimit2GB(t *testing.T) {
+	tmpDir := t.TempDir()
+	targetPath := filepath.Join(tmpDir, "huge.bin")
+
+	// 构造一个元数据标明尺寸超过 2GB 的 zip.File 条目
+	fakeFile := &zip.File{
+		FileHeader: zip.FileHeader{
+			Name:               "huge.bin",
+			UncompressedSize64: uint64(hdx.MaxUncompressedFileSize) + 1024, // 超过 2GB
+		},
+	}
+
+	err := hdx.ExtractSingleZipFileForTest(fakeFile, targetPath)
+	if err == nil || !strings.Contains(err.Error(), "exceeds 2GB limit") {
+		t.Fatalf("expected 2GB limit error, got: %v", err)
+	}
+}
+
 

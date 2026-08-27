@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,10 +49,16 @@ type ImportStats struct {
 	Skipped              bool          `json:"skipped,omitempty"`
 }
 
+// ReloadableEngine 定义可重载匹配引擎接口
+type ReloadableEngine interface {
+	Reload()
+}
+
 type Service struct {
-	db       *gorm.DB
-	indexer  *search.Indexer
-	docLocks sync.Map
+	db          *gorm.DB
+	indexer     *search.Indexer
+	matchEngine ReloadableEngine
+	docLocks    sync.Map
 }
 
 func NewService(db *gorm.DB, indexer ...*search.Indexer) *Service {
@@ -64,6 +71,10 @@ func NewService(db *gorm.DB, indexer ...*search.Indexer) *Service {
 
 func (s *Service) SetIndexer(indexer *search.Indexer) {
 	s.indexer = indexer
+}
+
+func (s *Service) SetMatchEngine(engine ReloadableEngine) {
+	s.matchEngine = engine
 }
 
 func (s *Service) getDocLock(key string) *sync.Mutex {
@@ -230,6 +241,11 @@ func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) 
 	totalStats.Duration = time.Since(startTime)
 	logger.Log.Infof("Completed batch import of %d/%d documents (%d skipped) from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
 		successCount, len(docDirs), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
+
+	if successCount > 0 && s.matchEngine != nil {
+		s.matchEngine.Reload()
+		logger.Log.Infof("[Knowledge Service] Successfully reloaded match engine after knowledge import")
+	}
 
 	if tr != nil {
 		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
@@ -613,14 +629,54 @@ func (s *Service) GetKnowledgeMapByIDs(ids []uint) (map[uint]*model.Knowledge, e
 	return res, nil
 }
 
-// DeleteDocument 删除文档及关联映射
+// DeleteDocument 删除文档及关联映射，并清理孤儿知识条目与全文检索索引
 func (s *Service) DeleteDocument(docID uint) error {
-	return s.db.Transaction(func(tx *gorm.DB) error {
+	var kIDs []uint
+	// 1. 查找此文档关联的所有 knowledge_id
+	s.db.Model(&model.KnowledgeVersionMapping{}).Where("document_id = ?", docID).Pluck("knowledge_id", &kIDs)
+
+	err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("document_id = ?", docID).Delete(&model.KnowledgeVersionMapping{}).Error; err != nil {
 			return err
 		}
 		return tx.Delete(&model.Document{}, docID).Error
 	})
+	if err != nil {
+		return err
+	}
+
+	// 2. 清理不再被任何文档引用的孤儿 Knowledge 记录与 Bleve 索引 (M-01, M-11)
+	if len(kIDs) > 0 {
+		var activeKIDs []uint
+		s.db.Model(&model.KnowledgeVersionMapping{}).Where("knowledge_id IN ?", kIDs).Distinct("knowledge_id").Pluck("knowledge_id", &activeKIDs)
+		activeSet := make(map[uint]struct{}, len(activeKIDs))
+		for _, id := range activeKIDs {
+			activeSet[id] = struct{}{}
+		}
+
+		var orphanIDs []string
+		var orphanUintIDs []uint
+		for _, id := range kIDs {
+			if _, active := activeSet[id]; !active {
+				orphanUintIDs = append(orphanUintIDs, id)
+				orphanIDs = append(orphanIDs, strconv.Itoa(int(id)))
+			}
+		}
+
+		if len(orphanUintIDs) > 0 {
+			_ = s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error
+			if s.indexer != nil {
+				_ = s.indexer.DeleteBatch(orphanIDs)
+			}
+		}
+	}
+
+	// 3. 通知匹配引擎重载 (M-13)
+	if s.matchEngine != nil {
+		s.matchEngine.Reload()
+	}
+
+	return nil
 }
 
 // FindBestKnowledgeMatch 实现了基于产品型号与版本的智能回退（Fallback）策略

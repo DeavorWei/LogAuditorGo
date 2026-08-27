@@ -130,7 +130,7 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 
 	validLogs := make([]*model.NormalizedLog, 0, len(logs))
 	for idx, log := range logs {
-		if log != nil {
+		if log != nil && !log.Timestamp.IsZero() {
 			// (CQ-003) 如果 LogID 未分配，克隆副本并分配稳定临时 ID，避免修改调用方入参
 			if log.ID == 0 {
 				logCopy := *log
@@ -215,9 +215,17 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 					continue
 				}
 
-				// 设备/主机名隔离：只聚合相同主机或主机为空的日志
+				// 设备与主机隔离：优先按 DeviceID 隔离，其次按 Hostname 与 SourceFile 隔离 (M-05)
+				if log.DeviceID > 0 && otherLog.DeviceID > 0 && log.DeviceID != otherLog.DeviceID {
+					continue
+				}
 				if log.Hostname != "" && otherLog.Hostname != "" && log.Hostname != otherLog.Hostname {
 					continue
+				}
+				if log.Hostname == "" && otherLog.Hostname == "" && log.DeviceID == 0 && otherLog.DeviceID == 0 {
+					if log.SourceFile != "" && otherLog.SourceFile != "" && log.SourceFile != otherLog.SourceFile {
+						continue
+					}
 				}
 
 				// 检查 curr -> otherLog 是否满足 activeEdges 中任意一条 DAG 边

@@ -85,6 +85,15 @@ Apr 15 2026 14:00:03 CORE-SW-01 %%01BGP/2/PEER_BACKWARD(l)[3]: The BGP peer went
 		t.Errorf("expected 3 total records, got total=%d, len=%d", total, len(records))
 	}
 
+	// 验证 H-02: 未匹配日志保留其真实 Severity (BFD 日志级别应为 2)
+	for _, r := range records {
+		if r.Brief == "BFD_SESS_DOWN" {
+			if r.Severity != 2 {
+				t.Errorf("H-02 regression: unhandled log severity was corrupted, expected 2, got %d", r.Severity)
+			}
+		}
+	}
+
 	// 测试 RCA 事件查询
 	rcas, err := svc.GetTaskRCAEvents(taskInfo.TaskID)
 	if err != nil {
@@ -848,6 +857,44 @@ Apr 15 2026 14:00:02 CORE-SW-01 %%01CUSTOMMOD/2/CUSTOM_ERR(l)[2]: Custom error o
 	}
 	if logs[0].KnowledgeID != 999 {
 		t.Errorf("expected LogRecord KnowledgeID to be 999, got %d", logs[0].KnowledgeID)
+	}
+}
+
+// TestTaskImportConcurrencyLock 验证 H-06: 同任务并发导入应被互斥锁拦截，避免重复入库与竞态
+func TestTaskImportConcurrencyLock(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "task_lock_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	taskInfo, err := svc.CreateEmptyTask("Lock-Test-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create empty task failed: %v", err)
+	}
+
+	// 模拟外部已持锁
+	lock := svc.GetTaskLockForTest(taskInfo.TaskID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// 并发尝试导入，预期被立即拒绝
+	item := task.FileUploadItem{
+		FileName: "test.log",
+		Content:  "Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN.",
+	}
+	_, importErr := svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item}, "overwrite")
+	if importErr == nil || !strings.Contains(importErr.Error(), "already processing another import job") {
+		t.Fatalf("expected concurrency lock error, got: %v", importErr)
 	}
 }
 

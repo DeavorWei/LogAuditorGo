@@ -39,7 +39,7 @@ func SetupRouter(
 	// CORS 跨域支持中间件
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
-		if origin != "" {
+		if origin != "" && isAllowedOrigin(origin, c.Request.Host) {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 			c.Writer.Header().Add("Vary", "Origin")

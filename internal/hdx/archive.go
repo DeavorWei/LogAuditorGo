@@ -137,8 +137,16 @@ func UnzipConcurrent(src string, dest string, tracker *progress.JobTracker) erro
 	return nil
 }
 
+// MaxUncompressedFileSize 单文件解压最大尺寸上限 (2GB)
+const MaxUncompressedFileSize = int64(2 * 1024 * 1024 * 1024)
+
 // extractSingleZipFile 解压单个文件到目标路径
 func extractSingleZipFile(f *zip.File, targetPath string) error {
+	// 校验未压缩尺寸元数据 (防御 Zip Bomb)
+	if f.UncompressedSize64 > uint64(MaxUncompressedFileSize) {
+		return fmt.Errorf("file '%s' uncompressed size (%d bytes) exceeds 2GB limit", f.Name, f.UncompressedSize64)
+	}
+
 	// 确保父目录存在（容错）
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return err
@@ -161,18 +169,34 @@ func extractSingleZipFile(f *zip.File, targetPath string) error {
 	}
 	defer rc.Close()
 
-	if _, err := io.Copy(outFile, rc); err != nil {
+	// 使用 LimitReader 严格防止实际解压流超过 2GB
+	limitedReader := io.LimitReader(rc, MaxUncompressedFileSize+1)
+	written, err := io.Copy(outFile, limitedReader)
+	if err != nil {
+		_ = os.Remove(targetPath)
 		return err
+	}
+	if written > MaxUncompressedFileSize {
+		_ = os.Remove(targetPath)
+		return fmt.Errorf("file '%s' decompressed data exceeds 2GB limit", f.Name)
 	}
 
 	return nil
 }
 
+// ExtractSingleZipFileForTest 供单元测试安全校验单文件 2GB 解压阈值拦截
+func ExtractSingleZipFileForTest(f *zip.File, targetPath string) error {
+	return extractSingleZipFile(f, targetPath)
+}
+
 // ExtractAllArchivesWithTracker 递归查找并多协程并发解压目录下所有的 .hdx / .zip 压缩包
 func ExtractAllArchivesWithTracker(dir string, tracker *progress.JobTracker) error {
 	var archiveFiles []string
-	_ = filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d == nil || d.IsDir() {
+	walkErr := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d == nil || d.IsDir() {
 			return nil
 		}
 		ext := strings.ToLower(filepath.Ext(p))
@@ -181,6 +205,9 @@ func ExtractAllArchivesWithTracker(dir string, tracker *progress.JobTracker) err
 		}
 		return nil
 	})
+	if walkErr != nil {
+		return fmt.Errorf("walk directory %s failed: %w", dir, walkErr)
+	}
 
 	if len(archiveFiles) == 0 {
 		return nil
@@ -189,6 +216,9 @@ func ExtractAllArchivesWithTracker(dir string, tracker *progress.JobTracker) err
 	if tracker != nil {
 		tracker.AddLog("info", "发现 %d 个 HDX 官方压缩包，准备多协程并发解压...", len(archiveFiles))
 	}
+
+	var lastErr error
+	successCount := 0
 
 	for idx, archivePath := range archiveFiles {
 		baseName := filepath.Base(archivePath)
@@ -200,6 +230,7 @@ func ExtractAllArchivesWithTracker(dir string, tracker *progress.JobTracker) err
 		}
 
 		if err := UnzipConcurrent(archivePath, destDir, tracker); err != nil {
+			lastErr = err
 			logger.Log.Warnf("[HDX Extractor] Failed to unzip archive %s: %v", archivePath, err)
 			if tracker != nil {
 				tracker.AddLog("warning", "解压 %s 失败: %v", baseName, err)
@@ -207,8 +238,13 @@ func ExtractAllArchivesWithTracker(dir string, tracker *progress.JobTracker) err
 			continue
 		}
 
+		successCount++
 		// 解压成功后清理压缩包以释放临时空间
 		_ = os.Remove(archivePath)
+	}
+
+	if successCount == 0 && lastErr != nil {
+		return lastErr
 	}
 
 	if tracker != nil {

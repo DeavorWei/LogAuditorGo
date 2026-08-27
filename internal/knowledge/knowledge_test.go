@@ -119,6 +119,40 @@ func TestCalculateContentHash(t *testing.T) {
 	if h1 == "" || h1 != h2 {
 		t.Errorf("expected matching hash for trimmed fields, got h1=%s, h2=%s", h1, h2)
 	}
+
+	// 3. 验证 Severity 敏感性 (H-01: 不同告警级别不能被合并)
+	kSev2 := &model.Knowledge{
+		EntryType: model.EntryTypeLog,
+		Module:    "BGP",
+		Brief:     "BGP_AUTH_FAILED",
+		Severity:  2,
+	}
+	kSev6 := &model.Knowledge{
+		EntryType: model.EntryTypeLog,
+		Module:    "BGP",
+		Brief:     "BGP_AUTH_FAILED",
+		Severity:  6,
+	}
+	if knowledge.CalculateContentHash(kSev2) == knowledge.CalculateContentHash(kSev6) {
+		t.Errorf("expected different hashes for different severity levels")
+	}
+
+	// 4. 验证 TrapOID 敏感性 (H-01: 跨产品不同 OID 不能被误合并)
+	kTrap1 := &model.Knowledge{
+		EntryType: model.EntryTypeAlarm,
+		Module:    "BGP",
+		Brief:     "BGP_PEER_DOWN",
+		TrapOID:   "1.3.6.1.4.1.2011.5.25.177.1.1",
+	}
+	kTrap2 := &model.Knowledge{
+		EntryType: model.EntryTypeAlarm,
+		Module:    "BGP",
+		Brief:     "BGP_PEER_DOWN",
+		TrapOID:   "1.3.6.1.4.1.2011.5.25.177.1.2",
+	}
+	if knowledge.CalculateContentHash(kTrap1) == knowledge.CalculateContentHash(kTrap2) {
+		t.Errorf("expected different hashes for different TrapOIDs")
+	}
 }
 
 func TestFindBestKnowledgeMatch(t *testing.T) {

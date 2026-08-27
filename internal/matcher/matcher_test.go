@@ -391,3 +391,49 @@ func BenchmarkFindBestKnowledgeMatchPtr(b *testing.B) {
 	}
 }
 
+// TestMnemonicNoReverseMatch 验证 H-03: 助记符匹配绝不能将 _down 误配给 Up 产生语义反转
+func TestMnemonicNoReverseMatch(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "matcher_h03_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "test_h03.db")
+	db, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+
+	// 库中只有 hwBgpPeerUp 知识条目
+	items := []model.Knowledge{
+		{
+			ID:          1,
+			EntryType:   model.EntryTypeLog,
+			Module:      "BGP",
+			Brief:       "hwBgpPeerUp",
+			Message:     "BGP peer connection established successfully.",
+			ContentHash: "hash_bgp_up",
+		},
+	}
+	for _, it := range items {
+		_ = db.Create(&it).Error
+	}
+
+	engine := matcher.NewMatchEngine(db, nil)
+	engine.Reload()
+
+	// 输入故障掉线日志: hwBgpPeer_down
+	downLog := &model.NormalizedLog{
+		Module:      "BGP",
+		Brief:       "hwBgpPeer_down",
+		MessageBody: "BGP peer is disconnected.",
+	}
+
+	k, tier, _ := engine.Match(downLog, "", "")
+	// 验证：绝不能命中 TierMnemonic 并返回 hwBgpPeerUp
+	if tier == matcher.TierMnemonic && k != nil && k.Brief == "hwBgpPeerUp" {
+		t.Fatalf("H-03 regression: hwBgpPeer_down was incorrectly matched to opposite knowledge hwBgpPeerUp via TierMnemonic!")
+	}
+}
+

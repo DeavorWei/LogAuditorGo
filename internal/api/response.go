@@ -24,8 +24,12 @@ func SuccessResponse(c *gin.Context, data interface{}, message ...string) {
 // ErrorResponse 标准错误响应
 func ErrorResponse(c *gin.Context, httpStatus int, code int, message string) {
 	if httpStatus >= 500 {
-		logger.Log.Errorf("[API Error 500] %s", message)
-		message = "Internal Server Error"
+		logger.Log.Errorf("[API Error %d] %s", httpStatus, message)
+		if message == "" {
+			message = "Internal Server Error"
+		} else {
+			message = "Internal Server Error: " + message
+		}
 	}
 	c.JSON(httpStatus, gin.H{
 		"code":    code,

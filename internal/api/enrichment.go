@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"regexp"
 	"strings"
 
 	"logauditorgo/internal/model"
@@ -35,16 +34,12 @@ type ContextualizedKnowledge struct {
 	Impact      string `json:"impact"`
 }
 
-// placeholderRegex 匹配日志模板或文本中的参数占位符，支持 [Param], <Param>, {Param}, %Param%, $Param
-var placeholderRegex = regexp.MustCompile(`(?:\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))`)
+// placeholderRegex 引用 summary 包中的统一定义 (M-21)
+var placeholderRegex = summary.PlaceholderRegex
 
-// normalizeKey 规范化参数键名（忽略大小写、下划线、短横线与空格）
+// normalizeKey 引用 summary 包中的统一键名规范化 (M-21)
 func normalizeKey(k string) string {
-	s := strings.ToLower(k)
-	s = strings.ReplaceAll(s, "_", "")
-	s = strings.ReplaceAll(s, "-", "")
-	s = strings.ReplaceAll(s, " ", "")
-	return s
+	return summary.NormalizeKey(k)
 }
 
 // ParseParametersJSON 解析日志记录中的 ParametersJSON
