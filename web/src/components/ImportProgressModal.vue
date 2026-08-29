@@ -42,6 +42,12 @@
             {{ snapshot.current }} / {{ snapshot.total }}
           </span>
         </div>
+
+        <!-- 批量处理时的整体进度：第 N/M 个 -->
+        <div v-if="snapshot.overall_label" class="progress-overall">
+          <span class="overall-icon">📦</span>
+          <span class="overall-text">{{ snapshot.overall_label }}</span>
+        </div>
       </div>
 
       <!-- 2. 全阶段步骤流 -->
@@ -536,6 +542,27 @@ onUnmounted(() => {
 
 .counter-text {
   font-family: monospace;
+  font-weight: 600;
+  color: #0284c7;
+}
+
+/* 批量处理的整体进度：第 N/M 个 */
+.progress-overall {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #cbd5e1;
+}
+
+.overall-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.overall-text {
+  font-size: 12px;
   font-weight: 600;
   color: #0284c7;
 }

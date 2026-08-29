@@ -67,6 +67,8 @@ type ProgressSnapshot struct {
 	Total        int64       `json:"total"`
 	Percent      float64     `json:"percent"`
 	Message      string      `json:"message"`
+	// OverallLabel 批量处理时的整体进度描述（例如"第 3/12 个文档包"），为空表示无整体进度概念
+	OverallLabel string      `json:"overall_label,omitempty"`
 	Stages       []StageInfo `json:"stages"`
 	Logs         []LogEntry  `json:"logs"`
 	Error        string      `json:"error,omitempty"`
@@ -96,6 +98,13 @@ type JobTracker struct {
 	subMu       sync.Mutex
 	lastNotify  time.Time
 	totalDelta  int64
+
+	// overallPercent 覆盖式整体进度（0-100），-1 表示不覆盖、按阶段权重推算
+	overallPercent float64
+	// overallLabel 整体进度的文字描述，例如"第 3/12 个文档包"
+	overallLabel string
+	// forwardOnly 为 true 时阶段只允许前进，避免批量处理阶段条来回跳动
+	forwardOnly bool
 }
 
 // NewJobTracker 创建新的任务进度追踪器
@@ -121,9 +130,10 @@ func NewJobTracker(jobID string, taskID string, jobType string, stageDefs []Stag
 		stages:      stages,
 		stageIndex:  -1,
 		subscribers: make(map[chan ProgressSnapshot]struct{}),
-		startTime:   time.Now(),
-		updatedAt:   time.Now(),
-		logs:        make([]LogEntry, 0, 50),
+		startTime:      time.Now(),
+		updatedAt:      time.Now(),
+		logs:           make([]LogEntry, 0, 50),
+		overallPercent: -1,
 	}
 
 	return tracker
@@ -146,6 +156,27 @@ func (t *JobTracker) SetStage(key string, message ...string) {
 	msg := ""
 	if len(message) > 0 {
 		msg = message[0]
+	}
+
+	// 批量处理场景（例如逐个导入多个 HDX 文档包）下阶段只允许前进，
+	// 避免阶段条在多个处理单元之间来回跳动
+	if t.forwardOnly {
+		targetIdx := -1
+		for i := range t.stages {
+			if t.stages[i].Key == key {
+				targetIdx = i
+				break
+			}
+		}
+		if targetIdx >= 0 && t.stageIndex >= 0 && targetIdx < t.stageIndex {
+			if msg != "" {
+				t.message = msg
+			}
+			t.updatedAt = now
+			t.appendLogLocked(t.message, "info")
+			t.throttleBroadcastLocked(200 * time.Millisecond)
+			return
+		}
 	}
 
 	// 结束前一个阶段
@@ -218,6 +249,36 @@ func (t *JobTracker) SetStageName(key string, name string) {
 
 	t.updatedAt = time.Now()
 	t.broadcastLocked()
+}
+
+// EnableForwardOnlyStages 启用"阶段只前进"模式。
+// 批量处理多个单元（如多个 HDX 文档包）时，每个单元都会经历相同的阶段序列，
+// 开启后阶段条不会回退到前面的阶段，避免视觉上反复跳动。
+func (t *JobTracker) EnableForwardOnlyStages() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.forwardOnly = true
+}
+
+// SetOverallProgress 设置覆盖式整体进度（0-100）及其文字描述，
+// 优先级高于按阶段权重推算的百分比。用于批量处理场景：
+// 让进度条按"第 N/M 个"平滑推进，而不是随阶段循环回退。
+func (t *JobTracker) SetOverallProgress(percent float64, label string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if percent < 0 {
+		percent = 0
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	t.overallPercent = percent
+	t.overallLabel = label
+	t.updatedAt = time.Now()
+
+	t.recalculatePercentLocked()
+	t.throttleBroadcastLocked(200 * time.Millisecond)
 }
 
 // UpdateProgress 更新当前阶段的明细进度（支持数值与百分比）
@@ -374,6 +435,7 @@ func (t *JobTracker) getSnapshotLocked() ProgressSnapshot {
 		Total:        t.total,
 		Percent:      t.percent,
 		Message:      t.message,
+		OverallLabel: t.overallLabel,
 		Stages:       stagesCopy,
 		Logs:         logsCopy,
 		Error:        t.errorMsg,
@@ -409,6 +471,17 @@ func (t *JobTracker) Subscribe() (chan ProgressSnapshot, func()) {
 func (t *JobTracker) recalculatePercentLocked() {
 	if t.status == JobCompleted {
 		t.percent = 100.0
+		return
+	}
+	// 整体进度覆盖：由调用方按处理单元（如文档包）驱动，进度条不会随阶段循环回退
+	if t.overallPercent >= 0 {
+		t.percent = t.overallPercent
+		if t.percent > 99.0 {
+			t.percent = 99.0
+		}
+		if t.percent < 0.0 {
+			t.percent = 0.0
+		}
 		return
 	}
 	totalStages := len(t.stages)

@@ -278,42 +278,100 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 		return nil, err
 	}
 
-	agg := &ImportStats{
-		ImportedDocs: make([]string, 0),
-		SkippedDocs:  make([]string, 0),
-		FailedDocs:   make([]string, 0),
+	// 2. 先汇总所有路径下的文档包，才能以"第 N/M 个文档包"驱动整体进度
+	if tr != nil {
+		tr.EnableForwardOnlyStages()
+		tr.SetStage("SCAN", "正在递归扫描发现 HDX 知识库文档目录...")
 	}
 
-	var lastErr error
+	scanFailures := make([]string, 0)
+	var allDocDirs []string
 	for i, p := range scanPaths {
 		if tr != nil {
-			tr.AddLog("info", "开始处理第 %d/%d 个路径: %s", i+1, len(paths), p)
+			tr.AddLog("info", "正在扫描第 %d/%d 个路径: %s", i+1, len(scanPaths), p)
 		}
 
-		st, err := s.importFromDir(p, conflictMode, tr, false)
+		docDirs, err := hdx.FindHDXDocDirs(p)
 		if err != nil {
-			logger.Log.Errorf("[Knowledge Service] Failed to import path %s: %v", p, err)
-			agg.FailedDocs = append(agg.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(p), err))
+			logger.Log.Warnf("[Knowledge Service] Scan path %s failed: %v", p, err)
+			scanFailures = append(scanFailures, fmt.Sprintf("%s: %v", filepath.Base(p), err))
+			if tr != nil {
+				tr.AddLog("warning", "路径 %s 扫描失败: %v", filepath.Base(p), err)
+			}
+			continue
+		}
+		if tr != nil {
+			tr.AddLog("info", "路径 %s 中发现 %d 个 HDX 文档包", filepath.Base(p), len(docDirs))
+		}
+		allDocDirs = append(allDocDirs, docDirs...)
+	}
+
+	if len(allDocDirs) == 0 {
+		err := fmt.Errorf("no HDX document packages found in the given paths")
+		if tr != nil {
+			tr.Fail(err, "未在指定路径中发现任何 HDX 文档包")
+		}
+		return nil, err
+	}
+
+	if tr != nil {
+		tr.AddLog("info", "共发现 %d 个 HDX 文档包，开始逐个导入", len(allDocDirs))
+	}
+
+	agg := &ImportStats{
+		TotalDocuments: len(allDocDirs),
+		ImportedDocs:   make([]string, 0, len(allDocDirs)),
+		SkippedDocs:    make([]string, 0),
+		FailedDocs:     make([]string, 0),
+	}
+	agg.FailedDocs = append(agg.FailedDocs, scanFailures...)
+
+	var lastErr error
+	successCount := 0
+	for docIdx, docDir := range allDocDirs {
+		if tr != nil {
+			tr.SetOverallProgress(
+				float64(docIdx)/float64(len(allDocDirs))*95,
+				fmt.Sprintf("第 %d/%d 个文档包", docIdx+1, len(allDocDirs)),
+			)
+			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(allDocDirs), filepath.Base(docDir))
+		}
+
+		st, err := s.importSingleDocUnlocked(docDir, conflictMode, tr)
+		if err != nil {
+			logger.Log.Errorf("[Knowledge Service] Failed to import document at %s: %v", docDir, err)
+			agg.FailedDocs = append(agg.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(docDir), err))
 			lastErr = err
+			if tr != nil {
+				tr.AddLog("error", "文档包 %s 解析失败: %v", filepath.Base(docDir), err)
+			}
 			continue
 		}
 
-		agg.TotalDocuments += st.TotalDocuments
-		agg.ImportedDocs = append(agg.ImportedDocs, st.ImportedDocs...)
-		agg.SkippedDocs = append(agg.SkippedDocs, st.SkippedDocs...)
-		agg.FailedDocs = append(agg.FailedDocs, st.FailedDocs...)
-		agg.TotalTopicsInProfile += st.TotalTopicsInProfile
-		agg.LeafLogCount += st.LeafLogCount
-		agg.LeafAlarmCount += st.LeafAlarmCount
-		agg.UniqueKnowledgeAdded += st.UniqueKnowledgeAdded
-		agg.VersionMappingsAdded += st.VersionMappingsAdded
+		if st.Skipped {
+			docLabel := fmt.Sprintf("%s (%s %s)", st.LibID, st.ProductType, st.ProductVersion)
+			agg.SkippedDocs = append(agg.SkippedDocs, docLabel)
+			if tr != nil {
+				tr.AddLog("warning", "已跳过已存在的文档包: %s", docLabel)
+			}
+			continue
+		}
 
-		if agg.DocumentID == 0 {
+		successCount++
+		if successCount == 1 {
 			agg.DocumentID = st.DocumentID
 			agg.LibID = st.LibID
 			agg.ProductType = st.ProductType
 			agg.ProductVersion = st.ProductVersion
 		}
+
+		docLabel := fmt.Sprintf("%s (%s %s)", st.LibID, st.ProductType, st.ProductVersion)
+		agg.ImportedDocs = append(agg.ImportedDocs, docLabel)
+		agg.TotalTopicsInProfile += st.TotalTopicsInProfile
+		agg.LeafLogCount += st.LeafLogCount
+		agg.LeafAlarmCount += st.LeafAlarmCount
+		agg.UniqueKnowledgeAdded += st.UniqueKnowledgeAdded
+		agg.VersionMappingsAdded += st.VersionMappingsAdded
 	}
 
 	agg.Duration = time.Since(startTime)
@@ -345,9 +403,10 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	}
 
 	logger.Log.Infof("Completed multi-path import of %d/%d documents (%d skipped, %d failed) across %d paths in %v",
-		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(paths), agg.Duration)
+		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(scanPaths), agg.Duration)
 
 	if tr != nil {
+		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(allDocDirs)))
 		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
 		tr.Complete(agg, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
 			imported, agg.LeafLogCount, agg.LeafAlarmCount, agg.UniqueKnowledgeAdded))
