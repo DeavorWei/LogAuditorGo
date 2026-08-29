@@ -61,6 +61,7 @@ func main() {
 
 	// 5. 初始化业务引擎
 	knowledgeSvc := knowledge.NewService(globalDB, indexer)
+	knowledgeSvc.SetExtractDir(cfg.Storage.UploadDir)
 	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
 	knowledgeSvc.SetMatchEngine(matchEngine)
 	rcaEngine := rootcause.NewEngine()

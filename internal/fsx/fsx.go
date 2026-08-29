@@ -192,6 +192,12 @@ func naturalLess(a, b string) bool {
 	return len(a) < len(b)
 }
 
+// LongPathSafe 对外暴露的长路径安全化：为超长路径添加 \\?\ 前缀（仅 Windows 生效），
+// 供其他包在执行 IO 前处理可能超过 MAX_PATH 的路径。
+func LongPathSafe(p string) string {
+	return longPathSafe(p)
+}
+
 func isDigitByte(b byte) bool {
 	return b >= '0' && b <= '9'
 }

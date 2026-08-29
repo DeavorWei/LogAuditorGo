@@ -44,17 +44,34 @@
         </div>
       </div>
 
-      <!-- 2. 全阶段步骤流 (Steps) -->
+      <!-- 2. 全阶段步骤流 -->
       <div v-if="snapshot.stages && snapshot.stages.length > 0" class="stages-flow-box">
-        <el-steps :active="activeStepIndex" finish-status="success" align-center size="small">
-          <el-step
-            v-for="st in snapshot.stages"
+        <div class="stages-row">
+          <div
+            v-for="(st, idx) in snapshot.stages"
             :key="st.key"
-            :title="st.name"
-            :status="getStepStatus(st)"
-            :description="getStepDescription(st)"
-          />
-        </el-steps>
+            class="stage-item"
+            :class="`stage-${getStepStatus(st)}`"
+          >
+            <div class="stage-head">
+              <span
+                class="stage-line"
+                :class="{ 'is-hidden': idx === 0 }"
+              ></span>
+              <span class="stage-bullet">
+                <el-icon v-if="getStepStatus(st) === 'success'" class="bullet-icon"><Check /></el-icon>
+                <el-icon v-else-if="getStepStatus(st) === 'error'" class="bullet-icon"><CloseBold /></el-icon>
+                <span v-else class="bullet-index">{{ idx + 1 }}</span>
+              </span>
+              <span
+                class="stage-line"
+                :class="{ 'is-hidden': idx === snapshot.stages.length - 1 }"
+              ></span>
+            </div>
+            <div class="stage-name">{{ st.name }}</div>
+            <div class="stage-meta">{{ getStepDescription(st) }}</div>
+          </div>
+        </div>
       </div>
 
       <!-- 3. 实时终端控制台日志 (Terminal Logs) -->
@@ -106,7 +123,7 @@
 
 <script setup>
 import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
-import { Check } from '@element-plus/icons-vue'
+import { Check, CloseBold } from '@element-plus/icons-vue'
 import { ElNotification } from 'element-plus'
 import api from '@/api'
 
@@ -204,13 +221,6 @@ const progressStatus = computed(() => {
   if (isCompleted.value) return 'success'
   if (isFailed.value) return 'exception'
   return ''
-})
-
-const activeStepIndex = computed(() => {
-  if (isCompleted.value) {
-    return (snapshot.value.stages?.length || 0) + 1
-  }
-  return snapshot.value.stage_index >= 0 ? snapshot.value.stage_index : 0
 })
 
 const getStepStatus = (st) => {
@@ -530,12 +540,115 @@ onUnmounted(() => {
   color: #0284c7;
 }
 
-/* 阶段步骤条 */
+/* 全阶段步骤流 */
 .stages-flow-box {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 14px 10px 10px 10px;
+  padding: 16px 12px 12px 12px;
+}
+
+.stages-row {
+  display: flex;
+  align-items: flex-start;
+}
+
+.stage-item {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.stage-head {
+  display: flex;
+  align-items: center;
+}
+
+.stage-line {
+  flex: 1;
+  height: 2px;
+  background: #e2e8f0;
+}
+
+.stage-line.is-hidden {
+  visibility: hidden;
+}
+
+.stage-bullet {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #e2e8f0;
+  color: #94a3b8;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bullet-icon {
+  font-size: 12px;
+}
+
+/*
+ * 阶段名与耗时行均采用固定高度：
+ * 无论阶段名是一行还是换行成两行，各列总高度都保持一致，
+ * 从而避免长名称换行后因列高差产生多余的空白行。
+ */
+.stage-name {
+  height: 32px;
+  line-height: 16px;
+  margin-top: 8px;
+  padding: 0 2px;
+  font-size: 12px;
+  color: #94a3b8;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-all;
+}
+
+.stage-meta {
+  height: 15px;
+  line-height: 15px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.stage-process .stage-bullet {
+  background: #0284c7;
+  color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
+}
+
+.stage-process .stage-name {
+  color: #0284c7;
+  font-weight: 600;
+}
+
+.stage-success .stage-bullet {
+  background: #16a34a;
+  color: #ffffff;
+}
+
+.stage-success .stage-name {
+  color: #16a34a;
+}
+
+.stage-error .stage-bullet {
+  background: #dc2626;
+  color: #ffffff;
+}
+
+.stage-error .stage-name {
+  color: #dc2626;
+  font-weight: 600;
 }
 
 /* 控制台终端 */

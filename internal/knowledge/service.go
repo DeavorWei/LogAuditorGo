@@ -2,16 +2,19 @@ package knowledge
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/fsx"
 	"logauditorgo/internal/hdx"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
@@ -22,7 +25,7 @@ import (
 
 // HDXImportStages HDX 产品文档知识库导入全流程预设阶段
 var HDXImportStages = []progress.StageDef{
-	{Key: "UPLOAD", Name: "文件接收与解压"},
+	{Key: "UPLOAD", Name: "文件扫描与解压"},
 	{Key: "SCAN", Name: "扫描文档结构"},
 	{Key: "META", Name: "解析导航与元数据"},
 	{Key: "HTML_PARSE", Name: "并发解析知识条目"},
@@ -59,6 +62,7 @@ type Service struct {
 	indexer     *search.Indexer
 	matchEngine ReloadableEngine
 	docLocks    sync.Map
+	extractDir  string // 导入 HDX 压缩包时的解压工作目录
 }
 
 func NewService(db *gorm.DB, indexer ...*search.Indexer) *Service {
@@ -75,6 +79,18 @@ func (s *Service) SetIndexer(indexer *search.Indexer) {
 
 func (s *Service) SetMatchEngine(engine ReloadableEngine) {
 	s.matchEngine = engine
+}
+
+// SetExtractDir 设置导入 HDX 压缩包时的解压工作目录（未设置时回退到系统临时目录）
+func (s *Service) SetExtractDir(dir string) {
+	s.extractDir = dir
+}
+
+func (s *Service) getExtractDir() string {
+	if s.extractDir != "" {
+		return s.extractDir
+	}
+	return os.TempDir()
 }
 
 func (s *Service) getDocLock(key string) *sync.Mutex {
@@ -149,7 +165,96 @@ func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) 
 	return s.importFromDir(dirPath, opts.ConflictMode, opts.Tracker, true)
 }
 
-// ImportDocumentsFromPaths 批量导入多个路径（目录或压缩包目录）下的 HDX 文档，
+// isArchiveFile 判断路径是否为 HDX / ZIP 压缩包
+func isArchiveFile(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".hdx" || ext == ".zip"
+}
+
+// prepareImportPaths 在实际导入前完成路径预处理：
+//   - 全部为已解压目录时：把首个阶段名改写为"文件扫描（无需解压）"，直接返回原路径
+//   - 含 .hdx / .zip 压缩包时：先并发解压到工作目录，再返回解压后的目录参与扫描
+//
+// 返回的 cleanup 必须由调用方在导入结束后执行，用于清理解压产生的临时目录。
+func (s *Service) prepareImportPaths(paths []string, tr *progress.JobTracker) ([]string, func()) {
+	noop := func() {}
+
+	// 解压相关接口要求非空的 tracker，此处兜底一个独立实例避免空指针
+	if tr == nil {
+		tr = progress.NewJobTracker("", "", "hdx", nil)
+	}
+
+	var dirs []string
+	var archives []string
+	for _, raw := range paths {
+		clean, err := fsx.Normalize(raw)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(fsx.LongPathSafe(clean))
+		if err != nil {
+			tr.AddLog("warning", "路径不存在或无法访问，已跳过: %s", clean)
+			continue
+		}
+		if info.IsDir() {
+			dirs = append(dirs, clean)
+			continue
+		}
+		if isArchiveFile(clean) {
+			archives = append(archives, clean)
+			continue
+		}
+		tr.AddLog("warning", "不支持的文件类型（仅支持 .hdx / .zip 压缩包或文档目录），已跳过: %s", filepath.Base(clean))
+	}
+
+	// 场景一：全部为已解压目录，跳过解压环节
+	if len(archives) == 0 {
+		tr.SetStageName("UPLOAD", "文件扫描（无需解压）")
+		tr.AddLog("info", "检测到 %d 个已解压的 HDX 文档目录，无需解压，直接进入扫描", len(dirs))
+		return dirs, noop
+	}
+
+	// 场景二：存在压缩包，先解压到工作目录
+	tr.SetStageName("UPLOAD", "文件扫描与解压")
+	tr.AddLog("info", "发现 %d 个 HDX 压缩包，正在解压到工作目录...", len(archives))
+
+	base := s.getExtractDir()
+	if err := os.MkdirAll(fsx.LongPathSafe(base), 0755); err != nil {
+		tr.AddLog("error", "创建解压工作目录失败: %v，将跳过全部压缩包", err)
+		return dirs, noop
+	}
+
+	batchDir, err := os.MkdirTemp(base, "hdx_extract_")
+	if err != nil {
+		tr.AddLog("error", "创建解压临时目录失败: %v，将跳过全部压缩包", err)
+		return dirs, noop
+	}
+
+	extracted := 0
+	for _, arc := range archives {
+		tr.AddLog("info", "正在解压压缩包: %s", filepath.Base(arc))
+		dest := filepath.Join(batchDir, filepath.Base(arc))
+		if err := hdx.UnzipConcurrent(arc, dest, tr); err != nil {
+			tr.AddLog("error", "解压 %s 失败: %v", filepath.Base(arc), err)
+			continue
+		}
+		// 解压后的目录内可能仍嵌套压缩包，递归解压
+		if err := hdx.ExtractAllArchivesWithTracker(dest, tr); err != nil {
+			tr.AddLog("warning", "解压包内嵌套压缩包时出现告警: %v", err)
+		}
+		dirs = append(dirs, dest)
+		extracted++
+	}
+
+	tr.AddLog("info", "解压完成，成功解压 %d/%d 个压缩包", extracted, len(archives))
+
+	cleanup := func() {
+		_ = os.RemoveAll(batchDir)
+	}
+	return dirs, cleanup
+}
+
+// ImportDocumentsFromPaths 批量导入多个路径（目录或压缩包）下的 HDX 文档，
 // 统一聚合统计结果并共用同一个进度追踪器，由本函数在全部完成后统一结束进度。
 func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, tr *progress.JobTracker) (*ImportStats, error) {
 	if conflictMode == "" {
@@ -157,6 +262,22 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	}
 
 	startTime := time.Now()
+
+	// 路径预处理：按需解压，并同步修正首个阶段的显示名称
+	if tr != nil {
+		tr.SetStage("UPLOAD", "正在分析导入路径...")
+	}
+	scanPaths, cleanupExtracted := s.prepareImportPaths(paths, tr)
+	defer cleanupExtracted()
+
+	if len(scanPaths) == 0 {
+		err := fmt.Errorf("no valid import paths found")
+		if tr != nil {
+			tr.Fail(err, "没有找到可导入的有效路径")
+		}
+		return nil, err
+	}
+
 	agg := &ImportStats{
 		ImportedDocs: make([]string, 0),
 		SkippedDocs:  make([]string, 0),
@@ -164,7 +285,7 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	}
 
 	var lastErr error
-	for i, p := range paths {
+	for i, p := range scanPaths {
 		if tr != nil {
 			tr.AddLog("info", "开始处理第 %d/%d 个路径: %s", i+1, len(paths), p)
 		}

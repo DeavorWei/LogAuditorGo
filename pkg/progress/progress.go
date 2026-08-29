@@ -194,6 +194,32 @@ func (t *JobTracker) SetStage(key string, message ...string) {
 	t.broadcastLocked()
 }
 
+// SetStageName 动态修改某个阶段的显示名称。
+// 用于运行前才能确定的场景，例如检测到导入目录已解压时把"文件扫描与解压"改写为"文件扫描（无需解压）"。
+func (t *JobTracker) SetStageName(key string, name string) {
+	if name == "" {
+		return
+	}
+
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	for i := range t.stages {
+		if t.stages[i].Key != key {
+			continue
+		}
+		t.stages[i].Name = name
+		// 若当前正停留在该阶段且未设置过明细消息，则同步刷新主提示
+		if t.stageIndex == i && t.message == t.stages[i].Name {
+			t.message = name
+		}
+		break
+	}
+
+	t.updatedAt = time.Now()
+	t.broadcastLocked()
+}
+
 // UpdateProgress 更新当前阶段的明细进度（支持数值与百分比）
 func (t *JobTracker) UpdateProgress(current int64, total int64, message ...string) {
 	t.mu.Lock()
