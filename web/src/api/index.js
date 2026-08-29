@@ -53,6 +53,23 @@ export default {
     return es
   },
 
+  // 服务端本地文件系统浏览（只读，仅限本机回环访问）
+  fsRoots() {
+    return request.get('/fs/roots')
+  },
+  fsBrowse({ path, exts, keyword, dirsOnly, offset, limit }) {
+    const params = { path }
+    if (exts && exts.length) params.exts = exts.join(',')
+    if (keyword) params.keyword = keyword
+    if (dirsOnly) params.dirs_only = 'true'
+    if (offset) params.offset = offset
+    if (limit) params.limit = limit
+    return request.get('/fs/browse', { params })
+  },
+  fsStat(paths) {
+    return request.post('/fs/stat', { paths })
+  },
+
   // 系统统计与配置
   getStats() {
     return request.get('/system/stats')
@@ -74,20 +91,12 @@ export default {
   getDocuments() {
     return request.get('/documents')
   },
-  importDir(dirPath, conflictMode = 'overwrite', isAsync = true) {
+  // 按服务端本地路径导入 HDX 文档（支持一次提交多个目录或压缩包路径）
+  importDocumentsByPaths(paths, conflictMode = 'overwrite', isAsync = true) {
     return request.post('/documents/import-dir', {
-      dir_path: dirPath,
+      paths: Array.isArray(paths) ? paths : [paths],
       conflict_mode: conflictMode,
       async: isAsync
-    })
-  },
-  uploadHDX(formData, isAsync = true) {
-    if (isAsync && formData instanceof FormData && !formData.has('async')) {
-      formData.append('async', 'true')
-    }
-    return request.post('/documents/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      params: isAsync ? { async: 'true' } : {}
     })
   },
   deleteDocument(id) {
@@ -127,20 +136,24 @@ export default {
   getTaskFiles(taskId) {
     return request.get(`/tasks/${taskId}/files`)
   },
-  importTaskLogs(taskId, formDataOrJson, isAsync = true) {
-    if (formDataOrJson instanceof FormData) {
-      if (isAsync && !formDataOrJson.has('async')) {
-        formDataOrJson.append('async', 'true')
-      }
-      return request.post(`/tasks/${taskId}/import`, formDataOrJson, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        params: isAsync ? { async: 'true' } : {}
-      })
-    }
-    const payload = typeof formDataOrJson === 'object' ? { ...formDataOrJson, async: isAsync } : formDataOrJson
-    return request.post(`/tasks/${taskId}/import`, payload, {
-      params: isAsync ? { async: 'true' } : {}
-    })
+  // 按服务端本地路径导入日志（支持一次提交多个目录或文件路径）
+  importTaskLogsByPaths(taskId, { paths, exts, recursive = true, conflictMode = 'rename' }, isAsync = true) {
+    return request.post(`/tasks/${taskId}/import`, {
+      paths,
+      exts,
+      recursive,
+      conflict_mode: conflictMode,
+      async: isAsync
+    }, { params: isAsync ? { async: 'true' } : {} })
+  },
+  // 以文本形式导入日志
+  importTaskLogsText(taskId, { content, fileName, conflictMode = 'rename' }, isAsync = true) {
+    return request.post(`/tasks/${taskId}/import`, {
+      content,
+      file_name: fileName,
+      conflict_mode: conflictMode,
+      async: isAsync
+    }, { params: isAsync ? { async: 'true' } : {} })
   },
   queryTaskLogs(taskId, params) {
     return request.get(`/tasks/${taskId}/logs`, { params })
@@ -176,20 +189,24 @@ export default {
   deleteDevice(taskId, deviceId) {
     return request.delete(`/tasks/${taskId}/devices/${deviceId}`)
   },
-  importDeviceLogs(taskId, deviceId, formDataOrJson, isAsync = true) {
-    if (formDataOrJson instanceof FormData) {
-      if (isAsync && !formDataOrJson.has('async')) {
-        formDataOrJson.append('async', 'true')
-      }
-      return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, formDataOrJson, {
-        headers: { 'Content-Type': 'multipart/form-data' },
-        params: isAsync ? { async: 'true' } : {}
-      })
-    }
-    const payload = typeof formDataOrJson === 'object' ? { ...formDataOrJson, async: isAsync } : formDataOrJson
-    return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, payload, {
-      params: isAsync ? { async: 'true' } : {}
-    })
+  // 按服务端本地路径向指定设备导入日志
+  importDeviceLogsByPaths(taskId, deviceId, { paths, exts, recursive = true, conflictMode = 'rename' }, isAsync = true) {
+    return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, {
+      paths,
+      exts,
+      recursive,
+      conflict_mode: conflictMode,
+      async: isAsync
+    }, { params: isAsync ? { async: 'true' } : {} })
+  },
+  // 以文本形式向指定设备导入日志
+  importDeviceLogsText(taskId, deviceId, { content, fileName, conflictMode = 'rename' }, isAsync = true) {
+    return request.post(`/tasks/${taskId}/devices/${deviceId}/import`, {
+      content,
+      file_name: fileName,
+      conflict_mode: conflictMode,
+      async: isAsync
+    }, { params: isAsync ? { async: 'true' } : {} })
   },
   autoAssignDevices(taskId) {
     return request.post(`/tasks/${taskId}/devices/auto-assign`)

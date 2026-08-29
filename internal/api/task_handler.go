@@ -3,15 +3,15 @@ package api
 import (
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 
+	"logauditorgo/internal/fsx"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/summary"
@@ -29,107 +29,159 @@ func isValidTaskID(taskID string) bool {
 type TaskHandler struct {
 	taskSvc      *task.Service
 	knowledgeSvc *knowledge.Service
-	uploadDir    string
 }
 
-func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service, uploadDir ...string) *TaskHandler {
-	dir := ""
-	if len(uploadDir) > 0 {
-		dir = uploadDir[0]
-	}
+func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *TaskHandler {
 	return &TaskHandler{
 		taskSvc:      taskSvc,
 		knowledgeSvc: knowledgeSvc,
-		uploadDir:    dir,
 	}
 }
 
-func (h *TaskHandler) getUploadDir() string {
-	if h.uploadDir != "" {
-		return h.uploadDir
-	}
-	return os.TempDir()
+// logImportRequest 日志导入请求的统一入参（JSON 与表单双通道）
+type logImportRequest struct {
+	TaskName   string `json:"task_name"`
+	DeviceType string `json:"device_type"`
+
+	// 服务端本地路径模式
+	Paths     []string `json:"paths"`
+	Exts      []string `json:"exts"`
+	Recursive bool     `json:"recursive"`
+
+	// 文本直接提交模式
+	Content  string `json:"content"`
+	FileName string `json:"file_name"`
+
+	ConflictMode string `json:"conflict_mode"`
+	Async        bool   `json:"async"`
 }
 
-// CreateTask 创建日志审计任务（支持空任务创建、多文件上传或文本直接提交，支持全流程阶段进度实时追踪）
+// bindLogImportRequest 统一解析日志导入请求。
+// 使用 ShouldBindBodyWith 绑定 JSON，使请求体可被重复绑定而不会丢失；
+// 表单字段作为兜底补充，保证 curl / x-www-form-urlencoded 依旧可用。
+func bindLogImportRequest(c *gin.Context) logImportRequest {
+	var req logImportRequest
+	req.Recursive = true
+
+	_ = c.ShouldBindBodyWith(&req, binding.JSON)
+
+	if v := c.PostForm("task_name"); v != "" {
+		req.TaskName = v
+	}
+	if v := c.PostForm("device_type"); v != "" {
+		req.DeviceType = v
+	}
+	if v := c.PostForm("conflict_mode"); v != "" {
+		req.ConflictMode = v
+	}
+	if v := c.PostForm("content"); v != "" {
+		req.Content = v
+	}
+	if v := c.PostForm("file_name"); v != "" {
+		req.FileName = v
+	}
+	if c.PostForm("async") == "true" {
+		req.Async = true
+	}
+	if v := c.PostForm("paths"); v != "" {
+		req.Paths = splitMultiValue(v)
+	}
+	if v := c.PostForm("exts"); v != "" {
+		req.Exts = splitMultiValue(v)
+	}
+
+	return req
+}
+
+// splitMultiValue 拆分逗号、分号或换行分隔的多个值
+func splitMultiValue(raw string) []string {
+	raw = strings.ReplaceAll(raw, "\r\n", "\n")
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n' || r == ';'
+	})
+	values := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			values = append(values, p)
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+// buildPathItems 将服务端本地路径展开为待导入文件项
+// 与上传模式的关键区别：这些文件原本就在用户磁盘上，导入完成后绝不能删除（TempFile=false）
+func buildPathItems(paths []string, exts []string, recursive bool) ([]task.FileUploadItem, error) {
+	entries, _, truncated := fsx.CollectFiles(paths, recursive, exts, fsx.DefaultMaxFiles)
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("no matching log files found in the given paths")
+	}
+	if truncated {
+		logger.Log.Warnf("[API Tasks] Path import truncated: reached the limit of %d files", fsx.DefaultMaxFiles)
+	}
+
+	items := make([]task.FileUploadItem, 0, len(entries))
+	for _, e := range entries {
+		items = append(items, task.FileUploadItem{
+			FileName: e.Name,
+			FileSize: e.Size,
+			FilePath: e.Path,
+			TempFile: false,
+		})
+	}
+	return items, nil
+}
+
+// CreateTask 创建日志审计任务
+// 日志来源支持两种：服务端本地路径（推荐，超大目录也不会消耗浏览器资源）与直接粘贴的文本
 func (h *TaskHandler) CreateTask(c *gin.Context) {
 	taskName := c.PostForm("task_name")
 	deviceType := c.PostForm("device_type")
-	logContent := c.PostForm("content")
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
+
+	req := bindLogImportRequest(c)
+	if req.TaskName != "" {
+		taskName = req.TaskName
+	}
+	if req.DeviceType != "" {
+		deviceType = req.DeviceType
+	}
+	if req.Async {
+		isAsync = true
+	}
 
 	var items []task.FileUploadItem
 
-	// 检查多文件上传（采用流式落盘到 uploadDir，避免全量读入内存导致 OOM）
-	form, err := c.MultipartForm()
-	if err == nil && form != nil {
-		uploadDir := h.getUploadDir()
-		_ = os.MkdirAll(uploadDir, 0755)
-
-		for _, fileHeaders := range form.File {
-			for _, fh := range fileHeaders {
-				cleanBase := filepath.Base(fh.Filename)
-				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
-					cleanBase = "uploaded_log.txt"
-				}
-				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
-				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
-					// 降级使用 fh.Open() 直接传递流
-					f, err := fh.Open()
-					if err != nil {
-						continue
-					}
-					items = append(items, task.FileUploadItem{
-						FileName: fh.Filename,
-						FileSize: fh.Size,
-						Reader:   f,
-					})
-					continue
-				}
-				items = append(items, task.FileUploadItem{
-					FileName: fh.Filename,
-					FileSize: fh.Size,
-					FilePath: tempPath,
-					TempFile: true,
-				})
-			}
+	// 1. 服务端本地路径模式：由服务端进程直接读取磁盘，浏览器只传递路径字符串
+	if len(req.Paths) > 0 {
+		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
+		if err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+			return
 		}
+		items = append(items, pathItems...)
 	}
 
-	if logContent != "" {
+	// 2. 文本直接提交模式
+	if req.Content != "" {
+		fileName := req.FileName
+		if fileName == "" {
+			fileName = "manual_input.txt"
+		}
 		items = append(items, task.FileUploadItem{
-			FileName: "manual_input.txt",
-			FileSize: int64(len(logContent)),
-			Content:  logContent,
+			FileName: fileName,
+			FileSize: int64(len(req.Content)),
+			Content:  req.Content,
 		})
 	}
 
-	// 支持 JSON 格式提交
-	if len(items) == 0 && taskName == "" && deviceType == "" {
-		var req struct {
-			TaskName   string `json:"task_name"`
-			DeviceType string `json:"device_type"`
-			Content    string `json:"content"`
-			Async      bool   `json:"async"`
-		}
-		if err := c.ShouldBindJSON(&req); err == nil {
-			taskName = req.TaskName
-			deviceType = req.DeviceType
-			if req.Async {
-				isAsync = true
-			}
-			if req.Content != "" {
-				items = append(items, task.FileUploadItem{
-					FileName: "manual_input.txt",
-					FileSize: int64(len(req.Content)),
-					Content:  req.Content,
-				})
-			}
-		}
-	}
-
-	if taskName == "" && len(items) > 0 {
+	if taskName == "" && len(items) == 1 {
 		taskName = items[0].FileName
+	}
+	if taskName == "" && len(items) > 1 {
+		taskName = fmt.Sprintf("%s 等 %d 个日志文件", items[0].FileName, len(items))
 	}
 
 	// 1. 如果没有上传文件也没有日志文本，创建空任务 (PENDING)
@@ -182,7 +234,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	SuccessResponse(c, updatedInfo, "Task created and analyzed successfully")
 }
 
-// ImportLogs 导入/补充导入日志文件（支持多文件上传或文本提交，支持覆盖/跳过冲突模式，支持进度追踪及异步模式）
+// ImportLogs 导入/补充导入日志文件（支持服务端本地路径或文本提交，支持覆盖/跳过冲突模式，支持进度追踪及异步模式）
 func (h *TaskHandler) ImportLogs(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
@@ -195,81 +247,41 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 	}
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
-	var items []task.FileUploadItem
-
-	// 检查多文件上传（采用流式落盘到 uploadDir，避免全量读入内存导致 OOM）
-	form, err := c.MultipartForm()
-	if err == nil && form != nil {
-		uploadDir := h.getUploadDir()
-		_ = os.MkdirAll(uploadDir, 0755)
-
-		for _, fileHeaders := range form.File {
-			for _, fh := range fileHeaders {
-				cleanBase := filepath.Base(fh.Filename)
-				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
-					cleanBase = "uploaded_log.txt"
-				}
-				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
-				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
-					// 降级使用 fh.Open() 直接传递流
-					f, err := fh.Open()
-					if err != nil {
-						continue
-					}
-					items = append(items, task.FileUploadItem{
-						FileName: fh.Filename,
-						FileSize: fh.Size,
-						Reader:   f,
-					})
-					continue
-				}
-				items = append(items, task.FileUploadItem{
-					FileName: fh.Filename,
-					FileSize: fh.Size,
-					FilePath: tempPath,
-					TempFile: true,
-				})
-			}
-		}
+	req := bindLogImportRequest(c)
+	if req.ConflictMode != "" {
+		conflictMode = req.ConflictMode
+	}
+	if req.Async {
+		isAsync = true
 	}
 
-	if textContent := c.PostForm("content"); textContent != "" {
-		fileName := c.DefaultPostForm("file_name", "manual_input.txt")
+	var items []task.FileUploadItem
+
+	// 1. 服务端本地路径模式
+	if len(req.Paths) > 0 {
+		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
+		if err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+			return
+		}
+		items = append(items, pathItems...)
+	}
+
+	// 2. 文本直接提交模式
+	if req.Content != "" {
+		fileName := req.FileName
+		if fileName == "" {
+			fileName = "manual_input.txt"
+		}
 		items = append(items, task.FileUploadItem{
 			FileName: fileName,
-			FileSize: int64(len(textContent)),
-			Content:  textContent,
+			FileSize: int64(len(req.Content)),
+			Content:  req.Content,
 		})
 	}
 
 	if len(items) == 0 {
-		var req struct {
-			Content      string `json:"content"`
-			FileName     string `json:"file_name"`
-			ConflictMode string `json:"conflict_mode"`
-			Async        bool   `json:"async"`
-		}
-		if err := c.ShouldBindJSON(&req); err == nil && req.Content != "" {
-			fileName := req.FileName
-			if fileName == "" {
-				fileName = "manual_input.txt"
-			}
-			if req.ConflictMode != "" {
-				conflictMode = req.ConflictMode
-			}
-			if req.Async {
-				isAsync = true
-			}
-			items = append(items, task.FileUploadItem{
-				FileName: fileName,
-				FileSize: int64(len(req.Content)),
-				Content:  req.Content,
-			})
-		}
-	}
-
-	if len(items) == 0 {
-		ErrorResponse(c, http.StatusBadRequest, -1, "No log files or content provided")
+		ErrorResponse(c, http.StatusBadRequest, -1, "No log paths or content provided")
 		return
 	}
 
@@ -656,7 +668,7 @@ func (h *TaskHandler) DeleteDevice(c *gin.Context) {
 	SuccessResponse(c, nil, "Device deleted successfully")
 }
 
-// ImportLogsToDevice 向指定设备导入日志文件或文本
+// ImportLogsToDevice 向指定设备导入日志（支持服务端本地路径或文本提交）
 func (h *TaskHandler) ImportLogsToDevice(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
@@ -675,79 +687,41 @@ func (h *TaskHandler) ImportLogsToDevice(c *gin.Context) {
 	}
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
-	var items []task.FileUploadItem
-
-	form, err := c.MultipartForm()
-	if err == nil && form != nil {
-		uploadDir := h.getUploadDir()
-		_ = os.MkdirAll(uploadDir, 0755)
-
-		for _, fileHeaders := range form.File {
-			for _, fh := range fileHeaders {
-				cleanBase := filepath.Base(fh.Filename)
-				if cleanBase == "" || cleanBase == "." || cleanBase == "/" || cleanBase == "\\" {
-					cleanBase = "uploaded_log.txt"
-				}
-				tempPath := filepath.Join(uploadDir, fmt.Sprintf("task_upload_%d_%s", time.Now().UnixNano(), cleanBase))
-				if err := c.SaveUploadedFile(fh, tempPath); err != nil {
-					f, err := fh.Open()
-					if err != nil {
-						continue
-					}
-					items = append(items, task.FileUploadItem{
-						FileName: fh.Filename,
-						FileSize: fh.Size,
-						Reader:   f,
-					})
-					continue
-				}
-				items = append(items, task.FileUploadItem{
-					FileName: fh.Filename,
-					FileSize: fh.Size,
-					FilePath: tempPath,
-					TempFile: true,
-				})
-			}
-		}
+	req := bindLogImportRequest(c)
+	if req.ConflictMode != "" {
+		conflictMode = req.ConflictMode
+	}
+	if req.Async {
+		isAsync = true
 	}
 
-	if textContent := c.PostForm("content"); textContent != "" {
-		fileName := c.DefaultPostForm("file_name", "manual_input.txt")
+	var items []task.FileUploadItem
+
+	// 1. 服务端本地路径模式
+	if len(req.Paths) > 0 {
+		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
+		if err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+			return
+		}
+		items = append(items, pathItems...)
+	}
+
+	// 2. 文本直接提交模式
+	if req.Content != "" {
+		fileName := req.FileName
+		if fileName == "" {
+			fileName = "manual_input.txt"
+		}
 		items = append(items, task.FileUploadItem{
 			FileName: fileName,
-			FileSize: int64(len(textContent)),
-			Content:  textContent,
+			FileSize: int64(len(req.Content)),
+			Content:  req.Content,
 		})
 	}
 
 	if len(items) == 0 {
-		var req struct {
-			Content      string `json:"content"`
-			FileName     string `json:"file_name"`
-			ConflictMode string `json:"conflict_mode"`
-			Async        bool   `json:"async"`
-		}
-		if err := c.ShouldBindJSON(&req); err == nil && req.Content != "" {
-			fileName := req.FileName
-			if fileName == "" {
-				fileName = "manual_input.txt"
-			}
-			if req.ConflictMode != "" {
-				conflictMode = req.ConflictMode
-			}
-			if req.Async {
-				isAsync = true
-			}
-			items = append(items, task.FileUploadItem{
-				FileName: fileName,
-				FileSize: int64(len(req.Content)),
-				Content:  req.Content,
-			})
-		}
-	}
-
-	if len(items) == 0 {
-		ErrorResponse(c, http.StatusBadRequest, -1, "No log files or content provided")
+		ErrorResponse(c, http.StatusBadRequest, -1, "No log paths or content provided")
 		return
 	}
 

@@ -45,18 +45,18 @@
         </div>
 
         <div class="guide-actions">
-          <div class="action-tile" @click="triggerGuideFilesSelect">
+          <div class="action-tile" @click="openGuidePicker('files')">
             <el-icon size="32" color="#0284c7"><Files /></el-icon>
-            <h4>多选 HDX 压缩包上传</h4>
-            <p>支持多选 .hdx 官方产品文档压缩包同时批量上传</p>
-            <el-button type="primary" size="small">选择多个 HDX 压缩包 (.hdx)</el-button>
+            <h4>选择 HDX 压缩包</h4>
+            <p>直接选择服务端本机上的 .hdx 官方产品文档压缩包，支持多选</p>
+            <el-button type="primary" size="small">选择 HDX 压缩包 (.hdx)</el-button>
           </div>
 
-          <div class="action-tile" @click="triggerGuideDirSelect">
+          <div class="action-tile" @click="openGuidePicker('dir')">
             <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-            <h4>选择本地 HDX 文件夹</h4>
-            <p>浏览器直接选择解压后的 HDX 文档目录或包含多个文档包的归档文件夹</p>
-            <el-button type="success" size="small">选择本地 HDX 文件夹</el-button>
+            <h4>选择 HDX 文档目录</h4>
+            <p>选择解压后的 HDX 文档目录，或包含多个文档包的归档父目录</p>
+            <el-button type="success" size="small">选择 HDX 文档目录</el-button>
           </div>
         </div>
       </el-card>
@@ -114,64 +114,52 @@
     </el-card>
 
     <!-- 导入 HDX 文档弹窗 -->
-    <el-dialog v-model="showImportDialog" title="导入华为官方 HDX 产品文档知识库" width="620px">
+    <el-dialog v-model="showImportDialog" title="导入华为官方 HDX 产品文档知识库" width="640px">
       <el-tabs v-model="importTab" type="border-card">
-        <!-- 标签页 1: 多选 HDX 压缩包 -->
-        <el-tab-pane label="多选 HDX 压缩包" name="files">
-          <div class="upload-dropzone" @dragover.prevent @drop.prevent="handleDropFiles">
-            <el-icon size="40" color="#94a3b8"><UploadFilled /></el-icon>
-            <div class="dropzone-text">将 HDX 压缩包拖到此处，或</div>
-            <el-button type="primary" size="small" @click="triggerFilesInput">选择多个 HDX 文件 (支持 .hdx)</el-button>
-            <input
-              ref="filesInputRef"
-              type="file"
-              multiple
-              accept=".hdx"
-              style="display: none;"
-              @change="handleFilesSelected"
-            />
+        <!-- 标签页 1: 从本机目录导入 -->
+        <el-tab-pane label="从本机目录导入" name="dir">
+          <div class="path-import-pane">
+            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
+            <div class="pane-title">选择包含 HDX 文档包的目录</div>
+            <p class="pane-desc">
+              目录由服务端进程直接读取，不经过浏览器上传，因此可安全处理数十万文件、数 GB 的超大目录。
+              可一次选择多个目录，系统将自动递归发现其中所有包含 profile.xml 的文档包。
+            </p>
+            <el-button type="success" size="small" @click="openPicker('dir')">选择 HDX 文档目录</el-button>
           </div>
         </el-tab-pane>
 
-        <!-- 标签页 2: 选择本地 HDX 目录 -->
-        <el-tab-pane label="选择本地 HDX 文件夹" name="dir">
-          <div class="upload-dropzone" @dragover.prevent @drop.prevent="handleDropFiles">
-            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
-            <div class="dropzone-text">直接选择本地 HDX 文档归档目录</div>
-            <p style="font-size: 12px; color: #64748b; margin: 4px 0 10px 0;">浏览器将自动遍历提取文件夹下的所有文档包与资源文件并批量上传入库</p>
-            <el-button type="success" size="small" @click="triggerDirInput">选择本地 HDX 文件夹</el-button>
-            <input
-              ref="dirInputRef"
-              type="file"
-              webkitdirectory
-              directory
-              multiple
-              style="display: none;"
-              @change="handleDirSelected"
-            />
+        <!-- 标签页 2: 从本机 HDX 压缩包导入 -->
+        <el-tab-pane label="从本机压缩包导入" name="files">
+          <div class="path-import-pane">
+            <el-icon size="40" color="#0284c7"><Files /></el-icon>
+            <div class="pane-title">选择一个或多个 .hdx 压缩包</div>
+            <p class="pane-desc">
+              同样由服务端直接读取并解压，适合官方文档包尚未解压、或需要保留原始压缩包的场景。
+            </p>
+            <el-button type="primary" size="small" @click="openPicker('file')">选择 HDX 压缩包 (.hdx)</el-button>
           </div>
         </el-tab-pane>
       </el-tabs>
 
-      <!-- 待上传文件清单预览 -->
-      <div v-if="selectedPendingFiles.length > 0" class="pending-files-box">
-        <div class="pending-files-header">
-          <span>待导入文档列表 (共 <strong>{{ selectedPendingFiles.length }}</strong> 个文件)</span>
-          <el-button type="danger" link size="small" @click="selectedPendingFiles = []">清空</el-button>
+      <!-- 已选路径清单 -->
+      <div v-if="selectedPaths.length > 0" class="pending-paths-box">
+        <div class="pending-paths-header">
+          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
+          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
         </div>
-        <div class="pending-files-list">
-          <div v-for="(f, idx) in selectedPendingFiles" :key="idx" class="pending-file-item">
-            <span class="file-name" :title="f.name">📄 {{ f.name }}</span>
-            <span class="file-size">{{ formatSize(f.size) }}</span>
-            <el-tag v-if="isConflictDocFile(f.name)" type="danger" size="small">可能已存在同名/版本</el-tag>
-            <el-icon class="del-btn" @click="removePendingFile(idx)"><Close /></el-icon>
+        <div class="pending-paths-list">
+          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
+            <span class="path-value" :title="p">📁 {{ p }}</span>
+            <el-tag v-if="isConflictDocFile(pathBaseName(p))" type="danger" size="small">可能已存在同名/版本</el-tag>
+            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
           </div>
         </div>
       </div>
 
       <template #footer>
         <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleCheckAndStartImport">
+        <el-button type="primary" :loading="submitting" :disabled="!selectedPaths.length" @click="handleCheckAndStartImport">
           开始导入并入库
         </el-button>
       </template>
@@ -211,18 +199,26 @@
       @completed="handleImportCompleted"
     />
 
-    <!-- 隐藏的全局文件输入框（用于引导区域快捷触发） -->
-    <input ref="guideFilesInputRef" type="file" multiple accept=".hdx" style="display: none;" @change="handleGuideFilesSelected" />
-    <input ref="guideDirInputRef" type="file" webkitdirectory directory multiple style="display: none;" @change="handleGuideDirSelected" />
+    <!-- 服务端本地路径选择器（文档导入专用） -->
+    <ServerPathPicker
+      v-model="selectedPaths"
+      v-model:visible="showPathPicker"
+      :mode="pickerMode"
+      :exts="pickerMode === 'file' ? hdxExts : []"
+      :multiple="true"
+      favorite-key="hdx-documents"
+      :title="pickerMode === 'dir' ? '选择 HDX 文档目录' : '选择 HDX 压缩包'"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, UploadFilled, Close, Search, Refresh, Upload } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, Close, Search, Refresh, Upload } from '@element-plus/icons-vue'
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import ServerPathPicker from '@/components/ServerPathPicker.vue'
 
 const loading = ref(false)
 const docList = ref([])
@@ -230,18 +226,18 @@ const searchKeyword = ref('')
 
 // 导入相关状态
 const showImportDialog = ref(false)
-const importTab = ref('files')
-const selectedPendingFiles = ref([])
+const importTab = ref('dir')
 const submitting = ref(false)
+
+// 服务端本地路径选择相关
+const selectedPaths = ref([])
+const showPathPicker = ref(false)
+const pickerMode = ref('dir')
+const hdxExts = ['.hdx']
 
 // 进度追踪相关
 const showProgressModal = ref(false)
 const currentJobId = ref('')
-
-const filesInputRef = ref(null)
-const dirInputRef = ref(null)
-const guideFilesInputRef = ref(null)
-const guideDirInputRef = ref(null)
 
 // 冲突处理相关
 const showConflictDialog = ref(false)
@@ -281,71 +277,34 @@ const fetchDocs = async () => {
 
 // 导入弹窗打开与重置
 const openImportDialog = () => {
-  selectedPendingFiles.value = []
-  importTab.value = 'files'
+  selectedPaths.value = []
+  importTab.value = 'dir'
   showImportDialog.value = true
 }
 
-const triggerFilesInput = () => {
-  filesInputRef.value?.click()
-}
-const triggerDirInput = () => {
-  dirInputRef.value?.click()
-}
-const triggerGuideFilesSelect = () => {
-  guideFilesInputRef.value?.click()
-}
-const triggerGuideDirSelect = () => {
-  guideDirInputRef.value?.click()
+// 打开服务端本地路径选择器（dir: 目录模式，file: .hdx 压缩包模式）
+const openPicker = mode => {
+  pickerMode.value = mode
+  importTab.value = mode
+  showPathPicker.value = true
 }
 
-const handleFilesSelected = (e) => {
-  if (e.target.files) {
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
+// 引导区域快捷触发：直接拉起对应模式的路径选择器
+const openGuidePicker = mode => {
+  selectedPaths.value = []
+  showImportDialog.value = true
+  openPicker(mode)
 }
 
-const handleDirSelected = (e) => {
-  if (e.target.files) {
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
+const removePath = index => {
+  selectedPaths.value.splice(index, 1)
 }
 
-const handleGuideFilesSelected = (e) => {
-  if (e.target.files) {
-    openImportDialog()
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
-}
-
-const handleGuideDirSelected = (e) => {
-  if (e.target.files) {
-    openImportDialog()
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
-}
-
-const handleDropFiles = (e) => {
-  if (e.dataTransfer.files) {
-    addPendingFiles(Array.from(e.dataTransfer.files))
-  }
-}
-
-const addPendingFiles = (files) => {
-  for (const f of files) {
-    const exists = selectedPendingFiles.value.some(p => p.name === f.name && p.size === f.size)
-    if (!exists) {
-      selectedPendingFiles.value.push(f)
-    }
-  }
-}
-
-const removePendingFile = (index) => {
-  selectedPendingFiles.value.splice(index, 1)
+// 取路径的末级名称（兼容 Windows 与 Unix 分隔符）
+const pathBaseName = p => {
+  if (!p) return ''
+  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
+  return segs.length ? segs[segs.length - 1] : p
 }
 
 // 判断待上传文件是否与已导入文档冲突
@@ -360,16 +319,17 @@ const isConflictDocFile = (fileName) => {
 
 // 检查冲突并启动导入
 const handleCheckAndStartImport = () => {
-  if (selectedPendingFiles.value.length === 0) {
-    ElMessage.warning('请选择至少一个 HDX 文档文件或目录')
+  if (selectedPaths.value.length === 0) {
+    ElMessage.warning('请选择至少一个 HDX 文档目录或压缩包')
     return
   }
 
-  // 检查是否有同名/重叠冲突文件
+  // 检查是否有同名/重叠冲突文档
   const conflicts = []
-  for (const f of selectedPendingFiles.value) {
-    if (isConflictDocFile(f.name)) {
-      conflicts.push(f.name)
+  for (const p of selectedPaths.value) {
+    const name = pathBaseName(p)
+    if (isConflictDocFile(name)) {
+      conflicts.push(name)
     }
   }
 
@@ -381,25 +341,16 @@ const handleCheckAndStartImport = () => {
   }
 }
 
-// 执行上传导入（处理多文件及冲突策略）
+// 执行导入：仅提交路径，由服务端直接读取并解析，走全流程阶段进度追踪
 const executeImportWithConflict = async (conflictMode) => {
   submitting.value = true
   showConflictDialog.value = false
 
   try {
-    const formData = new FormData()
-    formData.append('conflict_mode', conflictMode)
-
-    for (const f of selectedPendingFiles.value) {
-      // 保留目录相对路径
-      const relPath = f.webkitRelativePath || f.name
-      formData.append('files', f, relPath)
-    }
-
-    const res = await api.uploadHDX(formData, true)
+    const res = await api.importDocumentsByPaths(selectedPaths.value, conflictMode, true)
     if (res.code === 0) {
       showImportDialog.value = false
-      selectedPendingFiles.value = []
+      selectedPaths.value = []
 
       // 开启全流程阶段进度实时追踪
       if (res.data?.job_id) {
@@ -457,14 +408,6 @@ const handleDelete = async (id) => {
 const formatTime = (ts) => {
   if (!ts) return '-'
   return ts.replace('T', ' ').substring(0, 19)
-}
-
-const formatSize = (bytes) => {
-  if (!bytes) return '0 B'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
 }
 
 onMounted(() => {
@@ -596,28 +539,31 @@ onMounted(() => {
 }
 
 /* 导入弹窗样式 */
-.upload-dropzone {
-  border: 2px dashed #cbd5e1;
+.path-import-pane {
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 30px 20px;
+  padding: 24px 20px;
   text-align: center;
   background: #f8fafc;
-  cursor: pointer;
-  transition: border-color 0.2s;
 }
 
-.upload-dropzone:hover {
-  border-color: #0284c7;
-}
-
-.dropzone-text {
+.pane-title {
   font-size: 14px;
-  color: #475569;
-  margin: 10px 0 14px 0;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 10px 0 6px 0;
 }
 
-/* 待上传文件清单预览 */
-.pending-files-box {
+.pane-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.7;
+  margin: 0 auto 14px auto;
+  max-width: 470px;
+}
+
+/* 已选路径清单 */
+.pending-paths-box {
   margin-top: 14px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
@@ -625,7 +571,7 @@ onMounted(() => {
   background: #f8fafc;
 }
 
-.pending-files-header {
+.pending-paths-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -636,7 +582,7 @@ onMounted(() => {
   border-bottom: 1px solid #e2e8f0;
 }
 
-.pending-files-list {
+.pending-paths-list {
   max-height: 160px;
   overflow-y: auto;
   display: flex;
@@ -644,7 +590,7 @@ onMounted(() => {
   gap: 6px;
 }
 
-.pending-file-item {
+.pending-path-item {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -655,13 +601,23 @@ onMounted(() => {
   border: 1px solid #e2e8f0;
 }
 
-.pending-file-item .file-name {
+.pending-path-item .path-value {
   flex: 1;
   font-weight: 500;
   color: #1e293b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.pending-path-item .del-btn {
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pending-path-item .del-btn:hover {
+  color: #ef4444;
 }
 
 .pending-file-item .file-size {

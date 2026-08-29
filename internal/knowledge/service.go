@@ -116,6 +116,7 @@ type parsedResult struct {
 // ImportDocumentFromDir 从本地目录导入 HDX 知识库（支持进度追踪 Tracker 回调）
 // 支持直接指定单个文档目录，或指定包含多个文档包的父级目录（程序自动递归发现所有文档并批量导入）
 // 参数 options 支持 Functional Options (WithConflictMode, WithTracker) 以及向前兼容的 string / *progress.JobTracker
+// ImportDocumentFromDir 导入单个目录下的 HDX 文档，并在结束时自动完成进度追踪
 func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) (*ImportStats, error) {
 	opts := &ImportOptions{
 		ConflictMode: "overwrite",
@@ -145,9 +146,98 @@ func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) 
 		}
 	}
 
-	tr := opts.Tracker
-	mode := opts.ConflictMode
+	return s.importFromDir(dirPath, opts.ConflictMode, opts.Tracker, true)
+}
 
+// ImportDocumentsFromPaths 批量导入多个路径（目录或压缩包目录）下的 HDX 文档，
+// 统一聚合统计结果并共用同一个进度追踪器，由本函数在全部完成后统一结束进度。
+func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, tr *progress.JobTracker) (*ImportStats, error) {
+	if conflictMode == "" {
+		conflictMode = "overwrite"
+	}
+
+	startTime := time.Now()
+	agg := &ImportStats{
+		ImportedDocs: make([]string, 0),
+		SkippedDocs:  make([]string, 0),
+		FailedDocs:   make([]string, 0),
+	}
+
+	var lastErr error
+	for i, p := range paths {
+		if tr != nil {
+			tr.AddLog("info", "开始处理第 %d/%d 个路径: %s", i+1, len(paths), p)
+		}
+
+		st, err := s.importFromDir(p, conflictMode, tr, false)
+		if err != nil {
+			logger.Log.Errorf("[Knowledge Service] Failed to import path %s: %v", p, err)
+			agg.FailedDocs = append(agg.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(p), err))
+			lastErr = err
+			continue
+		}
+
+		agg.TotalDocuments += st.TotalDocuments
+		agg.ImportedDocs = append(agg.ImportedDocs, st.ImportedDocs...)
+		agg.SkippedDocs = append(agg.SkippedDocs, st.SkippedDocs...)
+		agg.FailedDocs = append(agg.FailedDocs, st.FailedDocs...)
+		agg.TotalTopicsInProfile += st.TotalTopicsInProfile
+		agg.LeafLogCount += st.LeafLogCount
+		agg.LeafAlarmCount += st.LeafAlarmCount
+		agg.UniqueKnowledgeAdded += st.UniqueKnowledgeAdded
+		agg.VersionMappingsAdded += st.VersionMappingsAdded
+
+		if agg.DocumentID == 0 {
+			agg.DocumentID = st.DocumentID
+			agg.LibID = st.LibID
+			agg.ProductType = st.ProductType
+			agg.ProductVersion = st.ProductVersion
+		}
+	}
+
+	agg.Duration = time.Since(startTime)
+
+	imported := len(agg.ImportedDocs)
+	if imported > 1 {
+		agg.LibID = fmt.Sprintf("Batch (%d docs)", imported)
+		agg.DocumentID = 0
+		agg.ProductType = ""
+		agg.ProductVersion = ""
+	} else if imported == 0 && len(agg.SkippedDocs) > 0 {
+		agg.LibID = fmt.Sprintf("Skipped (%d docs)", len(agg.SkippedDocs))
+	}
+
+	if imported == 0 && len(agg.SkippedDocs) == 0 {
+		err := lastErr
+		if err == nil {
+			err = fmt.Errorf("no documents imported")
+		}
+		if tr != nil {
+			tr.Fail(err, fmt.Sprintf("未能成功导入任何文档: %v", err))
+		}
+		return nil, fmt.Errorf("failed to import any documents: %w", err)
+	}
+
+	if imported > 0 && s.matchEngine != nil {
+		s.matchEngine.Reload()
+		logger.Log.Infof("[Knowledge Service] Successfully reloaded match engine after batch knowledge import")
+	}
+
+	logger.Log.Infof("Completed multi-path import of %d/%d documents (%d skipped, %d failed) across %d paths in %v",
+		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(paths), agg.Duration)
+
+	if tr != nil {
+		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
+		tr.Complete(agg, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
+			imported, agg.LeafLogCount, agg.LeafAlarmCount, agg.UniqueKnowledgeAdded))
+	}
+
+	return agg, nil
+}
+
+// importFromDir 导入单个目录下的 HDX 文档。
+// finalize 为 false 时不结束进度追踪，以便批量导入由调用方统一聚合与收尾。
+func (s *Service) importFromDir(dirPath string, mode string, tr *progress.JobTracker, finalize bool) (*ImportStats, error) {
 	startTime := time.Now()
 
 	if tr != nil {
@@ -242,12 +332,12 @@ func (s *Service) ImportDocumentFromDir(dirPath string, options ...interface{}) 
 	logger.Log.Infof("Completed batch import of %d/%d documents (%d skipped) from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
 		successCount, len(docDirs), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
 
-	if successCount > 0 && s.matchEngine != nil {
+	if successCount > 0 && s.matchEngine != nil && finalize {
 		s.matchEngine.Reload()
 		logger.Log.Infof("[Knowledge Service] Successfully reloaded match engine after knowledge import")
 	}
 
-	if tr != nil {
+	if tr != nil && finalize {
 		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
 		tr.Complete(totalStats, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
 			successCount, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded))

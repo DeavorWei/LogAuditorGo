@@ -11,6 +11,7 @@ import (
 	"gorm.io/gorm"
 
 	"logauditorgo/internal/config"
+	"logauditorgo/internal/fsx"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/task"
@@ -56,15 +57,25 @@ func SetupRouter(
 		c.Next()
 	})
 
-	docHandler := NewDocumentHandler(knowledgeSvc, cfg.Storage.UploadDir)
+	docHandler := NewDocumentHandler(knowledgeSvc)
 	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer)
-	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc, cfg.Storage.UploadDir)
+	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
 	statsHandler := NewStatsHandler(globalDB)
 	systemHandler := NewSystemHandler()
 	progressHandler := NewProgressHandler()
+	fsHandler := NewFSHandler(fsx.Root{Name: "数据存储目录", Path: cfg.Storage.DataDir})
 
 	v1 := r.Group("/api/v1")
 	{
+		// 服务端本地文件系统只读浏览（仅限本机回环访问）
+		fs := v1.Group("/fs")
+		fs.Use(RequireLoopback())
+		{
+			fs.GET("/roots", fsHandler.GetRoots)
+			fs.GET("/browse", fsHandler.Browse)
+			fs.POST("/stat", fsHandler.Stat)
+		}
+
 		// 全流程阶段进度实时追踪 (SSE 流与 HTTP 轮询)
 		v1.GET("/progress/:job_id", progressHandler.GetProgress)
 		v1.GET("/progress/:job_id/stream", progressHandler.StreamProgress)
@@ -77,9 +88,8 @@ func SetupRouter(
 		v1.GET("/system/logs", systemHandler.GetLogs)
 		v1.POST("/system/logs/clean", systemHandler.CleanLogs)
 
-		// 文档管理
+		// 文档管理（服务端本地路径导入）
 		v1.POST("/documents/import-dir", docHandler.ImportDir)
-		v1.POST("/documents/upload", docHandler.UploadHDX)
 		v1.GET("/documents", docHandler.ListDocuments)
 		v1.DELETE("/documents/:id", docHandler.DeleteDocument)
 

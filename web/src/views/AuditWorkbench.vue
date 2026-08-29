@@ -132,17 +132,17 @@
           </div>
 
           <div class="guide-actions">
-            <div class="action-tile" @click="triggerGuideFilesSelect">
+            <div class="action-tile" @click="openGuidePicker('files')">
               <el-icon size="32" color="#0284c7"><Files /></el-icon>
-              <h4>多选日志文件上传</h4>
-              <p>支持多选 .log, .txt, .syslog 等多个日志文件同时上传</p>
+              <h4>选择日志文件</h4>
+              <p>直接选择服务端本机上的 .log / .txt / .syslog 日志文件，支持多选</p>
               <el-button type="primary" size="small">选择多个文件</el-button>
             </div>
 
-            <div class="action-tile" @click="triggerGuideDirSelect">
+            <div class="action-tile" @click="openGuidePicker('dir')">
               <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-              <h4>选择本地日志文件夹</h4>
-              <p>浏览器直接选择文件夹，自动检索并批量上传全部日志文件</p>
+              <h4>选择日志目录</h4>
+              <p>选择日志归档目录，由服务端递归收集其中全部日志文件</p>
               <el-button type="success" size="small">选择日志目录</el-button>
             </div>
 
@@ -527,38 +527,28 @@
     <!-- 导入 / 补充导入日志弹窗 -->
     <el-dialog v-model="showImportDialog" :title="`导入日志 - ${currentTask?.task_name || ''}`" width="620px">
       <el-tabs v-model="importTab" type="border-card">
-        <!-- 标签页 1: 多选日志文件 -->
-        <el-tab-pane label="多选日志文件" name="files">
-          <div class="upload-dropzone" @dragover.prevent @drop.prevent="handleDropFiles">
-            <el-icon size="40" color="#94a3b8"><UploadFilled /></el-icon>
-            <div class="dropzone-text">将日志文件拖到此处，或</div>
-            <el-button type="primary" size="small" @click="triggerFilesInput">选择多个文件 (支持 .log, .txt, .syslog)</el-button>
-            <input
-              ref="filesInputRef"
-              type="file"
-              multiple
-              style="display: none;"
-              @change="handleFilesSelected"
-            />
+        <!-- 标签页 1: 从本机目录导入 -->
+        <el-tab-pane label="从本机目录导入" name="dir">
+          <div class="path-import-pane">
+            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
+            <div class="pane-title">选择存放日志文件的目录</div>
+            <p class="pane-desc">
+              目录由服务端进程直接读取，不经过浏览器上传。可一次选择多个目录，
+              并按扩展名递归收集其中所有日志文件。
+            </p>
+            <el-button type="success" size="small" @click="openPicker('dir')">选择日志目录</el-button>
           </div>
         </el-tab-pane>
 
-        <!-- 标签页 2: 选择日志目录 -->
-        <el-tab-pane label="选择日志目录" name="dir">
-          <div class="upload-dropzone" @dragover.prevent @drop.prevent="handleDropFiles">
-            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
-            <div class="dropzone-text">直接选择本地日志归档目录</div>
-            <p style="font-size: 12px; color: #64748b; margin: 4px 0 10px 0;">浏览器将自动遍历提取文件夹下的所有日志文件并批量上传</p>
-            <el-button type="success" size="small" @click="triggerDirInput">选择本地日志文件夹</el-button>
-            <input
-              ref="dirInputRef"
-              type="file"
-              webkitdirectory
-              directory
-              multiple
-              style="display: none;"
-              @change="handleDirSelected"
-            />
+        <!-- 标签页 2: 从本机文件导入 -->
+        <el-tab-pane label="从本机文件导入" name="files">
+          <div class="path-import-pane">
+            <el-icon size="40" color="#0284c7"><Files /></el-icon>
+            <div class="pane-title">选择一个或多个日志文件</div>
+            <p class="pane-desc">
+              直接选择服务端本机上的日志文件，支持 .log / .txt / .syslog 等常见格式。
+            </p>
+            <el-button type="primary" size="small" @click="openPicker('file')">选择日志文件</el-button>
           </div>
         </el-tab-pane>
 
@@ -580,25 +570,25 @@
         </el-tab-pane>
       </el-tabs>
 
-      <!-- 待上传文件清单预览 -->
-      <div v-if="selectedPendingFiles.length > 0 && importTab !== 'text'" class="pending-files-box">
-        <div class="pending-files-header">
-          <span>待导入文件列表 (共 <strong>{{ selectedPendingFiles.length }}</strong> 个)</span>
-          <el-button type="danger" link size="small" @click="selectedPendingFiles = []">清空</el-button>
+      <!-- 已选路径清单 -->
+      <div v-if="selectedPaths.length > 0 && importTab !== 'text'" class="pending-paths-box">
+        <div class="pending-paths-header">
+          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
+          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
         </div>
-        <div class="pending-files-list">
-          <div v-for="(f, idx) in selectedPendingFiles" :key="idx" class="pending-file-item">
-            <span class="file-name">📄 {{ f.name }}</span>
-            <span class="file-size">{{ formatSize(f.size) }}</span>
-            <el-tag v-if="isConflictFile(f.name)" type="danger" size="small">已存在同名文件</el-tag>
-            <el-icon class="del-btn" @click="removePendingFile(idx)"><Close /></el-icon>
+        <div class="pending-paths-list">
+          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
+            <span class="path-value" :title="p">📁 {{ p }}</span>
+            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
           </div>
         </div>
       </div>
 
       <template #footer>
         <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleCheckAndStartImport">开始导入并分析</el-button>
+        <el-button type="primary" :loading="submitting" :disabled="!canStartImport" @click="handleCheckAndStartImport">
+          开始导入并分析
+        </el-button>
       </template>
     </el-dialog>
 
@@ -639,9 +629,16 @@
       @completed="handleLogImportCompleted"
     />
 
-    <!-- 隐藏的全局文件输入框（用于引导区域快捷触发） -->
-    <input ref="guideFilesInputRef" type="file" multiple style="display: none;" @change="handleGuideFilesSelected" />
-    <input ref="guideDirInputRef" type="file" webkitdirectory directory multiple style="display: none;" @change="handleGuideDirSelected" />
+    <!-- 服务端本地路径选择器（日志导入专用） -->
+    <ServerPathPicker
+      v-model="selectedPaths"
+      v-model:visible="showPathPicker"
+      :mode="pickerMode"
+      :exts="logExts"
+      :multiple="true"
+      favorite-key="task-logs"
+      :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
+    />
   </div>
 </template>
 
@@ -649,11 +646,12 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, UploadFilled, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import DeviceManager from '@/components/DeviceManager.vue'
+import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import RcaCenter from '@/components/RcaCenter.vue'
@@ -728,10 +726,13 @@ const newTaskForm = ref({
 
 // 导入相关
 const showImportDialog = ref(false)
-const importTab = ref('files')
+const importTab = ref('dir')
 const manualFileName = ref('')
 const manualLogText = ref('')
-const selectedPendingFiles = ref([])
+const selectedPaths = ref([])
+const showPathPicker = ref(false)
+const pickerMode = ref('dir')
+const logExts = ['.log', '.txt', '.syslog']
 
 // 进度追踪相关
 const showProgressModal = ref(false)
@@ -1232,10 +1233,10 @@ const handleCreateAndOpenImport = async () => {
 
 // 导入弹窗交互
 const openImportDialog = () => {
-  selectedPendingFiles.value = []
+  selectedPaths.value = []
   manualLogText.value = ''
   manualFileName.value = ''
-  importTab.value = 'files'
+  importTab.value = 'dir'
   showImportDialog.value = true
 }
 
@@ -1244,71 +1245,39 @@ const openImportTextTab = () => {
   importTab.value = 'text'
 }
 
-const triggerFilesInput = () => {
-  filesInputRef.value?.click()
-}
-const triggerDirInput = () => {
-  dirInputRef.value?.click()
-}
-const triggerGuideFilesSelect = () => {
-  guideFilesInputRef.value?.click()
-}
-const triggerGuideDirSelect = () => {
-  guideDirInputRef.value?.click()
+// 打开服务端本地路径选择器（dir: 目录模式，file: 文件模式）
+const openPicker = mode => {
+  pickerMode.value = mode
+  importTab.value = mode
+  showPathPicker.value = true
 }
 
-const handleFilesSelected = (e) => {
-  if (e.target.files) {
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
+// 引导区域快捷触发：直接拉起对应模式的路径选择器
+const openGuidePicker = mode => {
+  openImportDialog()
+  openPicker(mode)
 }
 
-const handleDirSelected = (e) => {
-  if (e.target.files) {
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
+const removePath = index => {
+  selectedPaths.value.splice(index, 1)
 }
 
-const handleGuideFilesSelected = (e) => {
-  if (e.target.files) {
-    openImportDialog()
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
-}
-
-const handleGuideDirSelected = (e) => {
-  if (e.target.files) {
-    openImportDialog()
-    addPendingFiles(Array.from(e.target.files))
-  }
-  e.target.value = ''
-}
-
-const handleDropFiles = (e) => {
-  if (e.dataTransfer.files) {
-    addPendingFiles(Array.from(e.dataTransfer.files))
-  }
-}
-
-const addPendingFiles = (files) => {
-  for (const f of files) {
-    const exists = selectedPendingFiles.value.some(p => p.name === f.name)
-    if (!exists) {
-      selectedPendingFiles.value.push(f)
-    }
-  }
-}
-
-const removePendingFile = (index) => {
-  selectedPendingFiles.value.splice(index, 1)
+// 取路径的末级名称（兼容 Windows 与 Unix 分隔符）
+const pathBaseName = p => {
+  if (!p) return ''
+  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
+  return segs.length ? segs[segs.length - 1] : p
 }
 
 const isConflictFile = (fileName) => {
   return taskFiles.value.some(tf => tf.file_name === fileName)
 }
+
+// 是否具备开始导入的条件
+const canStartImport = computed(() => {
+  if (importTab.value === 'text') return manualLogText.value.trim() !== ''
+  return selectedPaths.value.length > 0
+})
 
 // 提交导入前检查冲突
 const handleCheckAndStartImport = () => {
@@ -1327,16 +1296,19 @@ const handleCheckAndStartImport = () => {
     return
   }
 
-  if (selectedPendingFiles.value.length === 0) {
-    ElMessage.warning('请选择至少一个日志文件')
+  if (selectedPaths.value.length === 0) {
+    ElMessage.warning('请选择至少一个日志目录或日志文件')
     return
   }
 
-  // 检查是否有同名文件
+  // 检查是否有同名文件（目录模式下最终文件名由服务端展开决定，无法预先判断）
   const conflicts = []
-  for (const f of selectedPendingFiles.value) {
-    if (isConflictFile(f.name)) {
-      conflicts.push(f.name)
+  if (importTab.value === 'files') {
+    for (const p of selectedPaths.value) {
+      const name = pathBaseName(p)
+      if (isConflictFile(name)) {
+        conflicts.push(name)
+      }
     }
   }
 
@@ -1355,22 +1327,26 @@ const executeImportWithConflict = async (conflictMode) => {
   showConflictDialog.value = false
 
   try {
-    const formData = new FormData()
-    formData.append('conflict_mode', conflictMode)
-
+    let res
     if (importTab.value === 'text') {
-      formData.append('content', manualLogText.value)
-      formData.append('file_name', manualFileName.value.trim() || 'manual_input.txt')
+      res = await api.importTaskLogsText(currentTaskId.value, {
+        content: manualLogText.value,
+        fileName: manualFileName.value.trim() || 'manual_input.txt',
+        conflictMode
+      })
     } else {
-      for (const f of selectedPendingFiles.value) {
-        formData.append('files', f)
-      }
+      // 仅提交路径，由服务端直接读取本地磁盘上的日志文件
+      res = await api.importTaskLogsByPaths(currentTaskId.value, {
+        paths: selectedPaths.value,
+        exts: logExts,
+        recursive: true,
+        conflictMode
+      })
     }
 
-    const res = await api.importTaskLogs(currentTaskId.value, formData, true)
     if (res.code === 0) {
       showImportDialog.value = false
-      selectedPendingFiles.value = []
+      selectedPaths.value = []
       manualLogText.value = ''
       manualFileName.value = ''
 
@@ -2033,66 +2009,74 @@ onMounted(() => {
   font-size: 13px;
   color: #475569;
 }
-.upload-dropzone {
-  border: 2px dashed #cbd5e1;
+.path-import-pane {
+  border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 30px 16px;
+  padding: 24px 20px;
   text-align: center;
   background: #f8fafc;
-  transition: all 0.2s ease;
 }
-.upload-dropzone:hover {
-  border-color: #0284c7;
-  background: #f0f9ff;
-}
-.dropzone-text {
-  margin: 10px 0 12px 0;
+.pane-title {
   font-size: 14px;
-  color: #475569;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 10px 0 6px 0;
 }
-.pending-files-box {
+.pane-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.7;
+  margin: 0 auto 14px auto;
+  max-width: 470px;
+}
+.pending-paths-box {
   margin-top: 14px;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
-  background: #fff;
-  padding: 10px;
+  background: #f8fafc;
+  padding: 10px 12px;
 }
-.pending-files-header {
+.pending-paths-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
   margin-bottom: 8px;
-  font-size: 12px;
-  color: #64748b;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 13px;
+  color: #334155;
 }
-.pending-files-list {
+.pending-paths-list {
   max-height: 140px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
 }
-.pending-file-item {
+.pending-path-item {
   display: flex;
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  padding: 4px 6px;
-  background: #f8fafc;
+  padding: 5px 8px;
+  background: #fff;
   border-radius: 4px;
+  border: 1px solid #e2e8f0;
 }
-.pending-file-item .file-name {
+.pending-path-item .path-value {
   flex: 1;
+  font-weight: 500;
+  color: #1e293b;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.pending-file-item .file-size {
-  color: #94a3b8;
-  font-size: 11px;
-}
-.pending-file-item .del-btn {
+.pending-path-item .del-btn {
   cursor: pointer;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+.pending-path-item .del-btn:hover {
   color: #ef4444;
 }
 

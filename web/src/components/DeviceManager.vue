@@ -166,26 +166,26 @@
       destroy-on-close
     >
       <el-tabs v-model="importTab">
-        <el-tab-pane label="选择文件上传" name="file">
-          <el-upload
-            ref="uploadRef"
-            drag
-            multiple
-            :auto-upload="false"
-            :file-list="fileList"
-            :on-change="handleFileChange"
-            :on-remove="handleFileRemove"
-          >
-            <el-icon class="el-icon--upload"><upload-filled /></el-icon>
-            <div class="el-upload__text">
-              拖拽日志文件到此处，或 <em>点击选取文件</em>
-            </div>
-            <template #tip>
-              <div class="el-upload__tip">
-                支持上传单个或多个 .log, .txt, .syslog 日志文件，导入后将直接归属给「{{ targetDevice?.device_name }}」
-              </div>
-            </template>
-          </el-upload>
+        <el-tab-pane label="从本机目录导入" name="dir">
+          <div class="path-import-pane">
+            <el-icon size="36" color="#16a34a"><folder-add /></el-icon>
+            <div class="pane-title">选择该设备的日志目录</div>
+            <p class="pane-desc">
+              目录由服务端进程直接读取，不经过浏览器上传。导入后日志将直接归属给「{{ targetDevice?.device_name }}」
+            </p>
+            <el-button type="success" size="small" @click="openPicker('dir')">选择日志目录</el-button>
+          </div>
+        </el-tab-pane>
+
+        <el-tab-pane label="从本机文件导入" name="file">
+          <div class="path-import-pane">
+            <el-icon size="36" color="#0284c7"><upload-filled /></el-icon>
+            <div class="pane-title">选择该设备的日志文件</div>
+            <p class="pane-desc">
+              支持 .log / .txt / .syslog 等常见格式，可同时选择多个文件
+            </p>
+            <el-button type="primary" size="small" @click="openPicker('file')">选择日志文件</el-button>
+          </div>
         </el-tab-pane>
 
         <el-tab-pane label="直接粘贴文本" name="text">
@@ -198,6 +198,20 @@
         </el-tab-pane>
       </el-tabs>
 
+      <!-- 已选路径清单 -->
+      <div v-if="selectedPaths.length > 0 && importTab !== 'text'" class="pending-paths-box">
+        <div class="pending-paths-header">
+          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
+          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
+        </div>
+        <div class="pending-paths-list">
+          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
+            <span class="path-value" :title="p">📁 {{ p }}</span>
+            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
+          </div>
+        </div>
+      </div>
+
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showImportDialog = false">取消</el-button>
@@ -207,14 +221,26 @@
         </span>
       </template>
     </el-dialog>
+
+    <!-- 服务端本地路径选择器（设备日志导入专用） -->
+    <ServerPathPicker
+      v-model="selectedPaths"
+      v-model:visible="showPathPicker"
+      :mode="pickerMode"
+      :exts="logExts"
+      :multiple="true"
+      favorite-key="device-logs"
+      :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted, defineProps, defineEmits, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Monitor, UploadFilled } from '@element-plus/icons-vue'
+import { Monitor, UploadFilled, FolderAdd, Close } from '@element-plus/icons-vue'
 import api from '@/api'
+import ServerPathPicker from '@/components/ServerPathPicker.vue'
 
 const props = defineProps({
   taskId: {
@@ -252,8 +278,11 @@ const deviceForm = ref({
 
 const showImportDialog = ref(false)
 const targetDevice = ref(null)
-const importTab = ref('file')
-const fileList = ref([])
+const importTab = ref('dir')
+const selectedPaths = ref([])
+const showPathPicker = ref(false)
+const pickerMode = ref('dir')
+const logExts = ['.log', '.txt', '.syslog']
 const textLogContent = ref('')
 
 const fetchDevices = async () => {
@@ -363,64 +392,38 @@ const handleDelete = async (deviceId) => {
 
 const openImportDialog = (row) => {
   targetDevice.value = row
-  fileList.value = []
+  selectedPaths.value = []
   textLogContent.value = ''
-  importTab.value = 'file'
+  importTab.value = 'dir'
   showImportDialog.value = true
 }
 
-const handleFileChange = (file, files) => {
-  fileList.value = files
+// 打开服务端本地路径选择器（dir: 目录模式，file: 文件模式）
+const openPicker = mode => {
+  pickerMode.value = mode
+  importTab.value = mode
+  showPathPicker.value = true
 }
 
-const handleFileRemove = (file, files) => {
-  fileList.value = files
+const removePath = index => {
+  selectedPaths.value.splice(index, 1)
 }
 
 const submitImportLogs = async () => {
   if (!targetDevice.value) return
 
-  if (importTab.value === 'file') {
-    if (fileList.value.length === 0) {
-      ElMessage.warning('请选择至少一个日志文件')
-      return
-    }
-    const formData = new FormData()
-    fileList.value.forEach(f => {
-      if (f.raw) formData.append('files', f.raw)
-    })
-    formData.append('conflict_mode', 'overwrite')
-    formData.append('async', 'true')
-
-    importing.value = true
-    try {
-      const res = await api.importDeviceLogs(props.taskId, targetDevice.value.id, formData, true)
-      if (res.code === 0) {
-        showImportDialog.value = false
-        ElMessage.success('日志导入分析任务已启动')
-        if (res.data?.job_id) {
-          emit('open-progress', res.data.job_id)
-        }
-        fetchDevices()
-      }
-    } catch (e) {
-      console.error('Import logs failed:', e)
-    } finally {
-      importing.value = false
-    }
-  } else {
+  if (importTab.value === 'text') {
     if (!textLogContent.value.trim()) {
       ElMessage.warning('请输入日志文本内容')
       return
     }
     importing.value = true
     try {
-      const res = await api.importDeviceLogs(props.taskId, targetDevice.value.id, {
+      const res = await api.importDeviceLogsText(props.taskId, targetDevice.value.id, {
         content: textLogContent.value,
-        file_name: `${targetDevice.value.device_name}_manual.txt`,
-        conflict_mode: 'overwrite',
-        async: true
-      }, true)
+        fileName: `${targetDevice.value.device_name}_manual.txt`,
+        conflictMode: 'overwrite'
+      })
       if (res.code === 0) {
         showImportDialog.value = false
         ElMessage.success('文本日志导入分析已启动')
@@ -434,6 +437,35 @@ const submitImportLogs = async () => {
     } finally {
       importing.value = false
     }
+    return
+  }
+
+  if (selectedPaths.value.length === 0) {
+    ElMessage.warning('请选择至少一个日志目录或日志文件')
+    return
+  }
+
+  importing.value = true
+  try {
+    const res = await api.importDeviceLogsByPaths(props.taskId, targetDevice.value.id, {
+      paths: selectedPaths.value,
+      exts: logExts,
+      recursive: true,
+      conflictMode: 'overwrite'
+    })
+    if (res.code === 0) {
+      showImportDialog.value = false
+      selectedPaths.value = []
+      ElMessage.success('日志导入分析任务已启动')
+      if (res.data?.job_id) {
+        emit('open-progress', res.data.job_id)
+      }
+      fetchDevices()
+    }
+  } catch (e) {
+    console.error('Import logs failed:', e)
+  } finally {
+    importing.value = false
   }
 }
 
@@ -453,6 +485,88 @@ defineExpose({
 </script>
 
 <style scoped>
+/* 路径导入面板 */
+.path-import-pane {
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 20px 16px;
+  text-align: center;
+  background: #f8fafc;
+}
+
+.pane-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+  margin: 8px 0 6px 0;
+}
+
+.pane-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.7;
+  margin: 0 auto 14px auto;
+  max-width: 440px;
+}
+
+/* 已选路径清单 */
+.pending-paths-box {
+  margin-top: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  padding: 10px 12px;
+  background: #f8fafc;
+}
+
+.pending-paths-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: #334155;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.pending-paths-list {
+  max-height: 140px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pending-path-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  background: #fff;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid #e2e8f0;
+}
+
+.pending-path-item .path-value {
+  flex: 1;
+  font-weight: 500;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pending-path-item .del-btn {
+  color: #94a3b8;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.pending-path-item .del-btn:hover {
+  color: #ef4444;
+}
+
 .device-manager-container {
   display: flex;
   flex-direction: column;

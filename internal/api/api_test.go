@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"mime/multipart"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -181,7 +181,7 @@ func TestAPIEndpoints(t *testing.T) {
 	}
 }
 
-func TestDocumentUploadAndConflict(t *testing.T) {
+func TestDocumentImportFromDirAndConflict(t *testing.T) {
 	logger.Init("debug", "console")
 
 	tmpDir, err := os.MkdirTemp("", "doc_api_test_*")
@@ -219,20 +219,23 @@ func TestDocumentUploadAndConflict(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	// 创建内存 Mock HDX zip
-	mockZipData := createMockHDXZip(t, "DOC_TEST_001", "TestSwitch", "V100R001C00")
+	// 在服务端本地磁盘上构造一个已解压的 Mock HDX 文档目录
+	docRoot := filepath.Join(tmpDir, "doc_root")
+	docDir := filepath.Join(docRoot, "test_doc")
+	extractZipToDir(t, createMockHDXZip(t, "DOC_TEST_001", "TestSwitch", "V100R001C00"), docDir)
 
-	// 1. 首次上传：覆盖/创建模式
-	bodyBuf := &strings.Builder{}
-	mpWriter := createMultipartUpload(bodyBuf, "test_doc.hdx", mockZipData, "overwrite")
-
-	req1, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(bodyBuf.String()))
-	req1.Header.Set("Content-Type", mpWriter)
+	// 1. 首次导入：覆盖/创建模式
+	payload1, _ := json.Marshal(map[string]interface{}{
+		"paths":         []string{docDir},
+		"conflict_mode": "overwrite",
+	})
+	req1, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", bytes.NewReader(payload1))
+	req1.Header.Set("Content-Type", "application/json")
 	w1 := httptest.NewRecorder()
 	router.ServeHTTP(w1, req1)
 
 	if w1.Code != http.StatusOK {
-		t.Fatalf("expected 200 for upload, got %d: %s", w1.Code, w1.Body.String())
+		t.Fatalf("expected 200 for import-dir, got %d: %s", w1.Code, w1.Body.String())
 	}
 
 	var res1 struct {
@@ -250,17 +253,18 @@ func TestDocumentUploadAndConflict(t *testing.T) {
 		t.Errorf("expected successful document import, got %+v", res1)
 	}
 
-	// 2. 二次上传同一文档，指定 conflict_mode = skip
-	bodyBuf2 := &strings.Builder{}
-	mpWriter2 := createMultipartUpload(bodyBuf2, "test_doc.hdx", mockZipData, "skip")
-
-	req2, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(bodyBuf2.String()))
-	req2.Header.Set("Content-Type", mpWriter2)
+	// 2. 二次导入同一目录，指定 conflict_mode = skip
+	payload2, _ := json.Marshal(map[string]interface{}{
+		"paths":         []string{docDir},
+		"conflict_mode": "skip",
+	})
+	req2, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", bytes.NewReader(payload2))
+	req2.Header.Set("Content-Type", "application/json")
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
 
 	if w2.Code != http.StatusOK {
-		t.Fatalf("expected 200 for skip upload, got %d: %s", w2.Code, w2.Body.String())
+		t.Fatalf("expected 200 for skip import, got %d: %s", w2.Code, w2.Body.String())
 	}
 
 	var res2 struct {
@@ -366,24 +370,57 @@ func createMockHDXZip(t *testing.T, libID, productType, productVer string) []byt
 	return buf.Bytes()
 }
 
-func createMultipartUpload(bodyBuf *strings.Builder, filename string, data []byte, conflictMode string) string {
-	b := &bytes.Buffer{}
-	w := multipart.NewWriter(b)
+// extractZipToDir 将内存中的 zip 数据包解压到指定目录，用于模拟已解压的 HDX 文档包
+func extractZipToDir(t *testing.T, data []byte, destDir string) {
+	t.Helper()
 
-	if conflictMode != "" {
-		_ = w.WriteField("conflict_mode", conflictMode)
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		t.Fatalf("open mock zip failed: %v", err)
+	}
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		t.Fatalf("create dest dir failed: %v", err)
 	}
 
-	part, _ := w.CreateFormFile("files", filename)
-	part.Write(data)
-	w.Close()
-
-	bodyBuf.Reset()
-	bodyBuf.WriteString(b.String())
-	return w.FormDataContentType()
+	for _, f := range zr.File {
+		target := filepath.Join(destDir, filepath.FromSlash(f.Name))
+		if f.FileInfo().IsDir() {
+			_ = os.MkdirAll(target, 0755)
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			t.Fatalf("create sub dir failed: %v", err)
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatalf("open zip entry failed: %v", err)
+		}
+		out, err := os.Create(target)
+		if err != nil {
+			rc.Close()
+			t.Fatalf("create file failed: %v", err)
+		}
+		_, err = io.Copy(out, rc)
+		out.Close()
+		rc.Close()
+		if err != nil {
+			t.Fatalf("write file failed: %v", err)
+		}
+	}
 }
 
-func TestFolderWithMultipleHDXZipsUpload(t *testing.T) {
+// writeTestFile 写入测试文件并自动创建其父目录
+func writeTestFile(t *testing.T, path string, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		t.Fatalf("create dir for %s failed: %v", path, err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatalf("write file %s failed: %v", path, err)
+	}
+}
+
+func TestFolderWithMultipleHDXImport(t *testing.T) {
 	logger.Init("debug", "console")
 
 	tmpDir, err := os.MkdirTemp("", "doc_folder_test_*")
@@ -421,26 +458,16 @@ func TestFolderWithMultipleHDXZipsUpload(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	// 创建两个不同的 Mock HDX zip 数据包（使用 .hdx 后缀）
+	// 构造一个包含多个文档包的父目录：2 个解压后的 HDX 包 + 1 个散装 HDX 目录
+	docRoot := filepath.Join(tmpDir, "doc_root")
+
 	zip1 := createMockHDXZip(t, "DOC_MULTI_01", "Switch-A", "V100R001C00")
 	zip2 := createMockHDXZip(t, "DOC_MULTI_02", "Firewall-B", "V200R002C00")
+	extractZipToDir(t, zip1, filepath.Join(docRoot, "doc1"))
+	extractZipToDir(t, zip2, filepath.Join(docRoot, "sub", "doc2"))
 
-	// 模拟在浏览器中选中一个包含多个 .hdx 文件的文件夹
-	b := &bytes.Buffer{}
-	w := multipart.NewWriter(b)
-	_ = w.WriteField("conflict_mode", "overwrite")
-
-	// 第一个文件位于 my_hdx_folder/doc1.hdx
-	part1, _ := w.CreateFormFile("files", "my_hdx_folder/doc1.hdx")
-	part1.Write(zip1)
-
-	// 第二个文件位于 my_hdx_folder/sub/doc2.hdx
-	part2, _ := w.CreateFormFile("files", "my_hdx_folder/sub/doc2.hdx")
-	part2.Write(zip2)
-
-	// 第三个是已解压的散装 HDX 目录结构 (profile.xml + navi.xml)
-	p3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/profile.xml")
-	p3.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+	unzipped := filepath.Join(docRoot, "unzipped_doc")
+	writeTestFile(t, filepath.Join(unzipped, "profile.xml"), `<?xml version="1.0" encoding="utf-8"?>
 <profile>
   <libId>DOC_UNZIPPED_03</libId>
   <libVersion>01</libVersion>
@@ -450,21 +477,23 @@ func TestFolderWithMultipleHDXZipsUpload(t *testing.T) {
   <issueDate>2026-04-15</issueDate>
   <topicNumber>1</topicNumber>
   <navi>resources/navi.xml</navi>
-</profile>`))
-	n3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/resources/navi.xml")
-	n3.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+</profile>`)
+	writeTestFile(t, filepath.Join(unzipped, "resources", "navi.xml"), `<?xml version="1.0" encoding="utf-8"?>
 <topics>
   <topic id="r_03" txt="日志" url="">
     <topic id="top_03" txt="BGP/2/DOWN" url="resources/log3.html"/>
   </topic>
-</topics>`))
-	h3, _ := w.CreateFormFile("files", "my_hdx_folder/unzipped_doc/resources/log3.html")
-	h3.Write([]byte(`<html><body><h2>日志信息</h2><p>BGP down</p></body></html>`))
+</topics>`)
+	writeTestFile(t, filepath.Join(unzipped, "resources", "log3.html"),
+		`<html><body><h2>日志信息</h2><p>BGP down</p></body></html>`)
 
-	w.Close()
-
-	req, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b.String()))
-	req.Header.Set("Content-Type", w.FormDataContentType())
+	// 直接将父目录路径提交给服务端，由服务端递归发现其中所有文档包
+	payload, _ := json.Marshal(map[string]interface{}{
+		"paths":         []string{docRoot},
+		"conflict_mode": "overwrite",
+	})
+	req, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
@@ -647,7 +676,7 @@ func TestCORSMiddleware(t *testing.T) {
 	}
 }
 
-func TestUploadHDXAsyncAndPathTraversal(t *testing.T) {
+func TestImportDirAsyncAndPathValidation(t *testing.T) {
 	logger.Init("debug", "console")
 
 	tmpDir, err := os.MkdirTemp("", "upload_test_*")
@@ -685,59 +714,59 @@ func TestUploadHDXAsyncAndPathTraversal(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	mockZipData := createMockHDXZip(t, "DOC_ASYNC_001", "AsyncSwitch", "V100R001C00")
+	docRoot := filepath.Join(tmpDir, "doc_root")
+	docDir := filepath.Join(docRoot, "async_doc")
+	extractZipToDir(t, createMockHDXZip(t, "DOC_ASYNC_001", "AsyncSwitch", "V100R001C00"), docDir)
 
-	// 1. 测试异步上传模式
-	b := &bytes.Buffer{}
-	w := multipart.NewWriter(b)
-	_ = w.WriteField("conflict_mode", "overwrite")
-	_ = w.WriteField("async", "true")
-	part, _ := w.CreateFormFile("files", "test_async.hdx")
-	part.Write(mockZipData)
-	w.Close()
-
-	req, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b.String()))
-	req.Header.Set("Content-Type", w.FormDataContentType())
+	// 1. 测试异步导入模式：应立即返回 job_id
+	payload, _ := json.Marshal(map[string]interface{}{
+		"paths":         []string{docDir},
+		"conflict_mode": "overwrite",
+		"async":         true,
+	})
+	req, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for async upload, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200 for async import, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var res struct {
 		Code int `json:"code"`
 		Data struct {
-			JobID   string `json:"job_id"`
-			IsAsync bool   `json:"is_async"`
+			JobID     string `json:"job_id"`
+			IsAsync   bool   `json:"is_async"`
+			PathCount int    `json:"path_count"`
 		} `json:"data"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &res)
-	if !res.Data.IsAsync || res.Data.JobID == "" {
-		t.Fatalf("expected is_async=true and valid job_id, got %+v", res)
+	if !res.Data.IsAsync || res.Data.JobID == "" || res.Data.PathCount != 1 {
+		t.Fatalf("expected is_async=true, valid job_id and path_count=1, got %+v", res)
 	}
 
-	// 2. 测试路径穿越攻击文件上传（应该被安全重定向或清洗，防止逃逸）
-	b2 := &bytes.Buffer{}
-	w2 := multipart.NewWriter(b2)
-	_ = w2.WriteField("conflict_mode", "overwrite")
-	part2, _ := w2.CreateFormFile("files", "../../escape.hdx")
-	part2.Write(mockZipData)
-	w2.Close()
-
-	req2, _ := http.NewRequest("POST", "/api/v1/documents/upload", strings.NewReader(b2.String()))
-	req2.Header.Set("Content-Type", w2.FormDataContentType())
+	// 2. 不存在的路径应在预检阶段被拒绝
+	payload2, _ := json.Marshal(map[string]interface{}{
+		"paths": []string{filepath.Join(tmpDir, "definitely_not_exist_dir")},
+	})
+	req2, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", bytes.NewReader(payload2))
+	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, req2)
 
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("expected 200 for sanitized upload, got %d: %s", rec2.Code, rec2.Body.String())
+	if rec2.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for non-existent path, got %d: %s", rec2.Code, rec2.Body.String())
 	}
 
-	// 验证没有文件逃逸到 uploads 外层目录
-	escapedFile := filepath.Join(tmpDir, "escape.hdx")
-	if _, err := os.Stat(escapedFile); !os.IsNotExist(err) {
-		t.Errorf("file escaped to %s, path traversal vulnerability present!", escapedFile)
+	// 3. 空路径列表应被拒绝
+	req3, _ := http.NewRequest("POST", "/api/v1/documents/import-dir", strings.NewReader(`{"paths":[]}`))
+	req3.Header.Set("Content-Type", "application/json")
+	rec3 := httptest.NewRecorder()
+	router.ServeHTTP(rec3, req3)
+
+	if rec3.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for empty paths, got %d: %s", rec3.Code, rec3.Body.String())
 	}
 }
 
@@ -886,7 +915,7 @@ func TestStatsHandlerCache(t *testing.T) {
 	}
 }
 
-func TestTaskMultipartStreamingUpload(t *testing.T) {
+func TestTaskPathImport(t *testing.T) {
 	logger.Init("debug", "console")
 
 	tmpDir, err := os.MkdirTemp("", "api_task_stream_upload_*")
@@ -927,25 +956,27 @@ func TestTaskMultipartStreamingUpload(t *testing.T) {
 
 	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 
-	// 1. Multipart POST /api/v1/tasks
-	var bodyBuf bytes.Buffer
-	mw := multipart.NewWriter(&bodyBuf)
-	_ = mw.WriteField("task_name", "MultipartTask")
-	_ = mw.WriteField("device_type", "CloudEngine")
+	// 1. 在服务端本地磁盘准备日志文件，HTTP 请求只提交路径
+	logDir := filepath.Join(tmpDir, "device_logs")
+	writeTestFile(t, filepath.Join(logDir, "sw01.log"),
+		"Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN. (InterfaceName=100GE1/0/1)\n")
+	writeTestFile(t, filepath.Join(logDir, "sw02.log"),
+		"Apr 15 2026 14:00:02 CORE-SW-02 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state changed to DOWN. (SessionID=10)\n")
 
-	part1, _ := mw.CreateFormFile("file", "sw01.log")
-	part1.Write([]byte("Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface 100GE1/0/1 state turned to DOWN. (InterfaceName=100GE1/0/1)\n"))
-	part2, _ := mw.CreateFormFile("file", "sw02.log")
-	part2.Write([]byte("Apr 15 2026 14:00:02 CORE-SW-02 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD session state changed to DOWN. (SessionID=10)\n"))
-	mw.Close()
-
-	req, _ := http.NewRequest("POST", "/api/v1/tasks", &bodyBuf)
-	req.Header.Set("Content-Type", mw.FormDataContentType())
+	payload, _ := json.Marshal(map[string]interface{}{
+		"task_name":   "PathImportTask",
+		"device_type": "CloudEngine",
+		"paths":       []string{logDir},
+		"exts":        []string{".log"},
+		"recursive":   true,
+	})
+	req, _ := http.NewRequest("POST", "/api/v1/tasks", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200 for multipart CreateTask, got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 200 for path-based CreateTask, got %d: %s", rec.Code, rec.Body.String())
 	}
 
 	var res struct {
@@ -964,21 +995,23 @@ func TestTaskMultipartStreamingUpload(t *testing.T) {
 		t.Errorf("expected 2 logs and 2 files, got logs=%d, files=%d", res.Data.LogCount, res.Data.FileCount)
 	}
 
-	// 2. Multipart POST /api/v1/tasks/:id/import 补充导入
-	var bodyBuf2 bytes.Buffer
-	mw2 := multipart.NewWriter(&bodyBuf2)
-	_ = mw2.WriteField("conflict_mode", "skip")
-	part3, _ := mw2.CreateFormFile("file", "fw01.log")
-	part3.Write([]byte("Apr 15 2026 14:05:00 USG-FW-01 %%01AAA/4/USER_AUTH_FAIL(l)[202]: User authentication failed. (UserName=testuser, UserIP=192.168.10.5)\n"))
-	mw2.Close()
+	// 2. 基于路径向已有任务补充导入
+	extraDir := filepath.Join(tmpDir, "extra_logs")
+	writeTestFile(t, filepath.Join(extraDir, "fw01.log"),
+		"Apr 15 2026 14:05:00 USG-FW-01 %%01AAA/4/USER_AUTH_FAIL(l)[202]: User authentication failed. (UserName=testuser, UserIP=192.168.10.5)\n")
 
-	req2, _ := http.NewRequest("POST", "/api/v1/tasks/"+res.Data.TaskID+"/import", &bodyBuf2)
-	req2.Header.Set("Content-Type", mw2.FormDataContentType())
+	payload2, _ := json.Marshal(map[string]interface{}{
+		"paths":         []string{extraDir},
+		"exts":          []string{".log"},
+		"conflict_mode": "skip",
+	})
+	req2, _ := http.NewRequest("POST", "/api/v1/tasks/"+res.Data.TaskID+"/import", bytes.NewReader(payload2))
+	req2.Header.Set("Content-Type", "application/json")
 	rec2 := httptest.NewRecorder()
 	router.ServeHTTP(rec2, req2)
 
 	if rec2.Code != http.StatusOK {
-		t.Fatalf("expected 200 for multipart ImportLogs, got %d: %s", rec2.Code, rec2.Body.String())
+		t.Fatalf("expected 200 for path-based ImportLogs, got %d: %s", rec2.Code, rec2.Body.String())
 	}
 
 	var res2 struct {
