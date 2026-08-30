@@ -132,8 +132,8 @@
 
     <!-- 视图 5：经典日志审计工作台视图 -->
     <div v-show="currentTaskId && (currentViewMode === VIEW_MODE.WORKBENCH || !currentViewMode)" class="workbench-main-view">
-      <!-- 空任务（PENDING 状态）引导卡片 -->
-      <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
+      <!-- 空任务（尚未导入日志）引导卡片 -->
+      <div v-if="isTaskEmpty" class="empty-task-guide">
         <el-card shadow="never" class="guide-card">
           <div class="guide-header">
             <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
@@ -171,16 +171,27 @@
         <!-- 左栏：日志流与动态筛选过滤 (28%) -->
         <div class="col-left">
           <div class="filter-panel">
-            <div class="filter-row">
+            <div class="filter-row" style="gap: 6px;">
               <el-input
-              v-model="filter.keyword"
-              placeholder="搜索报文/简名..."
-              prefix-icon="Search"
-              clearable
-              size="small"
-              @change="onFilterChange"
-            />
-          </div>
+                v-model="filter.keyword"
+                placeholder="搜索报文/简名 (如 RM/ROUTE_DELETE)..."
+                prefix-icon="Search"
+                clearable
+                size="small"
+                @change="onFilterChange"
+                @clear="onFilterChange"
+              />
+              <el-button
+                v-if="hasActiveFilter"
+                size="small"
+                type="info"
+                plain
+                title="重置所有筛选条件"
+                @click="handleResetFilters"
+              >
+                重置
+              </el-button>
+            </div>
           <div class="filter-row">
             <el-select v-model="filter.severity" placeholder="级别过滤" clearable size="small" style="width: 48%;" @change="onFilterChange">
               <el-option label="全部级别" :value="null" />
@@ -250,7 +261,14 @@
               <span v-if="rec.slot_info" class="slot-tag">{{ rec.slot_info }}</span>
             </div>
           </div>
-          <el-empty v-if="!loadingLogs && logRecords.length === 0" description="暂无匹配日志" />
+          <el-empty
+            v-if="!loadingLogs && logRecords.length === 0"
+            :description="hasActiveFilter ? '未找到符合条件的日志' : '暂无匹配日志'"
+          >
+            <el-button v-if="hasActiveFilter" type="primary" size="small" plain @click="handleResetFilters">
+              清空筛选条件
+            </el-button>
+          </el-empty>
         </div>
 
         <div class="pagination-bar">
@@ -1229,6 +1247,30 @@ const fetchTaskDevices = async () => {
   } catch (e) {
     console.error('Fetch task devices failed:', e)
   }
+}
+
+/**
+ * 任务是否尚未导入任何日志数据。
+ * 注意：必须且仅能依据任务本身的元信息（PENDING 状态、总日志行数与文件清单）判定，
+ * 严禁混用根据当前过滤条件返回的 totalLogs 进行判定；否则搜索无匹配结果（totalLogs === 0）时，
+ * 会把正常任务误判为未导入数据，导致工作台被替换且筛选栏消失。
+ */
+const isTaskEmpty = computed(() => {
+  if (!currentTask.value) return false
+  if (currentTask.value.status === 'PENDING') return true
+  if (typeof currentTask.value.log_count === 'number' && currentTask.value.log_count === 0 && taskFiles.value.length === 0) {
+    return true
+  }
+  return false
+})
+
+const hasActiveFilter = computed(() => {
+  return filterStore.activeFilterCount() > 0
+})
+
+const handleResetFilters = async () => {
+  filterStore.resetFilters()
+  await fetchLogs()
 }
 
 const onFilterChange = async () => {

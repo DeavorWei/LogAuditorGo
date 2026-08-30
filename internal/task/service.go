@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -69,6 +70,53 @@ func escapeLikePattern(s string) string {
 	s = strings.ReplaceAll(s, `%`, `\%`)
 	s = strings.ReplaceAll(s, `_`, `\_`)
 	return s
+}
+
+// applyKeywordFilter 统一对任务日志查询应用关键词搜索条件。
+// 支持对原始日志(raw_log)、消息体(message_body)、事件简名(brief)、模块名(module)、
+// 模块/简名组合(module/brief 如 RM/ROUTE_DELETE)以及日志编号(#123)的多维度模糊搜索与精准匹配。
+func applyKeywordFilter(query *gorm.DB, rawKeyword string) *gorm.DB {
+	kw := strings.TrimSpace(rawKeyword)
+	if kw == "" {
+		return query
+	}
+
+	// 1. 支持根据日志编号精准查询，例如 "#123"
+	if strings.HasPrefix(kw, "#") {
+		idStr := strings.TrimPrefix(kw, "#")
+		if idVal, err := strconv.ParseUint(idStr, 10, 64); err == nil {
+			escaped := escapeLikePattern(kw)
+			pattern := "%" + escaped + "%"
+			return query.Where("(id = ? OR raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\' OR brief LIKE ? ESCAPE '\\' OR module LIKE ? ESCAPE '\\' OR (module || '/' || brief) LIKE ? ESCAPE '\\')",
+				idVal, pattern, pattern, pattern, pattern, pattern)
+		}
+	}
+
+	// 2. 如果包含斜杠（例如 RM/ROUTE_DELETE 或 RM / ROUTE_DELETE），
+	// 除了匹配 (module || '/' || brief) 与 raw_log 外，还支持同时匹配模块名与事件简名
+	if strings.Contains(kw, "/") {
+		parts := strings.SplitN(kw, "/", 2)
+		pModule := strings.TrimSpace(parts[0])
+		pBrief := strings.TrimSpace(parts[1])
+		if pModule != "" && pBrief != "" {
+			escMod := escapeLikePattern(pModule)
+			escBrief := escapeLikePattern(pBrief)
+			patMod := "%" + escMod + "%"
+			patBrief := "%" + escBrief + "%"
+
+			escaped := escapeLikePattern(kw)
+			pattern := "%" + escaped + "%"
+
+			return query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\' OR (module || '/' || brief) LIKE ? ESCAPE '\\' OR (module LIKE ? ESCAPE '\\' AND brief LIKE ? ESCAPE '\\'))",
+				pattern, pattern, pattern, patMod, patBrief)
+		}
+	}
+
+	// 3. 通用关键字搜索：同时覆盖原始报文、消息体、简名、模块及 模块/简名
+	escaped := escapeLikePattern(kw)
+	pattern := "%" + escaped + "%"
+	return query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\' OR brief LIKE ? ESCAPE '\\' OR module LIKE ? ESCAPE '\\' OR (module || '/' || brief) LIKE ? ESCAPE '\\')",
+		pattern, pattern, pattern, pattern, pattern)
 }
 
 var invalidFileNameChars = regexp.MustCompile(`[\\/:*?"<>|\r\n\t]+`)
@@ -566,8 +614,7 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 		query = query.Where("(source_file = ? OR source_file LIKE ? ESCAPE '\\')", filter.SourceFile, "%]\\_"+escaped)
 	}
 	if filter.Keyword != "" {
-		escaped := escapeLikePattern(filter.Keyword)
-		query = query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\')", "%"+escaped+"%", "%"+escaped+"%")
+		query = applyKeywordFilter(query, filter.Keyword)
 	}
 	if filter.Matched != nil {
 		if *filter.Matched {
@@ -672,8 +719,7 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 		query = query.Where("(source_file = ? OR source_file LIKE ? ESCAPE '\\')", filter.SourceFile, "%]\\_"+escaped)
 	}
 	if filter.Keyword != "" {
-		escaped := escapeLikePattern(filter.Keyword)
-		query = query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\')", "%"+escaped+"%", "%"+escaped+"%")
+		query = applyKeywordFilter(query, filter.Keyword)
 	}
 	if filter.Matched != nil {
 		if *filter.Matched {
@@ -1547,8 +1593,7 @@ func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLo
 		query = query.Where("severity <= ?", *filter.Severity)
 	}
 	if filter.Keyword != "" {
-		escaped := escapeLikePattern(filter.Keyword)
-		query = query.Where("(raw_log LIKE ? ESCAPE '\\' OR message_body LIKE ? ESCAPE '\\' OR brief LIKE ? ESCAPE '\\')", "%"+escaped+"%", "%"+escaped+"%", "%"+escaped+"%")
+		query = applyKeywordFilter(query, filter.Keyword)
 	}
 	if filter.TimeStart != nil {
 		query = query.Where("timestamp >= ?", *filter.TimeStart)

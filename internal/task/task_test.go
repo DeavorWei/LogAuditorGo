@@ -316,6 +316,7 @@ func TestQueryTaskLogsLikeEscaping(t *testing.T) {
 Apr 15 2026 14:00:01 CORE_SW_01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down 100% loss. (InterfaceName=100GE1/0/1)
 Apr 15 2026 14:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: BFD down with 50% packet drop. (SessionID=10)
 Apr 15 2026 14:00:03 COREXSWX01 %%01BGP/2/PEER_BACKWARD(l)[3]: BGP peer down. (PeerAddress=192.168.1.2)
+Apr 15 2026 14:00:04 ROUTE_SW %%01RM/4/ROUTE_DELETE(l)[4]: The route 10.1.1.0/24 was deleted.
 `
 	taskInfo, err := svc.CreateAndRunTask("Test-Like-Escaping", "CloudEngine", logContent)
 	if err != nil {
@@ -347,6 +348,43 @@ Apr 15 2026 14:00:03 COREXSWX01 %%01BGP/2/PEER_BACKWARD(l)[3]: BGP peer down. (P
 	}
 	if totalBrief != 1 || len(recordsBrief) != 1 {
 		t.Errorf("expected 1 record for IF_DOWN, got total=%d", totalBrief)
+	}
+
+	// 4. 测试以 Module/Brief 格式关键词搜索（如 RM/ROUTE_DELETE），应能正确识别跨字段联合匹配
+	recordsRm, totalRm, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Keyword: "RM/ROUTE_DELETE"})
+	if err != nil {
+		t.Fatalf("query logs with keyword 'RM/ROUTE_DELETE' failed: %v", err)
+	}
+	if totalRm != 1 || len(recordsRm) != 1 || recordsRm[0].Module != "RM" || recordsRm[0].Brief != "ROUTE_DELETE" {
+		t.Errorf("expected 1 record for 'RM/ROUTE_DELETE', got total=%d, len=%d", totalRm, len(recordsRm))
+	}
+
+	// 5. 测试大小写不敏感 Module/Brief 格式搜索（如 rm/route_delete）
+	recordsRmLower, totalRmLower, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Keyword: "rm/route_delete"})
+	if err != nil {
+		t.Fatalf("query logs with keyword 'rm/route_delete' failed: %v", err)
+	}
+	if totalRmLower != 1 || len(recordsRmLower) != 1 {
+		t.Errorf("expected 1 record for 'rm/route_delete', got total=%d, len=%d", totalRmLower, len(recordsRmLower))
+	}
+
+	// 6. 测试 IFNET/IF_DOWN 格式
+	recordsIfnet, totalIfnet, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Keyword: "IFNET/IF_DOWN"})
+	if err != nil {
+		t.Fatalf("query logs with keyword 'IFNET/IF_DOWN' failed: %v", err)
+	}
+	if totalIfnet != 1 || len(recordsIfnet) != 1 {
+		t.Errorf("expected 1 record for 'IFNET/IF_DOWN', got total=%d, len=%d", totalIfnet, len(recordsIfnet))
+	}
+
+	// 7. 测试 #id 格式精准定位（RCA 跳转日志依赖）
+	firstID := recordsIfnet[0].ID
+	recordsByID, totalByID, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Keyword: fmt.Sprintf("#%d", firstID)})
+	if err != nil {
+		t.Fatalf("query logs with keyword '#id' failed: %v", err)
+	}
+	if totalByID != 1 || len(recordsByID) != 1 || recordsByID[0].ID != firstID {
+		t.Errorf("expected 1 record for '#%d', got total=%d", firstID, totalByID)
 	}
 }
 
