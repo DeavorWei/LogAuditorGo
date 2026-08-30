@@ -91,6 +91,16 @@
             >
               全选本页
             </el-button>
+            <el-button
+              v-if="mode === 'dir' || mode === 'both'"
+              size="small"
+              type="primary"
+              plain
+              :disabled="!currentPath"
+              @click="selectCurrentDir"
+            >
+              选择当前目录
+            </el-button>
           </div>
 
           <!--
@@ -166,8 +176,12 @@
 
     <template #footer>
       <el-button @click="dialogVisible = false">取消</el-button>
-      <el-button type="primary" :disabled="!selected.length" @click="confirm">
-        确定 ({{ selected.length }})
+      <el-button
+        type="primary"
+        :disabled="!selected.length && !(mode === 'dir' && currentPath)"
+        @click="confirm"
+      >
+        确定 ({{ selected.length || (mode === 'dir' && currentPath ? 1 : 0) }})
       </el-button>
     </template>
   </el-dialog>
@@ -534,10 +548,24 @@ const clearSelected = () => {
 
 const visibleSelected = computed(() => selected.value.slice(0, 8))
 
+const selectCurrentDir = () => {
+  if (!currentPath.value) return
+  if (!selected.value.includes(currentPath.value)) {
+    if (props.multiple) {
+      selected.value = selected.value.concat(currentPath.value)
+    } else {
+      selected.value = [currentPath.value]
+    }
+  }
+}
+
 // ---------- 提交 ----------
 
 const confirm = () => {
-  const picked = [...selected.value]
+  let picked = [...selected.value]
+  if (picked.length === 0 && (props.mode === 'dir' || props.mode === 'both') && currentPath.value) {
+    picked = [currentPath.value]
+  }
   emit('update:modelValue', picked)
   emit('confirm', picked)
   dialogVisible.value = false

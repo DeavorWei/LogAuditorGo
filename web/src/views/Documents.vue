@@ -15,7 +15,7 @@
             <span class="stats-divider">|</span>
             <span class="stats-item">累计叶子告警: <strong>{{ totalAlarmsCount }}</strong> 条</span>
             <span class="stats-divider">|</span>
-            <span class="stats-desc">支持通过选择本地文件夹或 HDX 压缩包导入并自动跨版本去重</span>
+            <span class="stats-desc">支持选择本地文件夹自动扫描 HDX 压缩包与解压文档并批量入库</span>
           </div>
         </div>
         <div class="header-right">
@@ -41,22 +41,15 @@
         <div class="guide-header">
           <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
           <h3>知识库尚未导入华为官方 HDX 产品文档</h3>
-          <p>请选择以下方式之一，将华为官方 HDX 产品文档导入知识库，系统将自动递归抽取叶子日志/告警并完成跨版本去重与 RCA 拓扑关联：</p>
+          <p>请选择包含华为官方 HDX 文档的本地文件夹，系统将自动递归扫描其下的所有 .hdx 压缩包与解压文档并完成跨版本去重与知识库构建：</p>
         </div>
 
         <div class="guide-actions">
-          <div class="action-tile" @click="openGuidePicker('files')">
-            <el-icon size="32" color="#0284c7"><Files /></el-icon>
-            <h4>选择 HDX 压缩包</h4>
-            <p>直接选择服务端本机上的 .hdx 官方产品文档压缩包，支持多选</p>
-            <el-button type="primary" size="small">选择 HDX 压缩包 (.hdx)</el-button>
-          </div>
-
-          <div class="action-tile" @click="openGuidePicker('dir')">
-            <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-            <h4>选择 HDX 文档目录</h4>
-            <p>选择解压后的 HDX 文档目录，或包含多个文档包的归档父目录</p>
-            <el-button type="success" size="small">选择 HDX 文档目录</el-button>
+          <div class="action-tile action-tile-single" @click="openGuidePicker">
+            <el-icon size="36" color="#0284c7"><FolderAdd /></el-icon>
+            <h4>选择 HDX 文档所在文件夹</h4>
+            <p>支持任意本地文件夹，系统将自动递归扫描目录下的所有 .hdx 压缩包与 profile.xml 解压文档，一键批量入库</p>
+            <el-button type="primary">选择文件夹并开始扫描</el-button>
           </div>
         </div>
       </el-card>
@@ -113,55 +106,152 @@
       </el-table>
     </el-card>
 
-    <!-- 导入 HDX 文档弹窗 -->
-    <el-dialog v-model="showImportDialog" title="导入华为官方 HDX 产品文档知识库" width="640px">
-      <el-tabs v-model="importTab" type="border-card">
-        <!-- 标签页 1: 从本机目录导入 -->
-        <el-tab-pane label="从本机目录导入" name="dir">
-          <div class="path-import-pane">
-            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
-            <div class="pane-title">选择包含 HDX 文档包的目录</div>
-            <p class="pane-desc">
-              目录由服务端进程直接读取，不经过浏览器上传，因此可安全处理数十万文件、数 GB 的超大目录。
-              可一次选择多个目录，系统将自动递归发现其中所有包含 profile.xml 的文档包。
-            </p>
-            <el-button type="success" size="small" @click="openPicker('dir')">选择 HDX 文档目录</el-button>
-          </div>
-        </el-tab-pane>
-
-        <!-- 标签页 2: 从本机 HDX 压缩包导入 -->
-        <el-tab-pane label="从本机压缩包导入" name="files">
-          <div class="path-import-pane">
-            <el-icon size="40" color="#0284c7"><Files /></el-icon>
-            <div class="pane-title">选择一个或多个 .hdx 压缩包</div>
-            <p class="pane-desc">
-              由服务端流式读取包内的日志与告警页面，全程不解压、不占用临时磁盘空间，
-              导入更快，且原始压缩包保持原样。
-            </p>
-            <el-button type="primary" size="small" @click="openPicker('file')">选择 HDX 压缩包 (.hdx)</el-button>
-          </div>
-        </el-tab-pane>
-      </el-tabs>
-
-      <!-- 已选路径清单 -->
-      <div v-if="selectedPaths.length > 0" class="pending-paths-box">
-        <div class="pending-paths-header">
-          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
-          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
+    <!-- 导入 HDX 文档弹窗（统一单页面：选择文件夹自动扫描并导入） -->
+    <el-dialog
+      v-model="showImportDialog"
+      title="导入华为官方 HDX 产品文档知识库"
+      width="780px"
+      destroy-on-close
+    >
+      <div class="import-dialog-content">
+        <!-- 文件夹选择行 -->
+        <div class="folder-select-row">
+          <el-input
+            v-model="selectedFolder"
+            placeholder="输入或粘贴包含 HDX 文档的本地文件夹绝对路径，如 D:\HuaweiHDX..."
+            clearable
+            @keyup.enter="handleScan"
+          >
+            <template #prepend>
+              <el-icon><Folder /></el-icon>
+              <span style="margin-left: 4px;">文件夹</span>
+            </template>
+          </el-input>
+          <el-button type="primary" plain icon="FolderOpened" @click="openServerFolderPicker">
+            浏览文件夹
+          </el-button>
+          <el-button
+            type="primary"
+            icon="Search"
+            :loading="scanning"
+            :disabled="!selectedFolder.trim()"
+            @click="handleScan"
+          >
+            扫描
+          </el-button>
         </div>
-        <div class="pending-paths-list">
-          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
-            <span class="path-value" :title="p">📁 {{ p }}</span>
-            <el-tag v-if="isConflictDocFile(pathBaseName(p))" type="danger" size="small">可能已存在同名/版本</el-tag>
-            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
+
+        <!-- 提示条 -->
+        <div class="folder-select-tip">
+          <el-icon color="#0284c7"><InfoFilled /></el-icon>
+          <span>选择文件夹后，系统将自动递归扫描该目录下的所有 <strong>.hdx 官方压缩包</strong> 与包含 <strong>profile.xml</strong> 的解压文档目录。</span>
+        </div>
+
+        <!-- 扫描结果区域 -->
+        <div class="scan-result-container">
+          <!-- 正在扫描 -->
+          <div v-if="scanning" class="scan-state-box scanning-box">
+            <el-icon class="is-loading" size="32" color="#0284c7"><Loading /></el-icon>
+            <div class="state-title">正在递归扫描文件夹...</div>
+            <div class="state-desc">正在解析目录结构与 HDX 压缩包内的 profile.xml 索引，请稍候</div>
+          </div>
+
+          <!-- 尚未选择或扫描 -->
+          <div v-else-if="!scannedDone" class="scan-state-box unscanned-box">
+            <el-icon size="42" color="#94a3b8"><FolderOpened /></el-icon>
+            <div class="state-title">请选择包含 HDX 文档的文件夹</div>
+            <div class="state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档</div>
+          </div>
+
+          <!-- 扫描完成但未发现文档 -->
+          <div v-else-if="scannedItems.length === 0" class="scan-state-box empty-box">
+            <el-empty description="该文件夹下未检测到包含 profile.xml 的文档目录或 .hdx 压缩包" :image-size="70">
+              <el-button size="small" @click="openServerFolderPicker">重新选择文件夹</el-button>
+            </el-empty>
+          </div>
+
+          <!-- 扫描完成并发现文档列表 -->
+          <div v-else class="scanned-items-view">
+            <!-- 统计摘要与筛选 -->
+            <div class="scan-summary-bar">
+              <div class="summary-left">
+                <span>共发现 <strong>{{ scannedItems.length }}</strong> 个文档包</span>
+                <span class="count-badge archive-badge">{{ archiveCount }} 个压缩包</span>
+                <span class="count-badge dir-badge">{{ dirCount }} 个解压目录</span>
+                <span class="selected-tip">（已勾选 <strong>{{ selectedItems.length }}</strong> 项）</span>
+              </div>
+              <div class="summary-right" v-if="scannedItems.length > 5">
+                <el-input
+                  v-model="scanKeyword"
+                  size="small"
+                  placeholder="过滤文档名/型号/LibID..."
+                  prefix-icon="Search"
+                  clearable
+                  style="width: 180px;"
+                />
+              </div>
+            </div>
+
+            <!-- 扫描条目表格 -->
+            <el-table
+              ref="scanTableRef"
+              :data="filteredScannedItems"
+              size="small"
+              border
+              max-height="300px"
+              @selection-change="handleScanSelectionChange"
+              class="scan-table"
+            >
+              <el-table-column type="selection" width="44" align="center" />
+              <el-table-column label="类型" width="105" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="row.type === 'archive' ? 'primary' : 'success'" size="small">
+                    {{ row.type === 'archive' ? 'HDX 压缩包' : '解压目录' }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="文档信息" min-width="210" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <div class="doc-title-cell">
+                    <span class="doc-name-text">{{ row.lib_name || row.name }}</span>
+                    <div class="doc-meta-sub" v-if="row.lib_id || row.product_type">
+                      <span v-if="row.lib_id" class="meta-tag">{{ row.lib_id }}</span>
+                      <span v-if="row.product_type" class="meta-tag product-tag">{{ row.product_type }}</span>
+                      <span v-if="row.product_version" class="meta-tag ver-tag">{{ row.product_version }}</span>
+                    </div>
+                  </div>
+                </template>
+              </el-table-column>
+              <el-table-column prop="path" label="路径 / 文件名" min-width="170" show-overflow-tooltip>
+                <template #default="{ row }">
+                  <span class="path-cell-text" :title="row.path">{{ pathBaseName(row.path) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="大小" width="85" align="right">
+                <template #default="{ row }">
+                  <span style="color: #64748b; font-size: 11px;">{{ formatSize(row.size) }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="状态" width="110" align="center">
+                <template #default="{ row }">
+                  <el-tag v-if="row.exists_in_kb" type="warning" size="small" effect="plain">已入库同名/版本</el-tag>
+                  <el-tag v-else type="success" size="small" effect="plain">全新文档</el-tag>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
         </div>
       </div>
 
       <template #footer>
         <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!selectedPaths.length" @click="handleCheckAndStartImport">
-          开始导入并入库
+        <el-button
+          type="primary"
+          :loading="submitting"
+          :disabled="!selectedItems.length || scanning"
+          @click="handleCheckAndStartImport"
+        >
+          开始导入并入库 ({{ selectedItems.length }})
         </el-button>
       </template>
     </el-dialog>
@@ -170,7 +260,7 @@
     <el-dialog v-model="showConflictDialog" title="⚠️ 检测到已有同名/已导入文档" width="540px">
       <div class="conflict-dialog-body">
         <p style="margin-bottom: 12px; line-height: 1.6; color: #334155;">
-          知识库中已存在以下 <strong>{{ conflictingFileNames.length }}</strong> 个可能重名的文档：
+          所选文档中有 <strong>{{ conflictingFileNames.length }}</strong> 个在知识库中可能已存在同名或同版本记录：
         </p>
         <div class="conflict-file-list">
           <div v-for="name in conflictingFileNames" :key="name" class="conflict-item">
@@ -200,42 +290,53 @@
       @completed="handleImportCompleted"
     />
 
-    <!-- 服务端本地路径选择器（文档导入专用） -->
+    <!-- 服务端本地路径选择器（目录选择） -->
     <ServerPathPicker
-      v-model="selectedPaths"
       v-model:visible="showPathPicker"
-      :mode="pickerMode"
-      :exts="pickerMode === 'file' ? hdxExts : []"
-      :multiple="true"
+      mode="dir"
+      :multiple="false"
       favorite-key="hdx-documents"
-      :title="pickerMode === 'dir' ? '选择 HDX 文档目录' : '选择 HDX 压缩包'"
+      title="选择包含 HDX 文档的文件夹"
+      @confirm="onPathPickerConfirm"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, Close, Search, Refresh, Upload } from '@element-plus/icons-vue'
+import {
+  FolderOpened,
+  FolderAdd,
+  Folder,
+  Search,
+  Refresh,
+  Upload,
+  InfoFilled,
+  Loading
+} from '@element-plus/icons-vue'
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
-import { formatTime as sharedFormatTime } from '@/utils/format'
+import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
 
 const loading = ref(false)
 const docList = ref([])
 const searchKeyword = ref('')
 
-// 导入相关状态
+// 统一导入弹窗相关状态
 const showImportDialog = ref(false)
-const importTab = ref('dir')
+const selectedFolder = ref('')
+const scanning = ref(false)
+const scannedDone = ref(false)
+const scannedItems = ref([])
+const selectedItems = ref([])
+const scanKeyword = ref('')
+const scanTableRef = ref(null)
 const submitting = ref(false)
 
-// 服务端本地路径选择相关
-const selectedPaths = ref([])
+// 服务端本地目录选择器弹窗
 const showPathPicker = ref(false)
-const pickerMode = ref('dir')
-const hdxExts = ['.hdx']
 
 // 进度追踪相关
 const showProgressModal = ref(false)
@@ -252,6 +353,25 @@ const totalLogsCount = computed(() => {
 
 const totalAlarmsCount = computed(() => {
   return docList.value.reduce((sum, d) => sum + (d.alarm_count || 0), 0)
+})
+
+const archiveCount = computed(() => {
+  return scannedItems.value.filter(i => i.type === 'archive').length
+})
+
+const dirCount = computed(() => {
+  return scannedItems.value.filter(i => i.type === 'directory').length
+})
+
+const filteredScannedItems = computed(() => {
+  if (!scanKeyword.value.trim()) return scannedItems.value
+  const kw = scanKeyword.value.trim().toLowerCase()
+  return scannedItems.value.filter(i =>
+    (i.name && i.name.toLowerCase().includes(kw)) ||
+    (i.lib_name && i.lib_name.toLowerCase().includes(kw)) ||
+    (i.lib_id && i.lib_id.toLowerCase().includes(kw)) ||
+    (i.product_type && i.product_type.toLowerCase().includes(kw))
+  )
 })
 
 const filteredDocList = computed(() => {
@@ -277,29 +397,72 @@ const fetchDocs = async () => {
   }
 }
 
-// 导入弹窗打开与重置
+// 导入弹窗打开
 const openImportDialog = () => {
-  selectedPaths.value = []
-  importTab.value = 'dir'
   showImportDialog.value = true
 }
 
-// 打开服务端本地路径选择器（dir: 目录模式，file: .hdx 压缩包模式）
-const openPicker = mode => {
-  pickerMode.value = mode
-  importTab.value = mode
+// 引导区域快捷触发：打开导入弹窗并直接拉起路径选择器
+const openGuidePicker = () => {
+  showImportDialog.value = true
+  openServerFolderPicker()
+}
+
+// 打开目录选择器
+const openServerFolderPicker = () => {
   showPathPicker.value = true
 }
 
-// 引导区域快捷触发：直接拉起对应模式的路径选择器
-const openGuidePicker = mode => {
-  selectedPaths.value = []
-  showImportDialog.value = true
-  openPicker(mode)
+// 目录选择器确认回调：填入输入框并自动触发扫描
+const onPathPickerConfirm = paths => {
+  if (paths && paths.length > 0) {
+    selectedFolder.value = paths[0]
+    handleScan()
+  }
 }
 
-const removePath = index => {
-  selectedPaths.value.splice(index, 1)
+// 触发扫描
+const handleScan = async () => {
+  const folder = selectedFolder.value.trim()
+  if (!folder) {
+    ElMessage.warning('请输入或选择本地文件夹路径')
+    return
+  }
+
+  scanning.value = true
+  scannedDone.value = false
+  scannedItems.value = []
+  selectedItems.value = []
+  scanKeyword.value = ''
+
+  try {
+    const res = await api.scanHDXDocuments(folder)
+    if (res.code === 0) {
+      const items = res.data?.items || []
+      scannedItems.value = items
+      scannedDone.value = true
+
+      // 默认全选扫描到的有效条目
+      nextTick(() => {
+        if (scanTableRef.value) {
+          items.forEach(row => {
+            scanTableRef.value.toggleRowSelection(row, true)
+          })
+        }
+      })
+
+      if (items.length === 0) {
+        ElMessage.info('该文件夹下未检测到包含 profile.xml 的文档目录或 .hdx 压缩包')
+      }
+    }
+  } finally {
+    scanning.value = false
+  }
+}
+
+// 表格多选变动回调
+const handleScanSelectionChange = selection => {
+  selectedItems.value = selection
 }
 
 // 取路径的末级名称（兼容 Windows 与 Unix 分隔符）
@@ -309,29 +472,18 @@ const pathBaseName = p => {
   return segs.length ? segs[segs.length - 1] : p
 }
 
-// 判断待上传文件是否与已导入文档冲突
-const isConflictDocFile = (fileName) => {
-  const cleanName = fileName.replace(/\.hdx$/i, '').toLowerCase()
-  return docList.value.some(d => {
-    const libIdMatch = d.lib_id && cleanName.includes(d.lib_id.toLowerCase())
-    const libNameMatch = d.lib_name && cleanName.includes(d.lib_name.toLowerCase())
-    return libIdMatch || libNameMatch
-  })
-}
-
 // 检查冲突并启动导入
 const handleCheckAndStartImport = () => {
-  if (selectedPaths.value.length === 0) {
-    ElMessage.warning('请选择至少一个 HDX 文档目录或压缩包')
+  if (selectedItems.value.length === 0) {
+    ElMessage.warning('请勾选至少一个待导入的文档包')
     return
   }
 
-  // 检查是否有同名/重叠冲突文档
+  // 检查是否有同名/已存在冲突文档
   const conflicts = []
-  for (const p of selectedPaths.value) {
-    const name = pathBaseName(p)
-    if (isConflictDocFile(name)) {
-      conflicts.push(name)
+  for (const item of selectedItems.value) {
+    if (item.exists_in_kb) {
+      conflicts.push(item.lib_name || item.name)
     }
   }
 
@@ -343,16 +495,18 @@ const handleCheckAndStartImport = () => {
   }
 }
 
-// 执行导入：仅提交路径，由服务端直接读取并解析，走全流程阶段进度追踪
-const executeImportWithConflict = async (conflictMode) => {
+// 执行导入：提交选中的文件/目录路径
+const executeImportWithConflict = async conflictMode => {
   submitting.value = true
   showConflictDialog.value = false
 
+  const pathsToImport = selectedItems.value.map(i => i.path)
+
   try {
-    const res = await api.importDocumentsByPaths(selectedPaths.value, conflictMode, true)
+    const res = await api.importDocumentsByPaths(pathsToImport, conflictMode, true)
     if (res.code === 0) {
       showImportDialog.value = false
-      selectedPaths.value = []
+      selectedItems.value = []
 
       // 开启全流程阶段进度实时追踪
       if (res.data?.job_id) {
@@ -369,12 +523,12 @@ const executeImportWithConflict = async (conflictMode) => {
 }
 
 // 导入完成回调，平滑刷新列表
-const handleImportCompleted = (result) => {
+const handleImportCompleted = result => {
   showImportSuccessFeedback(result)
   fetchDocs()
 }
 
-const showImportSuccessFeedback = (stats) => {
+const showImportSuccessFeedback = stats => {
   if (!stats) {
     ElMessage.success('导入完成！')
     return
@@ -397,7 +551,7 @@ const showImportSuccessFeedback = (stats) => {
   }
 }
 
-const handleDelete = async (id) => {
+const handleDelete = async id => {
   try {
     const res = await api.deleteDocument(id)
     if (res.code === 0) {
@@ -407,8 +561,8 @@ const handleDelete = async (id) => {
   } catch (e) {}
 }
 
-// WEB-16: 复用统一实现（同时补齐 Go time.Time 零值保护）
 const formatTime = sharedFormatTime
+const formatSize = bytes => sharedFormatSize(bytes, '')
 
 onMounted(() => {
   fetchDocs()
@@ -497,142 +651,199 @@ onMounted(() => {
 
 .guide-actions {
   display: flex;
-  gap: 20px;
   justify-content: center;
-  padding: 16px 20px 24px 20px;
+  padding: 12px 20px 24px 20px;
 }
 
-.action-tile {
-  flex: 1;
-  max-width: 320px;
+.action-tile-single {
+  width: 100%;
+  max-width: 480px;
   background: #fff;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 20px 16px;
+  padding: 24px 20px;
   text-align: center;
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: space-between;
 }
 
-.action-tile:hover {
+.action-tile-single:hover {
   border-color: #0284c7;
-  box-shadow: 0 4px 12px rgba(2, 132, 199, 0.12);
+  box-shadow: 0 4px 14px rgba(2, 132, 199, 0.12);
   transform: translateY(-2px);
 }
 
-.action-tile h4 {
-  font-size: 15px;
+.action-tile-single h4 {
+  font-size: 16px;
   color: #0f172a;
-  margin: 10px 0 6px 0;
+  margin: 12px 0 6px 0;
 }
 
-.action-tile p {
+.action-tile-single p {
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+/* 统一导入弹窗样式 */
+.import-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.folder-select-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.folder-select-row .el-input {
+  flex: 1;
+}
+
+.folder-select-tip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: #64748b;
-  line-height: 1.4;
-  margin-bottom: 14px;
-  min-height: 34px;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+  border-radius: 6px;
+  padding: 6px 12px;
 }
 
-/* 导入弹窗样式 */
-.path-import-pane {
+.scan-result-container {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
-  padding: 24px 20px;
-  text-align: center;
   background: #f8fafc;
+  min-height: 240px;
+  display: flex;
+  flex-direction: column;
 }
 
-.pane-title {
+.scan-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 20px;
+  text-align: center;
+  flex: 1;
+}
+
+.state-title {
   font-size: 14px;
   font-weight: 600;
   color: #1e293b;
-  margin: 10px 0 6px 0;
+  margin-top: 12px;
 }
 
-.pane-desc {
+.state-desc {
   font-size: 12px;
   color: #64748b;
-  line-height: 1.7;
-  margin: 0 auto 14px auto;
-  max-width: 470px;
+  margin-top: 4px;
+  max-width: 420px;
+  line-height: 1.5;
 }
 
-/* 已选路径清单 */
-.pending-paths-box {
-  margin-top: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 10px 12px;
-  background: #f8fafc;
+.scanned-items-view {
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  gap: 10px;
 }
 
-.pending-paths-header {
+.scan-summary-bar {
   display: flex;
   justify-content: space-between;
   align-items: center;
   font-size: 13px;
   color: #334155;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #e2e8f0;
+  padding: 4px 4px;
 }
 
-.pending-paths-list {
-  max-height: 160px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pending-path-item {
+.summary-left {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  background: #fff;
-  padding: 5px 8px;
-  border-radius: 4px;
-  border: 1px solid #e2e8f0;
 }
 
-.pending-path-item .path-value {
-  flex: 1;
-  font-weight: 500;
-  color: #1e293b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pending-path-item .del-btn {
-  color: #94a3b8;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.pending-path-item .del-btn:hover {
-  color: #ef4444;
-}
-
-.pending-file-item .file-size {
-  color: #94a3b8;
+.count-badge {
   font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 500;
 }
 
-.pending-file-item .del-btn {
-  cursor: pointer;
-  color: #94a3b8;
-  transition: color 0.2s;
+.archive-badge {
+  background: #e0f2fe;
+  color: #0369a1;
 }
 
-.pending-file-item .del-btn:hover {
-  color: #ef4444;
+.dir-badge {
+  background: #dcfce7;
+  color: #15803d;
+}
+
+.selected-tip {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.scan-table {
+  border-radius: 6px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.doc-title-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.doc-name-text {
+  font-weight: 600;
+  color: #0284c7;
+  line-height: 1.3;
+}
+
+.doc-meta-sub {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.meta-tag {
+  font-size: 10px;
+  font-family: monospace;
+  background: #f1f5f9;
+  color: #475569;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+
+.product-tag {
+  background: #f0fdf4;
+  color: #166534;
+}
+
+.ver-tag {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.path-cell-text {
+  color: #334155;
+  font-family: monospace;
+  font-size: 12px;
 }
 
 /* 冲突弹窗 */

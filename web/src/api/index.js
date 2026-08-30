@@ -122,6 +122,12 @@ export default {
   getDocuments() {
     return request.get('/documents')
   },
+  // 智能扫描目录下的 HDX 压缩包与 profile.xml 文档目录
+  scanHDXDocuments(paths) {
+    return request.post('/documents/scan', {
+      paths: Array.isArray(paths) ? paths : [paths]
+    }, withTimeout(60000))
+  },
   // 按服务端本地路径导入 HDX 文档（支持一次提交多个目录或压缩包路径）
   importDocumentsByPaths(paths, conflictMode = 'overwrite', isAsync = true) {
     return request.post('/documents/import-dir', {

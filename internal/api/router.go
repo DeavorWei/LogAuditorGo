@@ -132,7 +132,8 @@ func SetupRouter(
 		// KB-01: 索引健康状态（静态路径，避免与 /knowledge/:id 通配路由冲突）
 		v1.GET("/system/knowledge-index/status", knowHandler.GetIndexStatus)
 
-		// 文档管理（服务端本地路径导入）
+		// 文档管理（服务端本地路径导入与目录智能扫描）
+		v1.POST("/documents/scan", docHandler.ScanDir)
 		v1.POST("/documents/import-dir", docHandler.ImportDir)
 		v1.GET("/documents", docHandler.ListDocuments)
 		v1.DELETE("/documents/:id", docHandler.DeleteDocument)

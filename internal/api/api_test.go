@@ -487,7 +487,47 @@ func TestFolderWithMultipleHDXImport(t *testing.T) {
 	writeTestFile(t, filepath.Join(unzipped, "resources", "log3.html"),
 		`<html><body><h2>日志信息</h2><p>BGP down</p></body></html>`)
 
-	// 直接将父目录路径提交给服务端，由服务端递归发现其中所有文档包
+	// 写入一个真实的 .hdx 压缩包文件到 docRoot
+	zipArchiveBytes := createMockHDXZip(t, "DOC_ARCHIVE_04", "Switch-D", "V400R004C00")
+	if err := os.WriteFile(filepath.Join(docRoot, "Switch_D.hdx"), zipArchiveBytes, 0644); err != nil {
+		t.Fatalf("write Switch_D.hdx failed: %v", err)
+	}
+
+	// 1. 测试 POST /api/v1/documents/scan 智能扫描接口
+	scanPayload, _ := json.Marshal(map[string]interface{}{
+		"path": docRoot,
+	})
+	scanReq, _ := http.NewRequest("POST", "/api/v1/documents/scan", bytes.NewReader(scanPayload))
+	scanReq.Header.Set("Content-Type", "application/json")
+	scanRec := httptest.NewRecorder()
+	router.ServeHTTP(scanRec, scanReq)
+
+	if scanRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for document scan, got %d: %s", scanRec.Code, scanRec.Body.String())
+	}
+
+	var scanRes struct {
+		Code int `json:"code"`
+		Data struct {
+			TotalCount     int `json:"total_count"`
+			ArchiveCount   int `json:"archive_count"`
+			DirectoryCount int `json:"directory_count"`
+			Items          []struct {
+				Type string `json:"type"`
+				Name string `json:"name"`
+				Path string `json:"path"`
+			} `json:"items"`
+		} `json:"data"`
+	}
+	json.Unmarshal(scanRec.Body.Bytes(), &scanRes)
+	if scanRes.Code != 0 || scanRes.Data.TotalCount != 4 {
+		t.Fatalf("expected 4 scanned items (1 archive + 3 dirs), got %+v", scanRes)
+	}
+	if scanRes.Data.ArchiveCount != 1 || scanRes.Data.DirectoryCount != 3 {
+		t.Fatalf("expected 1 archive and 3 directories, got archive=%d, dir=%d", scanRes.Data.ArchiveCount, scanRes.Data.DirectoryCount)
+	}
+
+	// 2. 直接将父目录路径提交给服务端，由服务端递归发现并一次性导入其中所有文档包（含压缩包与解压目录）
 	payload, _ := json.Marshal(map[string]interface{}{
 		"paths":         []string{docRoot},
 		"conflict_mode": "overwrite",
@@ -509,8 +549,8 @@ func TestFolderWithMultipleHDXImport(t *testing.T) {
 		} `json:"data"`
 	}
 	json.Unmarshal(rec.Body.Bytes(), &res)
-	if res.Code != 0 || len(res.Data.ImportedDocs) != 3 {
-		t.Fatalf("expected 3 imported documents (2 .hdx archives + 1 unzipped directory), got %+v", res)
+	if res.Code != 0 || len(res.Data.ImportedDocs) != 4 {
+		t.Fatalf("expected 4 imported documents (1 .hdx archive + 3 unzipped directories), got %+v", res)
 	}
 }
 

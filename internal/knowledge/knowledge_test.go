@@ -327,10 +327,12 @@ func TestBatchKnowledgeQueries(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "batch_query_knowledge.db")
+	_ = storage.CloseKnowledgeDB()
 	db, err := storage.InitKnowledgeDB(dbPath)
 	if err != nil {
 		t.Fatalf("init test db failed: %v", err)
 	}
+	defer storage.CloseKnowledgeDB()
 
 	service := knowledge.NewService(db)
 

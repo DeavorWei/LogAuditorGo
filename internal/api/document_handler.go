@@ -26,6 +26,53 @@ func NewDocumentHandler(knowledgeSvc *knowledge.Service) *DocumentHandler {
 	}
 }
 
+// ScanDir 扫描服务端本地的一个或多个目录或路径，识别其中包含的 .hdx 压缩包与 profile.xml 文档包
+func (h *DocumentHandler) ScanDir(c *gin.Context) {
+	var req struct {
+		DirPath string   `json:"dir_path"`
+		Path    string   `json:"path"`
+		Paths   []string `json:"paths"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request: "+err.Error())
+		return
+	}
+
+	targets := make([]string, 0, len(req.Paths)+2)
+	if p := strings.TrimSpace(req.DirPath); p != "" {
+		targets = append(targets, p)
+	}
+	if p := strings.TrimSpace(req.Path); p != "" {
+		targets = append(targets, p)
+	}
+	for _, p := range req.Paths {
+		if p = strings.TrimSpace(p); p != "" {
+			targets = append(targets, p)
+		}
+	}
+	if len(targets) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "path, dir_path or paths is required")
+		return
+	}
+	if len(targets) > maxImportPaths {
+		ErrorResponse(c, http.StatusBadRequest, -1, fmt.Sprintf("too many paths, limit is %d", maxImportPaths))
+		return
+	}
+
+	// ARCH-02: 根目录白名单校验
+	if !guardPaths(c, targets) {
+		return
+	}
+
+	res, err := h.knowledgeSvc.ScanHDXPaths(targets)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Scan failed: "+err.Error())
+		return
+	}
+
+	SuccessResponse(c, res, "Scan completed successfully")
+}
+
 // ImportDir 从服务端本地的一个或多个目录导入 HDX 文档
 // 支持全流程阶段进度实时追踪及异步模式，浏览器只传递路径字符串，不传输文件内容
 func (h *DocumentHandler) ImportDir(c *gin.Context) {

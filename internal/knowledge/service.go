@@ -211,7 +211,19 @@ func (s *Service) prepareImportTargets(paths []string, tr *progress.JobTracker) 
 			continue
 		}
 		if info.IsDir() {
-			dirs = append(dirs, clean)
+			// 智能递归扫描：自动发现该目录下的所有 .hdx 压缩包与 profile.xml 解压文档包
+			scanRes, scanErr := hdx.ScanHDXDirectory(clean)
+			if scanErr != nil || scanRes.TotalCount == 0 {
+				dirs = append(dirs, clean)
+				continue
+			}
+			for _, item := range scanRes.Items {
+				if item.Type == "archive" {
+					archives = append(archives, item.Path)
+				} else {
+					dirs = append(dirs, item.Path)
+				}
+			}
 			continue
 		}
 		if isArchiveFile(clean) {
@@ -1049,6 +1061,33 @@ func (s *Service) GetDocumentList() ([]model.Document, error) {
 	var docs []model.Document
 	err := s.db.Order("imported_at desc").Find(&docs).Error
 	return docs, err
+}
+
+// ScanHDXPaths 扫描指定路径列表（目录或文件）下的 HDX 文档包与压缩包，并比对知识库判断是否已存在
+func (s *Service) ScanHDXPaths(paths []string) (*hdx.ScanResult, error) {
+	res, err := hdx.ScanHDXPaths(paths)
+	if err != nil {
+		return nil, err
+	}
+
+	existingDocs, err := s.GetDocumentList()
+	if err == nil && len(existingDocs) > 0 {
+		for i := range res.Items {
+			item := &res.Items[i]
+			for _, doc := range existingDocs {
+				if item.LibID != "" && strings.EqualFold(doc.LibID, item.LibID) {
+					item.ExistsInKB = true
+					break
+				}
+				if item.Name != "" && (strings.EqualFold(doc.LibName, item.Name) || strings.EqualFold(filepath.Base(doc.FilePath), item.Name)) {
+					item.ExistsInKB = true
+					break
+				}
+			}
+		}
+	}
+
+	return res, nil
 }
 
 // GetKnowledgeByID 根据 ID 获取单条知识详情
