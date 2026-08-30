@@ -150,18 +150,39 @@
       </el-card>
     </template>
 
+    <!--
+      UI-15: 原实现只有 loading 态与空态，请求失败时完全静默，
+      用户看到的是"空态"而不是"出错了"，会误以为任务真的没有数据。
+      这里区分失败态与空态，并给空态补上可执行的引导操作。
+    -->
+    <el-result
+      v-else-if="errorMessage"
+      icon="error"
+      title="多设备报告加载失败"
+      :sub-title="errorMessage"
+    >
+      <template #extra>
+        <el-button type="primary" @click="fetchReport">重试</el-button>
+      </template>
+    </el-result>
+
     <el-empty
       v-else-if="!loading"
       description="暂无多设备报告数据，请确保任务已配置设备并导入日志"
-    />
+    >
+      <el-button type="primary" @click="fetchReport">重新加载</el-button>
+      <el-button @click="$emit('go-devices')">前往设备管理</el-button>
+    </el-empty>
   </div>
 </template>
 
 <script setup>
-import { ref, onMounted, defineProps, watch } from 'vue'
+// UI-16: defineProps 是编译器宏，无需从 vue 导入
+import { ref, onMounted, watch } from 'vue'
 import { Aim, Monitor, Connection } from '@element-plus/icons-vue'
 import api from '@/api'
 import { ElMessage } from 'element-plus'
+import { useRequest } from '@/composables/useRequest'
 
 const props = defineProps({
   taskId: {
@@ -172,17 +193,30 @@ const props = defineProps({
 
 const loading = ref(false)
 const reportData = ref(null)
+// UI-15: 显式记录失败原因，让"空态"与"错误态"不再混为一谈
+const errorMessage = ref('')
+
+const emit = defineEmits(['go-devices'])
+
+/**
+ * WEB-08: 用 useRequest 包裹多设备报告请求，避免 taskId 频繁切换时
+ * 旧任务的报告覆盖新任务的报告。
+ */
+const { run: runFetchReport } = useRequest(api.getMultiDeviceReport, {
+  // UI-15: 把失败原因落到组件状态上，渲染"可重试"的错误态而不是静默的空态
+  onError: (e) => {
+    errorMessage.value = e?.message || '请求失败，请稍后重试'
+  }
+})
 
 const fetchReport = async () => {
   if (!props.taskId) return
   loading.value = true
+  errorMessage.value = ''
   try {
-    const res = await api.getMultiDeviceReport(props.taskId, [])
-    if (res.code === 0) {
-      reportData.value = res.data
-    }
-  } catch (e) {
-    console.error('Fetch multi device report failed:', e)
+    const res = await runFetchReport(props.taskId, [])
+    if (!res || res.code !== 0) return
+    reportData.value = res.data
   } finally {
     loading.value = false
   }
@@ -210,6 +244,11 @@ watch(() => props.taskId, (newVal) => {
 
 onMounted(() => {
   fetchReport()
+})
+
+// 供父组件主动刷新（替代 :key 强制重挂载，避免丢失展开状态与滚动位置）
+defineExpose({
+  refresh: fetchReport
 })
 </script>
 

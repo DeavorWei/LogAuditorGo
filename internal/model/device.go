@@ -32,8 +32,15 @@ type MultiDeviceLogFilter struct {
 	TimeStart  *time.Time `json:"time_start"`  // 开始时间
 	TimeEnd    *time.Time `json:"time_end"`    // 结束时间
 	Page       int        `json:"page"`        // 分页页码
-	PageSize   int        `json:"page_size"`   // 每页数量 (-1 表示导出全量)
+	PageSize   int        `json:"page_size"`   // 每页数量 (<=0 表示导出全量，受服务端硬上限约束)
 	AscOrder   bool       `json:"asc_order"`   // 是否按时间升序排列 (时间线通常需要升序)
+
+	// IncludeUnassigned 是否包含"未归属设备"(device_id = 0) 的日志 (DEV-10)。
+	//
+	// nil 或 true：保留——产品决策要求未归属日志在多设备视图中仍然可见，
+	//              运维正是靠它发现归属遗漏；
+	// false：追加 `device_id > 0` 过滤，只统计已归属设备。
+	IncludeUnassigned *bool `json:"include_unassigned"`
 }
 
 // DeviceTimelineEvent 多设备时间线合并事件项

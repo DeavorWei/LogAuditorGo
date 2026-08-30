@@ -68,9 +68,20 @@ type RotatingFileWriter struct {
 	file          *os.File
 	currentSize   int64
 	maxSingleSize int64
-	maxSizeMB     int
-	maxDays       int
-	isClosed      bool
+
+	// cleanTrigger / cleanDone 用于把"日志留存清理"串行化到单个常驻 goroutine (ARCH-18)。
+	//
+	// 原实现在构造时与每次轮转后各 `go w.CleanOldLogs()`：
+	// 高频轮转场景下 goroutine 会短暂堆积，
+	// 更严重的是停机瞬间可能与 shutdown 竞态删除文件。
+	// 改为 Start()/Stop() 显式管理的单协程 + channel 模型。
+	cleanTrigger chan struct{}
+	cleanDone    chan struct{}
+	cleanOnce    sync.Once
+
+	maxSizeMB int
+	maxDays   int
+	isClosed  bool
 }
 
 func init() {
@@ -130,11 +141,60 @@ func NewRotatingFileWriter(dir string, maxSizeMB, maxDays int) (*RotatingFileWri
 	}
 	w.file = file
 	w.currentSize = 0
+	w.cleanTrigger = make(chan struct{}, 1)
+	w.cleanDone = make(chan struct{})
 
-	// 启动时触发一次留存规则清理
-	go w.CleanOldLogs()
+	// ARCH-18: 启动唯一的常驻清理协程，并立即触发一次留存规则清理
+	go w.cleanLoop()
+	w.triggerClean()
 
 	return w, nil
+}
+
+// cleanLoop 常驻清理协程：串行消费清理请求，收到停止信号后退出 (ARCH-18)
+func (w *RotatingFileWriter) cleanLoop() {
+	defer close(w.cleanDone)
+	for range w.cleanTrigger {
+		w.CleanOldLogs()
+	}
+}
+
+// triggerClean 以非阻塞方式投递一次清理请求（重复投递会被合并，避免协程堆积）
+func (w *RotatingFileWriter) triggerClean() {
+	select {
+	case w.cleanTrigger <- struct{}{}:
+	default:
+	}
+}
+
+// Stop 停止清理协程并关闭底层日志文件。
+//
+// ARCH-18: 必须保证"清理协程先退出、再关闭文件句柄"的顺序，
+// 否则停机瞬间可能出现"一边删归档、一边写日志"的竞态。
+func (w *RotatingFileWriter) Stop() {
+	if w == nil {
+		return
+	}
+
+	w.cleanOnce.Do(func() {
+		if w.cleanTrigger != nil {
+			close(w.cleanTrigger)
+		}
+		if w.cleanDone != nil {
+			<-w.cleanDone
+		}
+	})
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.isClosed || w.file == nil {
+		w.isClosed = true
+		return
+	}
+	_ = w.file.Sync()
+	_ = w.file.Close()
+	w.file = nil
+	w.isClosed = true
 }
 
 // resolveCollision 处理归档文件名重复冲突，若存在同名文件则递增后缀
@@ -241,8 +301,8 @@ func (w *RotatingFileWriter) rotateLocked() error {
 	w.file = file
 	w.currentSize = 0
 
-	// 异步执行留存自动清理
-	go w.CleanOldLogs()
+	// 异步执行留存自动清理（由常驻协程串行处理，不再每次轮转都新建 goroutine）
+	w.triggerClean()
 
 	return nil
 }
@@ -441,31 +501,50 @@ func parseZapLevel(levelStr string) zapcore.Level {
 }
 
 // InitWithConfig 完整配置初始化日志系统
+// loggerState 保存重建 logger 所需的运行时状态，用于支持运行时切换格式 (ARCH-13)
+type loggerState struct {
+	mu     sync.Mutex
+	config Config
+}
+
+var currentLoggerState loggerState
+
+// buildEncoder 依据格式名构造控制台 / 文件编码器
+func buildEncoder(format string) (console zapcore.Encoder, file zapcore.Encoder) {
+	consoleCfg := zap.NewProductionEncoderConfig()
+	consoleCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	consoleCfg.EncodeLevel = zapcore.CapitalColorLevelEncoder
+
+	// 文件日志使用非颜色编码器，避免 ANSI 转义序列污染离线日志文件
+	fileCfg := zap.NewProductionEncoderConfig()
+	fileCfg.EncodeTime = zapcore.ISO8601TimeEncoder
+	fileCfg.EncodeLevel = zapcore.CapitalLevelEncoder
+
+	if strings.EqualFold(strings.TrimSpace(format), "json") {
+		return zapcore.NewJSONEncoder(consoleCfg), zapcore.NewJSONEncoder(fileCfg)
+	}
+	return zapcore.NewConsoleEncoder(consoleCfg), zapcore.NewConsoleEncoder(fileCfg)
+}
+
+// normalizeFormat 归一化日志格式名，未知值回退为 console
+func normalizeFormat(format string) string {
+	if strings.EqualFold(strings.TrimSpace(format), "json") {
+		return "json"
+	}
+	return "console"
+}
+
 func InitWithConfig(cfg Config) *zap.SugaredLogger {
+	currentLoggerState.mu.Lock()
+	defer currentLoggerState.mu.Unlock()
+
+	cfg.Format = normalizeFormat(cfg.Format)
+	currentLoggerState.config = cfg
+
 	level := parseZapLevel(cfg.Level)
 	globalAtomicLevel = zap.NewAtomicLevelAt(level)
 
-	encoderConfig := zap.NewProductionEncoderConfig()
-	encoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	encoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-
-	var consoleEncoder zapcore.Encoder
-	if cfg.Format == "json" {
-		consoleEncoder = zapcore.NewJSONEncoder(encoderConfig)
-	} else {
-		consoleEncoder = zapcore.NewConsoleEncoder(encoderConfig)
-	}
-
-	// 文件日志使用非颜色编码器
-	fileEncoderConfig := zap.NewProductionEncoderConfig()
-	fileEncoderConfig.EncodeTime = zapcore.ISO8601TimeEncoder
-	fileEncoderConfig.EncodeLevel = zapcore.CapitalLevelEncoder
-	var fileEncoder zapcore.Encoder
-	if cfg.Format == "json" {
-		fileEncoder = zapcore.NewJSONEncoder(fileEncoderConfig)
-	} else {
-		fileEncoder = zapcore.NewConsoleEncoder(fileEncoderConfig)
-	}
+	consoleEncoder, fileEncoder := buildEncoder(cfg.Format)
 
 	// 初始化轮转文件写入器
 	var cores []zapcore.Core
@@ -479,6 +558,10 @@ func InitWithConfig(cfg Config) *zap.SugaredLogger {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "[Logger Init Error] %v\n", err)
 		} else {
+			// 避免重复初始化时遗留上一个 writer 的清理协程 (ARCH-18)
+			if globalWriter != nil {
+				globalWriter.Stop()
+			}
 			globalWriter = writer
 			cores = append(cores, zapcore.NewCore(fileEncoder, zapcore.AddSync(writer), globalAtomicLevel))
 		}
@@ -488,6 +571,59 @@ func InitWithConfig(cfg Config) *zap.SugaredLogger {
 	logger := zap.New(teeCore, zap.AddCaller())
 	Log = logger.Sugar()
 	return Log
+}
+
+// SetFormat 运行时切换日志编码格式 (ARCH-13)。
+//
+// 原实现的 `RegisterLogUpdateHook(func(..., format string) {...})` 里 format 形参从未被使用：
+// `PUT /system/config/log` 接受并持久化了 format，但下一次重启前完全不生效，
+// 用户误以为已经切到了 JSON 日志。
+// 这里复用 zap.AtomicLevel，只重建 encoder 而不重建写入器，
+// 因此切换过程中日志文件句柄与归档计数都不会丢失。
+func SetFormat(format string) {
+	currentLoggerState.mu.Lock()
+	defer currentLoggerState.mu.Unlock()
+
+	normalized := normalizeFormat(format)
+	if currentLoggerState.config.Format == normalized {
+		return
+	}
+	currentLoggerState.config.Format = normalized
+
+	if globalAtomicLevel == (zap.AtomicLevel{}) {
+		// 尚未初始化：只更新配置，等 Init 时生效
+		return
+	}
+
+	consoleEncoder, fileEncoder := buildEncoder(normalized)
+	var cores []zapcore.Core
+	cores = append(cores, zapcore.NewCore(consoleEncoder, zapcore.AddSync(os.Stdout), globalAtomicLevel))
+	if globalWriter != nil {
+		cores = append(cores, zapcore.NewCore(fileEncoder, zapcore.AddSync(globalWriter), globalAtomicLevel))
+	}
+
+	Log = zap.New(zapcore.NewTee(cores...), zap.AddCaller()).Sugar()
+}
+
+// Shutdown 释放日志子系统资源，供优雅停机调用 (ARCH-18)。
+//
+// 顺序很关键：先停清理协程，再关闭文件句柄，
+// 否则可能出现"清理协程正在删归档、同时还有日志在写入"的竞态。
+func Shutdown() {
+	currentLoggerState.mu.Lock()
+	w := globalWriter
+	globalWriter = nil
+	currentLoggerState.mu.Unlock()
+
+	if w == nil {
+		return
+	}
+
+	// 停机前把缓冲刷盘，保证最后几条日志不丢
+	if Log != nil {
+		_ = Log.Sync()
+	}
+	w.Stop()
 }
 
 // Init 兼容历史签名的快捷初始化方法

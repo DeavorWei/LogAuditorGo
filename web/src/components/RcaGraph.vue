@@ -6,7 +6,8 @@
 
 <script setup>
 import { ref, onMounted, watch, onUnmounted } from 'vue'
-import * as echarts from 'echarts'
+// UI-09: 改用按需引入的 echarts 入口（仅注册 GraphChart 及必要组件）
+import echarts from '@/plugins/echarts'
 
 const props = defineProps({
   rcaEvent: {

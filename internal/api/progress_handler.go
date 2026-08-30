@@ -35,11 +35,33 @@ func (h *ProgressHandler) GetProgress(c *gin.Context) {
 	SuccessResponse(c, snap)
 }
 
+// CancelProgress 终止一个正在运行的长耗时任务 (UI-02)。
+//
+// 取消是协作式的：这里只关闭任务的 context 并把状态置为 FAILED，
+// 真正的停止由业务循环（导入 / 重分析 / 文档导入）检查 ctx.Done() 完成。
+func (h *ProgressHandler) CancelProgress(c *gin.Context) {
+	jobID := c.Param("job_id")
+	tracker := h.hub.GetJob(jobID)
+	if tracker == nil {
+		ErrorResponse(c, http.StatusNotFound, -1, "Progress job not found or expired")
+		return
+	}
+
+	if !h.hub.CancelJob(jobID, "用户主动终止任务") {
+		// 任务已处于终态：返回 409 让前端知道无需再等，而不是 500
+		ErrorResponse(c, http.StatusConflict, -1, "该任务已结束，无需终止")
+		return
+	}
+
+	SuccessResponse(c, gin.H{"job_id": jobID, "canceled": true}, "已发送终止请求，任务将在当前阶段结束后停止")
+}
+
 // StreamProgress 基于 SSE (Server-Sent Events) 实时推送任务全阶段进度
 func (h *ProgressHandler) StreamProgress(c *gin.Context) {
 	jobID := c.Param("job_id")
 	tracker := h.hub.GetJob(jobID)
 	if tracker == nil {
+		// SSE 流一旦开始就无法再用 JSON 错误体表达，只能在流式输出前拦截
 		c.JSON(http.StatusNotFound, gin.H{
 			"code":    404,
 			"message": "Progress job not found or expired",

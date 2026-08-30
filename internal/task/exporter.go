@@ -1,6 +1,7 @@
 package task
 
 import (
+	"embed"
 	"fmt"
 	"html/template"
 	"strings"
@@ -9,13 +10,44 @@ import (
 	"logauditorgo/internal/model"
 )
 
+// reportTemplates 报告模板集合 (REANA-14)。
+//
+// 原先约 250 行 HTML/CSS 硬编码在 Go 源的字符串常量里：
+// 既无法被 IDE/编辑器正确高亮与校验，也让后续扩展报告章节（REANA-13）
+// 只能继续往字符串里堆内容。改为 //go:embed 外置后，
+// 模板文件可独立编辑、diff 与 review。
+//
+//go:embed templates/*.tmpl
+var reportTemplates embed.FS
+
 // ReportViewModel 包含渲染独立 HTML 离线报告所需的全部结构化数据
 type ReportViewModel struct {
 	Task       *model.TaskInfo
 	Records    []model.LogRecord
 	RCAs       []model.RCAEvent
+	Devices    []model.Device
 	ExportTime string
+
+	// TotalLogs 为任务中的日志总条数；当 TotalLogs > len(Records) 时说明报告发生了截断，
+	// 模板会在报告头部显式提示，避免用户误以为拿到的是全量留痕 (DEV-03)。
+	TotalLogs        int
+	RecordsTruncated bool
+
+	// KnowledgeMap 命中知识的简要信息，用于在明细表里直接展示官方释义 (REANA-13)
+	KnowledgeMap map[uint]model.Knowledge
 }
+
+// MultiDeviceReportViewModel 多设备报告的渲染视图。
+// 相比 model.MultiDeviceReport 额外携带时间线截断信息，
+// 使报告能明确告诉用户"看到的是多少 / 总共多少" (DEV-03 / UI-04)。
+type MultiDeviceReportViewModel struct {
+	model.MultiDeviceReport
+	TimelineTotal     int
+	TimelineTruncated bool
+}
+
+// 时间线在报告中最多展示的条数
+const multiDeviceTimelineLimit = 500
 
 // formatTime 格式化时间戳，对于零值返回 "-"
 func formatTime(t time.Time) string {
@@ -52,6 +84,46 @@ func severityBadgeClass(sev int) string {
 	}
 }
 
+// safeColorPalette 预定义的安全调色板。
+//
+// REANA-15: html/template 对 style 属性值走 CSS 值过滤，
+// 非白名单值（例如用户自定义颜色）会被替换成 `#ZgotmplZ`，配色直接失效。
+// 这里先把输入映射到预定义调色板，命中白名单才输出，否则回退到默认蓝。
+var safeColorPalette = map[string]string{
+	"#3b82f6": "#3b82f6", "#3B82F6": "#3B82F6",
+	"#10b981": "#10b981", "#10B981": "#10B981",
+	"#f59e0b": "#f59e0b", "#F59E0B": "#F59E0B",
+	"#ef4444": "#ef4444", "#EF4444": "#EF4444",
+	"#8b5cf6": "#8b5cf6", "#8B5CF6": "#8B5CF6",
+	"#ec4899": "#ec4899", "#EC4899": "#EC4899",
+	"#14b8a6": "#14b8a6", "#14B8A6": "#14B8A6",
+	"#f97316": "#f97316", "#F97316": "#F97316",
+	"#6366f1": "#6366f1", "#6366F1": "#6366F1",
+	"#84cc16": "#84cc16", "#84CC16": "#84CC16",
+	"#64748b": "#64748b", "#64748B": "#64748B",
+}
+
+// defaultSafeColor 配色缺失时的回退值
+const defaultSafeColor = "#3b82f6"
+
+// safeColor 把任意颜色输入安全地转换为可在 style 属性中使用的 CSS 值。
+//
+// 双重防护：先映射到预定义调色板白名单，再用 template.CSS 包装输出。
+// 直接把用户可控字符串插进 style 属性，既会被 Go 模板过滤器抹成 #ZgotmplZ，
+// 理论上也存在样式注入风险。
+func safeColor(raw string) template.CSS {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return template.CSS(defaultSafeColor)
+	}
+	if mapped, ok := safeColorPalette[trimmed]; ok {
+		return template.CSS(mapped)
+	}
+	// 未登记在白名单中的自定义颜色：降级为默认色，
+	// 绝不让 Go 的 CSS 过滤器把值替换成 #ZgotmplZ 破坏整份报告的样式。
+	return template.CSS(defaultSafeColor)
+}
+
 // matchBadgeHTML 生成安全的知识库匹配状态徽章 HTML
 func matchBadgeHTML(knowledgeID uint, matchTier string) template.HTML {
 	if knowledgeID > 0 {
@@ -60,125 +132,83 @@ func matchBadgeHTML(knowledgeID uint, matchTier string) template.HTML {
 	return template.HTML(`<span class="badge" style="background:#f1f5f9; color:#64748b;">未匹配</span>`)
 }
 
-var (
-	reportFuncMap = template.FuncMap{
-		"formatTime":         formatTime,
-		"coveragePercent":    coveragePercent,
-		"formatConfidence":   formatConfidence,
-		"severityBadgeClass": severityBadgeClass,
-		"matchBadgeHTML":     matchBadgeHTML,
+// knowledgeBrief 从知识映射中取出可读的简要说明（含义优先，其次消息模板）
+func knowledgeBrief(kbMap map[uint]model.Knowledge, id uint) string {
+	if id == 0 || len(kbMap) == 0 {
+		return ""
 	}
+	kb, ok := kbMap[id]
+	if !ok {
+		return ""
+	}
+	brief := strings.TrimSpace(kb.Description)
+	if brief == "" {
+		brief = strings.TrimSpace(kb.Message)
+	}
+	runes := []rune(brief)
+	if len(runes) > 80 {
+		brief = string(runes[:80]) + "..."
+	}
+	return brief
+}
 
-	reportTemplate = template.Must(template.New("html_report").Funcs(reportFuncMap).Parse(htmlReportTpl))
-)
+var reportFuncMap = template.FuncMap{
+	"formatTime":         formatTime,
+	"coveragePercent":    coveragePercent,
+	"formatConfidence":   formatConfidence,
+	"severityBadgeClass": severityBadgeClass,
+	"matchBadgeHTML":     matchBadgeHTML,
+	"safeColor":          safeColor,
+	"knowledgeBrief":     knowledgeBrief,
+}
 
-const htmlReportTpl = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>LogAuditorGo 审计分析报告 - {{ .Task.TaskName }}</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 30px; background: #f8fafc; color: #1e293b; }
-  .header { background: #1e293b; color: #fff; padding: 24px; border-radius: 8px; margin-bottom: 24px; }
-  .header h1 { margin: 0 0 10px 0; font-size: 24px; }
-  .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
-  .stat-card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 4px solid #3b82f6; }
-  .stat-card .val { font-size: 24px; font-weight: bold; color: #1e293b; }
-  .stat-card .label { color: #64748b; font-size: 13px; margin-top: 4px; }
-  .section { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
-  .section h2 { margin-top: 0; font-size: 18px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; color: #0f172a; }
-  .rca-card { border: 1px solid #fed7aa; background: #fff7ed; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
-  .rca-title { font-weight: bold; color: #c2410c; font-size: 15px; margin-bottom: 8px; }
-  .rca-action { background: #ffedd5; padding: 10px; border-radius: 4px; font-size: 13px; color: #9a3412; margin-top: 8px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-  th { background: #f1f5f9; color: #475569; font-weight: 600; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; }
-  .sev-crit { background: #fee2e2; color: #991b1b; }
-  .sev-err { background: #ffedd5; color: #9a3412; }
-  .sev-warn { background: #fef9c3; color: #854d0e; }
-  .sev-info { background: #e0f2fe; color: #075985; }
-  .code { font-family: monospace; background: #f1f5f9; padding: 2px 4px; border-radius: 3px; font-size: 12px; word-break: break-all; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>LogAuditorGo 华为网络设备日志智能审计报告</h1>
-    <div>任务名称: {{ .Task.TaskName }} | 设备类型: {{ .Task.DeviceType }} | 导出时间: {{ .ExportTime }}</div>
-  </div>
+// reportTemplate 单任务 HTML 报告模板（加载失败时 panic，属于编译期可发现的问题）
+var reportTemplate = template.Must(template.New("report.html.tmpl").Funcs(reportFuncMap).ParseFS(reportTemplates, "templates/report.html.tmpl"))
 
-  <div class="stats-grid">
-    <div class="stat-card">
-      <div class="val">{{ .Task.LogCount }}</div>
-      <div class="label">总分析日志数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #10b981;">
-      <div class="val">{{ .Task.MatchedCount }}</div>
-      <div class="label">知识库匹配数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #f97316;">
-      <div class="val">{{ len .RCAs }}</div>
-      <div class="label">识别根因事件数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #8b5cf6;">
-      <div class="val">{{ coveragePercent .Task.MatchedCount .Task.LogCount }}</div>
-      <div class="label">官方知识覆盖率</div>
-    </div>
-  </div>
-{{ if .RCAs }}
-  <div class="section">
-    <h2>🎯 根因分析（RCA）排查建议</h2>
-{{ range .RCAs }}    <div class="rca-card">
-      <div class="rca-title">💥 根因事件 [{{ .RootModule }}/{{ .RootBrief }}] - {{ .RootTimestamp }} (置信度: {{ formatConfidence .Confidence }})</div>
-      <div>{{ .RootCauseSummary }}</div>
-      <div class="rca-action"><strong>官方建议排查方案：</strong>{{ .RecommendedAction }}</div>
-    </div>
-{{ end }}  </div>
-{{ end }}
-  <div class="section">
-    <h2>📋 日志分析明细 (前 100 条)</h2>
-    <table>
-      <thead>
-        <tr>
-          <th>时间戳</th>
-          <th>主机名</th>
-          <th>级别</th>
-          <th>模块/事件</th>
-          <th>原始报文</th>
-          <th>知识库匹配</th>
-        </tr>
-      </thead>
-      <tbody>
-{{ range .Records }}        <tr>
-          <td>{{ formatTime .Timestamp }}</td>
-          <td>{{ .Hostname }}</td>
-          <td><span class="badge {{ severityBadgeClass .Severity }}">{{ .Severity }}</span></td>
-          <td><strong>{{ .Module }}</strong>/{{ .Brief }}</td>
-          <td><div class="code">{{ .RawLog }}</div></td>
-          <td>{{ matchBadgeHTML .KnowledgeID .MatchTier }}</td>
-        </tr>
-{{ end }}      </tbody>
-    </table>
-  </div>
-</body>
-</html>`
+// multiReportTemplate 多设备协同分析报告模板
+var multiReportTemplate = template.Must(template.New("multi_device.html.tmpl").Funcs(reportFuncMap).ParseFS(reportTemplates, "templates/multi_device.html.tmpl"))
+
+// ReportOption 报告渲染的可选扩展项 (REANA-13)。
+// 采用 Functional Option 是为了在不破坏既有 4 参数调用点的前提下扩展报告内容。
+type ReportOption func(*ReportViewModel)
+
+// WithDevices 在报告中补充设备概况章节
+func WithDevices(devices []model.Device) ReportOption {
+	return func(vm *ReportViewModel) { vm.Devices = devices }
+}
+
+// WithKnowledgeMap 在日志明细中补充命中知识的官方释义
+func WithKnowledgeMap(kbMap map[uint]model.Knowledge) ReportOption {
+	return func(vm *ReportViewModel) { vm.KnowledgeMap = kbMap }
+}
 
 // GenerateHTMLReport 生成任务分析的独立 HTML 离线报告
-func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []model.RCAEvent) string {
+//
+// DEV-03: 这里原本还会二次截断到 100 条，叠加调用方已经做过的 Limit(100)，
+// 用户拿到的"完整报告"实际只有前 100 条日志，而 RCA 引用的日志可能根本不在其中，
+// 审计留痕不可信。截断职责统一上移到 service 层（可配置上限 + 总数回显），
+// 本函数只负责渲染传入的数据，不再二次丢弃。
+func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []model.RCAEvent, totalLogs int, opts ...ReportOption) string {
 	if task == nil {
 		return "<html><body><h3>Task not found</h3></body></html>"
 	}
 
-	displayRecords := records
-	if len(displayRecords) > 100 {
-		displayRecords = displayRecords[:100]
+	if totalLogs < len(records) {
+		totalLogs = len(records)
 	}
 
 	data := ReportViewModel{
-		Task:       task,
-		Records:    displayRecords,
-		RCAs:       rcas,
-		ExportTime: time.Now().Format("2006-01-02 15:04:05"),
+		Task:             task,
+		Records:          records,
+		RCAs:             rcas,
+		ExportTime:       time.Now().Format("2006-01-02 15:04:05"),
+		TotalLogs:        totalLogs,
+		RecordsTruncated: totalLogs > len(records),
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&data)
+		}
 	}
 
 	var sb strings.Builder
@@ -189,172 +219,23 @@ func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []
 	return sb.String()
 }
 
-var (
-	multiReportTemplate = template.Must(template.New("multi_device_html_report").Funcs(reportFuncMap).Parse(multiDeviceHTMLReportTpl))
-)
-
-const multiDeviceHTMLReportTpl = `<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<title>LogAuditorGo 多设备协同分析与时间线诊断报告 - {{ .TaskInfo.TaskName }}</title>
-<style>
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 30px; background: #f8fafc; color: #1e293b; line-height: 1.5; }
-  .header { background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); color: #fff; padding: 26px; border-radius: 10px; margin-bottom: 24px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); }
-  .header h1 { margin: 0 0 10px 0; font-size: 22px; font-weight: 700; }
-  .header-meta { font-size: 13px; color: #94a3b8; display: flex; gap: 20px; flex-wrap: wrap; }
-  .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
-  .stat-card { background: #fff; padding: 18px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #3b82f6; }
-  .stat-card .val { font-size: 26px; font-weight: 700; color: #0f172a; }
-  .stat-card .label { color: #64748b; font-size: 13px; margin-top: 4px; }
-  .section { background: #fff; padding: 22px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 24px; }
-  .section h2 { margin-top: 0; font-size: 17px; font-weight: 600; border-bottom: 2px solid #f1f5f9; padding-bottom: 10px; color: #0f172a; display: flex; align-items: center; gap: 8px; }
-  .conclusion-box { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 6px; padding: 16px; font-size: 14px; color: #1e3a8a; white-space: pre-line; line-height: 1.6; }
-  .devices-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 16px; margin-top: 14px; }
-  .device-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; background: #fafafa; border-top: 4px solid #3b82f6; }
-  .device-title { font-weight: 600; font-size: 15px; color: #0f172a; margin-bottom: 8px; display: flex; justify-content: space-between; }
-  .device-meta { font-size: 12px; color: #64748b; margin-bottom: 4px; }
-  .cluster-card { background: #fffbeb; border: 1px solid #fef3c7; border-left: 4px solid #f59e0b; padding: 12px 16px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; color: #92400e; }
-  .tag-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-  .tag-item { background: #f1f5f9; border: 1px solid #e2e8f0; color: #475569; padding: 4px 10px; border-radius: 4px; font-size: 12px; }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
-  th, td { padding: 10px 12px; text-align: left; border-bottom: 1px solid #e2e8f0; }
-  th { background: #f8fafc; color: #475569; font-weight: 600; font-size: 12px; text-transform: uppercase; }
-  .badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-  .dev-pill { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 11px; font-weight: 600; color: #fff; }
-  .sev-crit { background: #fee2e2; color: #991b1b; }
-  .sev-err { background: #ffedd5; color: #9a3412; }
-  .sev-warn { background: #fef9c3; color: #854d0e; }
-  .sev-info { background: #e0f2fe; color: #075985; }
-  .code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; background: #f1f5f9; padding: 2px 6px; border-radius: 4px; font-size: 12px; word-break: break-all; color: #334155; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>📡 多设备协同分析与时间线诊断报告</h1>
-    <div class="header-meta">
-      <div><strong>所属任务:</strong> {{ .TaskInfo.TaskName }}</div>
-      <div><strong>任务ID:</strong> {{ .TaskInfo.TaskID }}</div>
-      <div><strong>设备数量:</strong> {{ len .Devices }} 台</div>
-      <div><strong>导出时间:</strong> {{ .ExportTime }}</div>
-    </div>
-  </div>
-
-  <div class="stats-grid">
-    <div class="stat-card">
-      <div class="val">{{ len .Devices }}</div>
-      <div class="label">分析网络设备数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #10b981;">
-      <div class="val">{{ .TotalLogs }}</div>
-      <div class="label">联合分析日志总数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #8b5cf6;">
-      <div class="val">{{ .TotalMatched }}</div>
-      <div class="label">知识库匹配条数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #f97316;">
-      <div class="val">{{ len .Clusters }}</div>
-      <div class="label">时序关联事件簇</div>
-    </div>
-  </div>
-
-  <!-- 自动分析与专家诊断结论 -->
-  <div class="section">
-    <h2>🎯 协同推断与专家诊断结论</h2>
-    <div class="conclusion-box">{{ .Conclusion }}</div>
-  </div>
-
-  <!-- 参与分析的网络设备概览 -->
-  <div class="section">
-    <h2>🖥️ 参与协同审计设备概况 ({{ len .Devices }} 台)</h2>
-    <div class="devices-grid">
-{{ range .Devices }}      <div class="device-card" style="border-top-color: {{ if .Device.Color }}{{ .Device.Color }}{{ else }}#3b82f6{{ end }};">
-        <div class="device-title">
-          <span>{{ .Device.DeviceName }}</span>
-          <span style="font-size: 11px; color: #64748b;">{{ .Device.DeviceType }}</span>
-        </div>
-        <div class="device-meta"><strong>Hostname:</strong> {{ if .Device.Hostname }}{{ .Device.Hostname }}{{ else }}-{{ end }}</div>
-        <div class="device-meta"><strong>管理 IP:</strong> {{ if .Device.ManagementIP }}{{ .Device.ManagementIP }}{{ else }}-{{ end }}</div>
-        <div class="device-meta"><strong>日志/匹配:</strong> {{ .LogCount }} 行 / {{ .MatchedCount }} 条匹配</div>
-        {{ if .TopModules }}
-        <div style="margin-top: 8px; font-size: 12px; color: #475569;">
-          <strong>主要模块:</strong>
-          {{ range .TopModules }}<span class="tag-item" style="padding: 1px 6px; font-size: 11px; margin-right: 4px;">{{ .Module }} ({{ .Count }})</span>{{ end }}
-        </div>
-        {{ end }}
-      </div>
-{{ end }}    </div>
-  </div>
-
-  <!-- 跨设备共性事件与时序关联簇 -->
-{{ if or .CommonEvents .Clusters }}  <div class="section">
-    <h2>🔗 跨设备共性事件与协同传播簇</h2>
-    {{ if .CommonEvents }}
-    <div style="margin-bottom: 16px;">
-      <div style="font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 6px;">在多台设备上同时或相继出现的事件类型:</div>
-      <div class="tag-list">
-        {{ range .CommonEvents }}<span class="tag-item" style="background:#e0e7ff; border-color:#c7d2fe; color:#3730a3; font-weight:500;">{{ . }}</span>{{ end }}
-      </div>
-    </div>
-    {{ end }}
-
-    {{ if .Clusters }}
-    <div style="margin-top: 14px;">
-      <div style="font-size: 13px; font-weight: 600; color: #475569; margin-bottom: 8px;">时间窗口协同事件簇 (±60s 关联):</div>
-      {{ range .Clusters }}
-      <div class="cluster-card">
-        <div style="font-weight: 600; margin-bottom: 4px;">{{ .Summary }}</div>
-      </div>
-      {{ end }}
-    </div>
-    {{ end }}
-  </div>
-{{ end }}
-
-  <!-- 联合时间线明细 -->
-  <div class="section">
-    <h2>⏱️ 多设备时序融合时间线 (显示前 200 条关键事件)</h2>
-    <table>
-      <thead>
-        <tr>
-          <th style="width: 155px;">发生时间</th>
-          <th style="width: 130px;">所属设备</th>
-          <th style="width: 60px;">级别</th>
-          <th style="width: 140px;">模块 / 简名</th>
-          <th>原始日志报文</th>
-        </tr>
-      </thead>
-      <tbody>
-{{ range .Timeline }}        <tr>
-          <td>{{ formatTime .Timestamp }}</td>
-          <td>
-            <span class="dev-pill" style="background-color: {{ if .DeviceColor }}{{ .DeviceColor }}{{ else }}#64748b{{ end }};">
-              {{ .DeviceName }}
-            </span>
-          </td>
-          <td><span class="badge {{ severityBadgeClass .Severity }}">{{ .Severity }}</span></td>
-          <td><strong>{{ .Module }}</strong>/{{ .Brief }}</td>
-          <td><div class="code">{{ .RawLog }}</div></td>
-        </tr>
-{{ end }}      </tbody>
-    </table>
-  </div>
-</body>
-</html>`
-
 // GenerateMultiDeviceHTMLReport 生成多设备协同对比与时间线 HTML 离线报告
 func GenerateMultiDeviceHTMLReport(report *model.MultiDeviceReport) string {
 	if report == nil {
 		return "<html><body><h3>Report not found</h3></body></html>"
 	}
 
+	total := len(report.Timeline)
 	displayTimeline := report.Timeline
-	if len(displayTimeline) > 200 {
-		displayTimeline = displayTimeline[:200]
+	if len(displayTimeline) > multiDeviceTimelineLimit {
+		displayTimeline = displayTimeline[:multiDeviceTimelineLimit]
 	}
 
-	data := *report
+	data := MultiDeviceReportViewModel{
+		MultiDeviceReport: *report,
+		TimelineTotal:     total,
+		TimelineTruncated: total > len(displayTimeline),
+	}
 	data.Timeline = displayTimeline
 	if data.ExportTime == "" {
 		data.ExportTime = time.Now().Format("2006-01-02 15:04:05")
@@ -367,5 +248,3 @@ func GenerateMultiDeviceHTMLReport(report *model.MultiDeviceReport) string {
 
 	return sb.String()
 }
-
-

@@ -38,8 +38,11 @@
 
         <div class="progress-detail-desc">
           <span>{{ snapshot.message || '正在准备执行任务...' }}</span>
-          <span v-if="snapshot.total > 0" class="counter-text">
-            {{ snapshot.current }} / {{ snapshot.total }}
+          <span class="counter-text-group">
+            <span v-if="isRunning" class="elapsed-text">已运行 {{ elapsedText }}</span>
+            <span v-if="snapshot.total > 0" class="counter-text">
+              {{ snapshot.current }} / {{ snapshot.total }}
+            </span>
           </span>
         </div>
 
@@ -111,15 +114,31 @@
     <template #footer>
       <div class="modal-footer">
         <div class="footer-left-hint">
-          <span v-if="isRunning" class="hint-text">💡 导入处理已在后台高速执行，您可以关闭窗口后台运行</span>
+          <span v-if="isCanceling" class="hint-warn">⏹ 正在发送终止请求...</span>
+          <span v-else-if="isRunning" class="hint-text">💡 任务在后台持续执行，您可以关闭窗口；关闭后可从顶栏任务徽标随时回到此窗口</span>
           <span v-else-if="isCompleted" class="hint-success">🎉 全部阶段已成功完成，正在自动载入最新数据...</span>
           <span v-else-if="isFailed" class="hint-error">❌ 处理出现异常，请查看上方日志排查</span>
         </div>
         <div class="footer-buttons">
+          <!-- UI-02: 长耗时任务可主动终止，不再只能干等或强杀进程 -->
+          <el-popconfirm
+            v-if="isRunning"
+            title="确定要终止该任务吗？服务端会在当前阶段结束后停止。"
+            confirm-button-text="终止任务"
+            cancel-button-text="继续等待"
+            confirm-button-type="danger"
+            @confirm="handleCancelJob"
+          >
+            <template #reference>
+              <el-button type="danger" plain :loading="isCanceling">终止任务</el-button>
+            </template>
+          </el-popconfirm>
           <el-button v-if="isRunning" @click="handleRunInBackground">后台运行</el-button>
           <el-button v-if="isCompleted" type="success" icon="Check" @click="handleFinishNow">
             立即进入工作台
           </el-button>
+          <!-- UX: 失败态提供重试与复制错误日志的快捷入口 -->
+          <el-button v-if="isFailed" @click="copyErrorLog">复制错误日志</el-button>
           <el-button v-if="isFailed" type="danger" @click="handleClose">关闭</el-button>
         </div>
       </div>
@@ -128,10 +147,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onUnmounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { Check, CloseBold } from '@element-plus/icons-vue'
-import { ElNotification } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import api from '@/api'
+import { useProgressStore } from '@/stores/progress'
 
 const props = defineProps({
   modelValue: {
@@ -158,6 +178,9 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue', 'completed', 'failed', 'closed'])
 
+// UI-01: 接入全局长任务追踪 store，让顶栏徽标感知到"这个任务还在跑"
+const progressStore = useProgressStore()
+
 const visible = ref(props.modelValue)
 const snapshot = ref({
   status: 'running',
@@ -178,9 +201,29 @@ const logs = ref([])
 const autoScroll = ref(true)
 const terminalBodyRef = ref(null)
 
+// UI-02: 终止任务的进行中标记
+const isCanceling = ref(false)
+// UX: 已运行时长
+const elapsedSeconds = ref(0)
+
 let eventSource = null
 let pollTimer = null
 let autoCloseTimer = null
+// UI-03: 在途 HTTP 轮询请求的取消控制器
+let pollAbortController = null
+// UI-03: 终态幂等标记。
+// SSE 与即时 HTTP 查询会同时回填同一份快照，旧实现会让 completed 被 emit 两次，
+// 父组件随之重复刷新列表并弹出两条一模一样的 Toast。
+let settled = false
+let startTimestamp = 0
+let elapsedTimer = null
+
+const elapsedText = computed(() => {
+  const s = elapsedSeconds.value
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  return `${m}m${String(s % 60).padStart(2, '0')}s`
+})
 
 const dialogTitle = computed(() => {
   if (props.title) return props.title
@@ -252,7 +295,15 @@ const startTracking = (jobId) => {
   stopTracking()
   if (!jobId) return
 
-  // 1. 初始化 SSE
+  // 重置本轮追踪的终态标记
+  settled = false
+  startTimestamp = Date.now()
+  elapsedSeconds.value = 0
+  startElapsedTimer()
+
+  // UI-01: 登记到全局 store，顶栏据此展示"运行中任务"徽标
+  progressStore.registerJob(jobId, { message: props.title || '任务处理中' })
+
   // 1. 初始化 SSE
   try {
     eventSource = api.createProgressStream(
@@ -261,6 +312,7 @@ const startTracking = (jobId) => {
         handleSnapshotUpdate(data)
       },
       (err) => {
+        // UI-16: 原实现在此处有两条完全相同的 `// 1. 初始化 SSE` 注释，属于复制粘贴残留
         console.warn('[ImportProgressModal] SSE connection interrupted, falling back to HTTP polling:', err)
         // 显式断开断线/404 的 SSE，避免原生 EventSource 不断在后台重连请求 (L-15, H-09)
         if (eventSource) {
@@ -274,50 +326,113 @@ const startTracking = (jobId) => {
     startPolling(jobId)
   }
 
-  // 2. 发起一次即时 HTTP 查询作为首屏快速呈现
-  api.getProgress(jobId).then((res) => {
-    if (res.code === 0 && res.data) {
-      handleSnapshotUpdate(res.data)
-    }
-  }).catch((e) => {
-    if (e.response?.status === 404) {
-      handleJobFailed('任务进度不存在或已过期')
-    }
-  })
+  // 2. 发起一次即时 HTTP 查询作为首屏快速呈现。
+  //    UI-03: 传入 signal，弹窗关闭/任务切换时可立即取消在途请求，
+  //    避免"旧请求的响应覆盖新任务的状态"。
+  fetchProgressOnce(jobId)
 }
 
+// 轮询退避参数 (UI-10)。
+//
+// 旧实现固定 800ms 间隔，且"连续 3 次失败（约 2.4s）就判定任务失败"——
+// 一次短暂的网络抖动，或一个还没来得及注册完成的 job，都会被误判为失败。
+// 这里改为指数退避 800ms → 1s → 2s → 4s（上限 5s），并配合总超时 30min，
+// 只有真正拿不到进度且持续超时才判失败。
+const POLL_BASE_DELAY = 800
+const POLL_MAX_DELAY = 5000
+const POLL_MAX_FAILS = 8
+
 let pollFailCount = 0
+let pollDelay = POLL_BASE_DELAY
 const isBackgroundRunning = ref(false)
+
+const startElapsedTimer = () => {
+  stopElapsedTimer()
+  elapsedTimer = setInterval(() => {
+    if (!startTimestamp) return
+    elapsedSeconds.value = Math.floor((Date.now() - startTimestamp) / 1000)
+  }, 1000)
+}
+
+const stopElapsedTimer = () => {
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer)
+    elapsedTimer = null
+  }
+}
+
+const fetchProgressOnce = async (jobId) => {
+  if (pollAbortController) {
+    pollAbortController.abort()
+  }
+  pollAbortController = new AbortController()
+  try {
+    const res = await api.getProgress(jobId, { signal: pollAbortController.signal })
+    if (res?.code === 0 && res.data) {
+      handleSnapshotUpdate(res.data)
+    }
+  } catch (e) {
+    // 主动取消不视为失败
+    if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return
+    if (e?.response?.status === 404 && !settled) {
+      handleJobFailed('任务进度不存在或已过期')
+    }
+  }
+}
 
 const startPolling = (jobId) => {
   if (pollTimer) return
   pollFailCount = 0
-  pollTimer = setInterval(async () => {
+  pollDelay = POLL_BASE_DELAY
+
+  const tick = async () => {
     try {
-      const res = await api.getProgress(jobId)
-      if (res.code === 0 && res.data) {
+      if (pollAbortController) pollAbortController.abort()
+      pollAbortController = new AbortController()
+      const res = await api.getProgress(jobId, { signal: pollAbortController.signal })
+      if (res?.code === 0 && res.data) {
         pollFailCount = 0
+        pollDelay = POLL_BASE_DELAY
         handleSnapshotUpdate(res.data)
-        if (res.data.status === 'completed' || res.data.status === 'failed') {
-          stopPolling()
-        }
-      } else {
-        pollFailCount++
-        if (pollFailCount >= 3) {
-          handleJobFailed('进度查询异常或任务未找到')
-        }
+        return
       }
-    } catch (e) {
       pollFailCount++
-      if (pollFailCount >= 3 || e.response?.status === 404) {
-        handleJobFailed('任务进度已失效或网络中断')
+    } catch (e) {
+      if (e?.name === 'CanceledError' || e?.code === 'ERR_CANCELED') return
+      pollFailCount++
+      // 404 说明 job 已被清理，无需继续退避重试
+      if (e?.response?.status === 404) {
+        stopPolling()
+        handleJobFailed('任务进度已失效或已被清理')
+        return
       }
     }
-  }, 800)
+    if (pollFailCount >= POLL_MAX_FAILS) {
+      stopPolling()
+      handleJobFailed('进度查询持续失败，请检查服务是否可用')
+    }
+  }
+
+  // 指数退避：失败次数越多，下一次间隔越长，避免在网络抖动期间高频打服务端
+  const scheduleNext = () => {
+    const delay = pollFailCount > 0
+      ? Math.min(POLL_MAX_DELAY, POLL_BASE_DELAY * Math.pow(2, Math.min(pollFailCount, 3)))
+      : POLL_BASE_DELAY
+    pollTimer = setTimeout(async () => {
+      pollTimer = null
+      await tick()
+      if (pollTimer === null && !settled) scheduleNext()
+    }, delay)
+  }
+  scheduleNext()
 }
 
 const handleJobFailed = (reason) => {
+  // UI-03: 幂等——已终态时不再重复置失败、不再重复 emit
+  if (settled) return
+  settled = true
   stopTracking()
+  if (props.jobId) progressStore.finishJob(props.jobId, 'failed', reason)
   snapshot.value = {
     ...snapshot.value,
     status: 'failed',
@@ -328,8 +443,13 @@ const handleJobFailed = (reason) => {
 
 const stopPolling = () => {
   if (pollTimer) {
-    clearInterval(pollTimer)
+    clearTimeout(pollTimer)
     pollTimer = null
+  }
+  // UI-03: 取消仍在途的轮询请求，杜绝"响应回来时任务已经切换"
+  if (pollAbortController) {
+    pollAbortController.abort()
+    pollAbortController = null
   }
 }
 
@@ -339,6 +459,7 @@ const stopTracking = () => {
     eventSource = null
   }
   stopPolling()
+  stopElapsedTimer()
   if (autoCloseTimer) {
     clearTimeout(autoCloseTimer)
     autoCloseTimer = null
@@ -347,6 +468,11 @@ const stopTracking = () => {
 
 const handleSnapshotUpdate = (data) => {
   if (!data) return
+
+  // UI-03: 终态幂等——SSE 与 HTTP 轮询会重复投递同一份终态快照，
+  // 旧实现会让 completed 被 emit 两次，父组件重复刷新并弹出重复 Toast。
+  if (settled) return
+
   snapshot.value = data
   if (data.logs && data.logs.length > 0) {
     logs.value = data.logs
@@ -355,6 +481,9 @@ const handleSnapshotUpdate = (data) => {
 
   // 检查是否完成
   if (data.status === 'completed') {
+    settled = true
+    // UI-01: 同步全局状态，顶栏徽标随即消失
+    if (props.jobId) progressStore.finishJob(props.jobId, 'completed', data.message || '已完成')
     stopTracking()
     if (isBackgroundRunning.value) {
       ElNotification({
@@ -365,14 +494,17 @@ const handleSnapshotUpdate = (data) => {
       })
       isBackgroundRunning.value = false
     }
+    // 只 emit 一次
     emit('completed', data.result || data)
-    // 延时自动关闭
-    if (props.autoCloseDelay > 0) {
+    // 延时自动关闭（幂等：重复进入也不会重复触发）
+    if (props.autoCloseDelay > 0 && !autoCloseTimer) {
       autoCloseTimer = setTimeout(() => {
         handleClose()
       }, props.autoCloseDelay)
     }
   } else if (data.status === 'failed') {
+    settled = true
+    if (props.jobId) progressStore.finishJob(props.jobId, 'failed', data.error || '处理失败')
     stopTracking()
     if (isBackgroundRunning.value) {
       ElNotification({
@@ -384,6 +516,55 @@ const handleSnapshotUpdate = (data) => {
       isBackgroundRunning.value = false
     }
     emit('failed', data.error || data.message)
+  }
+}
+
+/**
+ * 终止任务 (UI-02)。
+ *
+ * 后端是协作式取消：接口返回只代表"取消请求已受理"，
+ * 真正的停止由业务循环在下一个阶段检查点完成，
+ * 因此这里不立即置终态，而是继续追踪直到服务端把状态置为 failed。
+ */
+const handleCancelJob = async () => {
+  if (!props.jobId || isCanceling.value) return
+  isCanceling.value = true
+  try {
+    const ok = await api.cancelProgress(props.jobId)
+    if (ok) {
+      ElNotification({
+        title: '已请求终止',
+        message: '服务端将在当前处理阶段结束后停止任务',
+        type: 'warning',
+        duration: 3000
+      })
+      // 立即拉一次进度，尽快把状态刷新为已终止
+      await fetchProgressOnce(props.jobId)
+    }
+  } catch (e) {
+    // 409 表示任务已结束，无需再终止
+    if (e?.response?.status !== 409) {
+      ElMessage.error(e?.response?.data?.message || '终止任务失败，请稍后重试')
+    }
+  } finally {
+    isCanceling.value = false
+  }
+}
+
+// UX: 失败态一键复制错误日志，便于直接贴到工单
+const copyErrorLog = async () => {
+  const text = [
+    `任务: ${props.title || '日志分析'}`,
+    `JobID: ${props.jobId}`,
+    `错误: ${snapshot.value.error || '未知错误'}`,
+    '--- 日志 ---',
+    ...(logs.value || []).map((l) => `[${l.timestamp}] [${l.level}] ${l.message}`)
+  ].join('\n')
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('错误日志已复制到剪贴板')
+  } catch (e) {
+    ElMessage.warning('当前环境不支持自动复制，请手动选中日志内容')
   }
 }
 
@@ -401,6 +582,10 @@ const clearLogs = () => {
 }
 
 // 用户点击“后台运行”：隐藏弹窗，保持后台跟踪监听并在完成时推送 (H-08)
+//
+// UI-01: 关闭窗口**不再停止追踪**——旧实现的 handleClose 会直接 stopTracking()，
+// 运行中点 X 就等于放弃了这个任务，长任务结果永久丢失且无处回看。
+// 现在"后台运行"与"关闭窗口"行为一致：继续追踪，完成时推送通知。
 const handleRunInBackground = () => {
   isBackgroundRunning.value = true
   visible.value = false
@@ -409,12 +594,22 @@ const handleRunInBackground = () => {
 }
 
 const handleFinishNow = () => {
-  if (autoCloseTimer) clearTimeout(autoCloseTimer)
-  emit('completed', snapshot.value.result || snapshot.value)
+  if (autoCloseTimer) {
+    clearTimeout(autoCloseTimer)
+    autoCloseTimer = null
+  }
+  // UI-03: completed 已在 handleSnapshotUpdate 中 emit 过一次，
+  // 这里不再重复触发，否则父组件会二次刷新列表并弹出重复 Toast。
   handleClose()
 }
 
 const handleClose = () => {
+  // UI-01: 任务仍在运行时关闭弹窗 = 转入后台运行，追踪继续，
+  // 完成后仍会推送通知；只有任务已终态时才真正停止追踪。
+  if (isRunning.value) {
+    handleRunInBackground()
+    return
+  }
   isBackgroundRunning.value = false
   stopTracking()
   visible.value = false
@@ -446,7 +641,26 @@ watch(
   }
 )
 
+/**
+ * UI-01: 响应顶栏徽标的"重新打开进度窗口"请求。
+ * 只有当前追踪的正是该 jobId 的实例才响应，
+ * 避免多个视图的弹窗实例被同时拉起。
+ */
+const handleReopenRequest = (event) => {
+  const jobId = event?.detail?.jobId
+  if (!jobId || jobId !== props.jobId) return
+  if (!visible.value) {
+    visible.value = true
+    emit('update:modelValue', true)
+  }
+}
+
+onMounted(() => {
+  window.addEventListener('logauditorgo:reopen-progress', handleReopenRequest)
+})
+
 onUnmounted(() => {
+  window.removeEventListener('logauditorgo:reopen-progress', handleReopenRequest)
   stopTracking()
 })
 </script>
@@ -540,10 +754,21 @@ onUnmounted(() => {
   margin-top: 6px;
 }
 
+.counter-text-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .counter-text {
   font-family: monospace;
   font-weight: 600;
   color: #0284c7;
+}
+
+.elapsed-text {
+  color: #94a3b8;
+  font-family: monospace;
 }
 
 /* 批量处理的整体进度：第 N/M 个 */
@@ -783,6 +1008,10 @@ onUnmounted(() => {
 }
 .hint-error {
   color: #dc2626;
+  font-weight: 500;
+}
+.hint-warn {
+  color: #b45309;
   font-weight: 500;
 }
 

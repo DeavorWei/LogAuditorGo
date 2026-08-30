@@ -96,13 +96,53 @@ func TestBleveIndexerAndSearch(t *testing.T) {
 	}
 
 	// 3. 测试级别过滤
-	sevLimit := 3
-	res3, err := indexer.Search(search.SearchFilter{Severity: &sevLimit})
+	//
+	// KB-10: 语义由"范围过滤(1~N)"改为"精确等于"。
+	// 原实现查询 severity=4 会返回 1~4 全部，与 UI 的单选语义不符。
+	// 这里分别验证"等于 2 命中 ID 3"与"等于 4 命中 ID 1/2 但不含 ID 3"。
+	sevExact := 2
+	res3, err := indexer.Search(search.SearchFilter{Severity: &sevExact})
 	if err != nil {
 		t.Fatalf("search severity failed: %v", err)
 	}
 	if res3.Total != 1 || res3.Hits[0].KnowledgeID != 3 {
-		t.Errorf("expected knowledge ID 3 for severity <= 3, got %+v", res3)
+		t.Errorf("expected knowledge ID 3 for severity == 2, got %+v", res3)
+	}
+
+	sevFour := 4
+	res3b, err := indexer.Search(search.SearchFilter{Severity: &sevFour})
+	if err != nil {
+		t.Fatalf("search severity failed: %v", err)
+	}
+	if res3b.Total != 2 {
+		t.Errorf("expected 2 results for severity == 4, got %d", res3b.Total)
+	}
+	for _, h := range res3b.Hits {
+		if h.KnowledgeID == 3 {
+			t.Errorf("severity==4 must NOT match knowledge ID 3 (severity=2), got %+v", res3b)
+		}
+	}
+
+	// 4'. KB-02: 命中的 Document 字段必须被填充，调用方无需再按 ID 回查数据库
+	if len(res3.Hits) == 1 {
+		doc := res3.Hits[0].Document
+		if doc.ID != "3" {
+			t.Errorf("expected hit Document.ID == '3', got %q", doc.ID)
+		}
+		if doc.Brief != "hwRadiusAuthServerDown" {
+			t.Errorf("expected hit Document.Brief == 'hwRadiusAuthServerDown', got %q", doc.Brief)
+		}
+		if doc.Description != "RADIUS认证服务器不可达" {
+			t.Errorf("expected hit Document.Description to be populated, got %q", doc.Description)
+		}
+		if doc.Severity != 2 {
+			t.Errorf("expected hit Document.Severity == 2, got %v", doc.Severity)
+		}
+		if len(doc.ProductList) != 1 || doc.ProductList[0] != "HiSecEngine USG6000F" {
+			t.Errorf("expected hit Document.ProductList == [HiSecEngine USG6000F], got %v", doc.ProductList)
+		}
+	} else {
+		t.Fatalf("expected exactly 1 hit for severity filter, got %d", len(res3.Hits))
 	}
 
 	// 4. 测试告警类型过滤

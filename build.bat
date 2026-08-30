@@ -23,7 +23,9 @@ go mod tidy
 
 echo [3/3] Compiling standalone Go binary with embedded frontend...
 if not exist "build" mkdir "build"
-go build -o build\LogAuditorGo.exe cmd\LogAuditorGo\main.go
+@rem ARCH-19: 与 build.sh 保持一致的 -ldflags="-s -w"，
+@rem 否则 Windows 产物保留符号表，体积与信息暴露程度都与 Linux 产物不一致。
+go build -ldflags=-s -w -o build\LogAuditorGo.exe cmd\LogAuditorGo\main.go
 if %ERRORLEVEL% neq 0 (
     echo [ERROR] go build failed!
     exit /b %ERRORLEVEL%

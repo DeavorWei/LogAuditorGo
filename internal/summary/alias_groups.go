@@ -95,6 +95,67 @@ var AliasGroups = map[string][]string{
 	},
 }
 
+// aliasRoleIndex 是 AliasGroups 的反向索引：规范化别名 → 语义角色。
+//
+// RCA-11: 原实现在模板渲染时对每个占位符都做
+// `for role, aliases := range AliasGroups { for _, alias := range aliases {...} }` 双重遍历，
+// 存在两个问题：
+//  1. Go 的 map 遍历顺序随机，当某个别名同时属于多个角色时（例如 neighbor 同时属于
+//     peer 与 routerid），取值结果每次运行都可能不同，摘要不可复现，缓存与 diff 全部失效；
+//  2. 每占位符约 14×8 次字符串比较，是热路径上的常数开销。
+//
+// 反查表在包初始化时构建一次，查询降为 O(1)，且优先级由 AliasGroups 的声明顺序固定。
+var aliasRoleIndex = buildAliasRoleIndex()
+
+// AliasRolePriority 语义角色的固定优先级（数值越小越优先）。
+// 由 AliasGroups 的声明顺序决定，保证跨运行完全一致。
+var AliasRolePriority = buildAliasRolePriority()
+
+func buildAliasRoleIndex() map[string]string {
+	index := make(map[string]string, 128)
+	// 按固定顺序遍历：先按角色名排序，再按组内顺序，杜绝 map 随机序
+	roles := make([]string, 0, len(AliasGroups))
+	for role := range AliasGroups {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	for _, role := range roles {
+		for _, alias := range AliasGroups[role] {
+			key := NormalizeKey(alias)
+			if key == "" {
+				continue
+			}
+			if _, exists := index[key]; exists {
+				// 已有更高优先级的角色占用该别名，保留先到者（顺序已固定）
+				continue
+			}
+			index[key] = role
+		}
+	}
+	return index
+}
+
+func buildAliasRolePriority() map[string]int {
+	roles := make([]string, 0, len(AliasGroups))
+	for role := range AliasGroups {
+		roles = append(roles, role)
+	}
+	sort.Strings(roles)
+	out := make(map[string]int, len(roles))
+	for i, role := range roles {
+		out[role] = i
+	}
+	return out
+}
+
+// ResolveAliasRole 查询某个规范化键名对应的语义角色，未命中返回 ""
+func ResolveAliasRole(normKey string) string {
+	if normKey == "" {
+		return ""
+	}
+	return aliasRoleIndex[normKey]
+}
+
 // BuildNormalizedMap 构建规范化键名到原始键值的映射，方便快速模糊匹配
 func BuildNormalizedMap(params map[string]string) map[string]string {
 	res := make(map[string]string, len(params))

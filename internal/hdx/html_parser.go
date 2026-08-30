@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -41,16 +42,79 @@ func CleanMultilineText(s string) string {
 	return strings.Join(cleanLines, "\n")
 }
 
-// ExtractBlockText 提取HTML元素内部文本，保留段落、换行与列表
+// ExtractBlockText 提取 HTML 元素内部文本，保留段落、换行与列表。
+//
+// KB-05: 原实现**就地修改传入的共享 DOM**——
+// `sel.Find("br").ReplaceWithHtml("\n")` 与对每个 div/p/li 的 `AppendHtml("\n")`
+// 都会直接改写调用方持有的 goquery 文档树。
+// 而 parseLogRef 会对重叠子树多次调用它，parseAlarmRef 更是反复作用于 div.section，
+// 于是"每调用一次就给全文档 div 再追加一个换行"，
+// 解析结果依赖调用顺序，跨版本 HTML 结构差异还会放大文本噪声。
+//
+// 改为纯函数：先深拷贝再在副本上做替换，调用方的 DOM 保持原样，
+// 同一段输入无论调用多少次都得到完全一致的输出。
 func ExtractBlockText(sel *goquery.Selection) string {
 	if sel == nil || sel.Length() == 0 {
 		return ""
 	}
-	sel.Find("br").ReplaceWithHtml("\n")
-	sel.Find("p, li, tr, dt, dd, div").Each(func(_ int, s *goquery.Selection) {
+	clone := sel.Clone()
+	clone.Find("br").ReplaceWithHtml("\n")
+	clone.Find("p, li, tr, dt, dd, div").Each(func(_ int, s *goquery.Selection) {
 		s.AppendHtml("\n")
 	})
-	return CleanMultilineText(sel.Text())
+	return CleanMultilineText(clone.Text())
+}
+
+// maxHTMLFileBytes 单个 HTML 文档的最大读取字节数 (KB-12)。
+// 32 并发 × 大 HTML 会造成内存尖峰，这里给出硬上限并明确报错。
+const maxHTMLFileBytes = 10 << 20 // 10MB
+
+// resolveHTMLPath 解析并校验 HTML 文件路径，防御目录穿越与编码问题 (KB-12)。
+//
+// 原实现只做了"去掉 # 锚点"，navi.xml 里的 `../` 或 `%20` 编码 URL
+// 会导致越界读取或文件不存在（静默丢条目）。
+func resolveHTMLPath(docRootDir string, item LeafNaviItem) (string, error) {
+	cleanURL := strings.TrimSpace(item.URL)
+	if idx := strings.Index(cleanURL, "#"); idx != -1 {
+		cleanURL = cleanURL[:idx]
+	}
+	if cleanURL == "" {
+		return "", fmt.Errorf("empty html URL")
+	}
+
+	// 1. URL 解码兜底：HDX 文档中的文件名可能带 %20 之类的百分号编码
+	if strings.Contains(cleanURL, "%") {
+		if unescaped, err := url.PathUnescape(cleanURL); err == nil && unescaped != "" {
+			cleanURL = unescaped
+		}
+	}
+	// Windows 下路径分隔符可能是 '/'
+	cleanURL = strings.ReplaceAll(cleanURL, "/", string(filepath.Separator))
+
+	root := filepath.Clean(docRootDir)
+	full := filepath.Clean(filepath.Join(root, item.NaviDir, cleanURL))
+
+	// 2. 目录穿越校验：解析后的绝对路径必须仍在文档根目录内
+	rel, err := filepath.Rel(root, full)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("html path %q escapes the document root %q", item.URL, root)
+	}
+	return full, nil
+}
+
+// readHTMLFile 读取并校验 HTML 文件内容 (KB-12)
+func readHTMLFile(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("html path %q is a directory", path)
+	}
+	if info.Size() > maxHTMLFileBytes {
+		return nil, fmt.Errorf("html file %q is too large: %d bytes (limit %d)", path, info.Size(), maxHTMLFileBytes)
+	}
+	return os.ReadFile(path)
 }
 
 // ParseHTMLKnowledge 解析单个 HTML 文件提取知识
@@ -61,17 +125,13 @@ func ParseHTMLKnowledge(docRootDir string, item LeafNaviItem) (k *model.Knowledg
 		}
 	}()
 	
-	// 剥离 URL 锚点 (#) 并拼接相对路径
-	cleanURL := strings.TrimSpace(item.URL)
-	if idx := strings.Index(cleanURL, "#"); idx != -1 {
-		cleanURL = cleanURL[:idx]
-	}
-	if cleanURL == "" {
-		return nil, fmt.Errorf("empty html URL")
+	// KB-12: 统一走路径解析 + 目录穿越校验 + 大小上限保护
+	htmlPath, err := resolveHTMLPath(docRootDir, item)
+	if err != nil {
+		return nil, err
 	}
 
-	htmlPath := filepath.Join(docRootDir, item.NaviDir, cleanURL)
-	rawBytes, err := os.ReadFile(htmlPath)
+	rawBytes, err := readHTMLFile(htmlPath)
 	if err != nil {
 		return nil, fmt.Errorf("read html (%s) failed: %w", htmlPath, err)
 	}

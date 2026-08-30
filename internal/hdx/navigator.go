@@ -41,6 +41,22 @@ type LeafNaviItem struct {
 	NaviDir     string
 }
 
+// navi 解析的深度与体积上限 (KB-11)。
+//
+// 原实现对 navi.xml 无条件递归：畸形/恶意构造的深树会触发栈溢出，
+// 而栈溢出是 Go 的 fatal error，ParseNaviXML 里的 recover() **拦截不到**，
+// 整个进程会直接崩溃。这里在递归入口显式限深，超限即打断并记录告警。
+const (
+	maxNaviDepth     = 16
+	maxNaviFileBytes = 64 << 20 // 64MB
+)
+
+// naviStats 记录一次解析过程中的限深/截断情况，便于在日志中暴露异常文档
+type naviStats struct {
+	depthTruncated bool
+	maxDepthSeen   int
+}
+
 // ParseNaviXML 解析 navi.xml 并递归提取叶子日志和告警节点
 func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviItem, err error) {
 	defer func() {
@@ -49,6 +65,12 @@ func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviIt
 		}
 	}()
 	naviFullPath := filepath.Join(docRootDir, naviRelPath)
+
+	// KB-11: 读取前先校验体积，避免超大 navi.xml 一次性载入导致内存尖峰
+	if info, statErr := os.Stat(naviFullPath); statErr == nil && info.Size() > maxNaviFileBytes {
+		return nil, fmt.Errorf("navi.xml %s is too large: %d bytes (limit %d)", naviFullPath, info.Size(), maxNaviFileBytes)
+	}
+
 	data, err := os.ReadFile(naviFullPath)
 	if err != nil {
 		return nil, fmt.Errorf("read navi.xml (%s) failed: %w", naviFullPath, err)
@@ -70,8 +92,13 @@ func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviIt
 	}
 
 	naviDir := filepath.Dir(naviRelPath)
+	stats := &naviStats{}
 	for _, t := range root.Topics {
-		traverseTopic(t, []string{}, naviDir, &leafItems)
+		traverseTopic(t, []string{}, naviDir, 1, stats, &leafItems)
+	}
+	if stats.depthTruncated {
+		logger.Log.Warnf("[HDX Navigator] navi.xml %s exceeds max depth %d (seen %d), deeper topics were skipped",
+			naviFullPath, maxNaviDepth, stats.maxDepthSeen)
 	}
 
 	logCount := 0
@@ -89,14 +116,26 @@ func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviIt
 	return leafItems, nil
 }
 
-func traverseTopic(topic RawTopic, parentChain []string, naviDir string, results *[]LeafNaviItem) {
+// traverseTopic 递归遍历 navi.xml 的 topic 树。
+//
+// KB-11: depth 参数用于显式限深。Go 的栈溢出属于 fatal error 而非 panic，
+// 无法被 ParseNaviXML 的 recover() 捕获，因此必须在递归入口主动拦截。
+func traverseTopic(topic RawTopic, parentChain []string, naviDir string, depth int, stats *naviStats, results *[]LeafNaviItem) {
+	if depth > stats.maxDepthSeen {
+		stats.maxDepthSeen = depth
+	}
+	if depth > maxNaviDepth {
+		stats.depthTruncated = true
+		return
+	}
+
 	txt := strings.TrimSpace(topic.Txt)
 	currentChain := append(parentChain[:len(parentChain):len(parentChain)], txt)
 
 	// 如果有子 topic，则是容器/分类节点，继续向下递归（纠偏 1：跳过非叶子节点）
 	if len(topic.Children) > 0 {
 		for _, child := range topic.Children {
-			traverseTopic(child, currentChain, naviDir, results)
+			traverseTopic(child, currentChain, naviDir, depth+1, stats, results)
 		}
 		return
 	}

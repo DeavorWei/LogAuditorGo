@@ -17,4 +17,8 @@ type Document struct {
 	AlarmCount     int       `json:"alarm_count"` // 叶子告警数
 	FilePath       string    `gorm:"size:512" json:"file_path"`
 	ImportedAt     time.Time `json:"imported_at"`
+
+	// IndexDirty 标记该文档的知识尚未成功写入全文检索索引 (KB-01)。
+	// 为 true 时前端可提示用户执行"重建索引"，避免"导入成功却永远搜不到"的静默故障。
+	IndexDirty bool `gorm:"default:false" json:"index_dirty"`
 }

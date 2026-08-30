@@ -10,6 +10,8 @@ import (
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
 	"logauditorgo/pkg/logger"
+
+	"gorm.io/gorm"
 )
 
 func TestMatcherTiers(t *testing.T) {
@@ -126,7 +128,7 @@ func TestMatcherTiers(t *testing.T) {
 }
 func TestMatcherDefensive(t *testing.T) {
 	var engine *matcher.MatchEngine
-	
+
 	// Should not panic, should return unmatch
 	k, tier, _ := engine.Match(&model.NormalizedLog{}, "", "")
 	if tier != matcher.TierUnmatch || k != nil {
@@ -437,3 +439,134 @@ func TestMnemonicNoReverseMatch(t *testing.T) {
 	}
 }
 
+// newIsolatedMatchEngine 在独立临时目录中构建一套 DB + Bleve + 匹配引擎，供各回归用例隔离使用
+func newIsolatedMatchEngine(t *testing.T) (*matcher.MatchEngine, *gorm.DB) {
+	t.Helper()
+
+	tmpDir, err := os.MkdirTemp("", "matcher_regr_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(tmpDir) })
+
+	db, err := storage.InitKnowledgeDB(filepath.Join(tmpDir, "regr.db"))
+	if err != nil {
+		t.Fatalf("init test db failed: %v", err)
+	}
+	indexer, err := search.InitIndexer(filepath.Join(tmpDir, "regr.bleve"))
+	if err != nil {
+		t.Fatalf("init test indexer failed: %v", err)
+	}
+	t.Cleanup(func() { _ = indexer.Close() })
+
+	return matcher.NewMatchEngine(db, indexer), db
+}
+
+// TestMatchTemplateAngleBracketPlaceholder 回归 PARSE-05：
+// Go 的 regexp.QuoteMeta 不转义 '<' 和 '>'，若先 QuoteMeta 再试图匹配转义后的 `\<...\>` 将永不命中，
+// 导致 `<Param>` 风格的知识模板在 Tier3 中 100% 失效。
+func TestMatchTemplateAngleBracketPlaceholder(t *testing.T) {
+	logger.Init("error", "console")
+
+	engine, db := newIsolatedMatchEngine(t)
+
+	k := &model.Knowledge{
+		EntryType:   model.EntryTypeLog,
+		Module:      "TEMPLATE_ANGLE",
+		Severity:    3,
+		Brief:       "NEIGHBOR_ANGLE_DOWN",
+		Message:     "Neighbor <NbrIP> is Down.",
+		Description: "邻居中断",
+		ContentHash: "h_angle",
+	}
+	if err := db.Create(k).Error; err != nil {
+		t.Fatalf("failed to create knowledge: %v", err)
+	}
+	engine.Reload()
+
+	norm := &model.NormalizedLog{
+		Module:      "TEMPLATE_ANGLE",
+		Brief:       "SOME_OTHER_BRIEF",
+		Severity:    3,
+		MessageBody: "Neighbor 10.1.1.1 is Down.",
+	}
+	got, gotTier, _ := engine.Match(norm, "", "")
+	if got == nil || got.ID != k.ID {
+		t.Fatalf("PARSE-05 regression: <NbrIP> placeholder template should match via Tier3, got tier=%v k=%v", gotTier, got)
+	}
+	if gotTier != matcher.TierTemplate {
+		t.Fatalf("expected tier %s, got %s", matcher.TierTemplate, gotTier)
+	}
+}
+
+// TestMatchCacheKeyIsBodySensitive 回归 PARSE-01/02：
+// 同一 Module:Brief 下，不同正文必须各自独立判定；首条未命中不得毒化后续同类日志。
+func TestMatchCacheKeyIsBodySensitive(t *testing.T) {
+	logger.Init("error", "console")
+
+	engine, db := newIsolatedMatchEngine(t)
+
+	kB := &model.Knowledge{
+		EntryType:   model.EntryTypeLog,
+		Module:      "CACHEBODY",
+		Severity:    3,
+		Brief:       "UNRELATED_BRIEF_FOR_CACHE",
+		Message:     "Link flapping detected on interface <IfName>",
+		Description: "链路震荡",
+		ContentHash: "h_cachebody",
+	}
+	if err := db.Create(kB).Error; err != nil {
+		t.Fatalf("failed to create knowledge: %v", err)
+	}
+	engine.Reload()
+
+	// 第 1 条：正文完全无关 -> 应未匹配（会写入负缓存）
+	first := &model.NormalizedLog{
+		Module:      "CACHEBODY",
+		Brief:       "SOME_BRIEF",
+		Severity:    3,
+		MessageBody: "Completely unrelated text about nothing at all.",
+	}
+	if k, tier, _ := engine.Match(first, "", ""); k != nil {
+		t.Fatalf("unrelated body should not match, got tier=%v k.ID=%v", tier, k.ID)
+	}
+
+	// 第 2 条：同 Module:Brief，正文能命中模板 -> 必须独立判定，不能被上一条的负缓存毒化
+	second := &model.NormalizedLog{
+		Module:      "CACHEBODY",
+		Brief:       "SOME_BRIEF",
+		Severity:    3,
+		MessageBody: "Link flapping detected on interface GigabitEthernet1/0/1",
+	}
+	k2, tier2, _ := engine.Match(second, "", "")
+	if k2 == nil || k2.ID != kB.ID {
+		t.Fatalf("PARSE-01/02 regression: second log with different body must be judged independently, got tier=%v k=%v", tier2, k2)
+	}
+}
+
+// TestMnemonicStemPolarityBlacklist 回归 PARSE-13：
+// 大写形态的 IF_DOWN / IF_UP 也必须能被归一化识别（原实现对大写后缀完全不生效），
+// 且极性相反的后缀（UP↔DOWN、ACTIVE↔INACTIVE）禁止坍缩到同一词干后互配。
+func TestMnemonicStemPolarityBlacklist(t *testing.T) {
+	cases := []struct {
+		brief string
+		stem  string
+		pol   int8
+	}{
+		{"IF_DOWN", "IF", -1},
+		{"IF_UP", "IF", +1},
+		{"PORT_ACTIVE", "PORT", +1},
+		{"PORT_INACTIVE", "PORT", -1},
+		{"BFD_SESSION_CLEAR", "BFD_SESSION", +1},
+		{"PLAIN_BRIEF", "PLAIN_BRIEF", 0},
+		// 驼峰形态（无下划线）不在归一化范围内：刻意保持原样。
+		// 若强行剥离 "Down" 后缀，会把 hwPortShutdown 切成 hwPortShut，反而引入误配。
+		{"hwBfdSessionDown", "HWBFDSESSIONDOWN", 0},
+	}
+	for _, c := range cases {
+		stem, pol := matcher.MnemonicStemForTest(c.brief)
+		if stem != c.stem || pol != c.pol {
+			t.Errorf("MnemonicStem(%q) = (%q, %d), want (%q, %d)", c.brief, stem, pol, c.stem, c.pol)
+		}
+	}
+}

@@ -22,13 +22,20 @@ func SuccessResponse(c *gin.Context, data interface{}, message ...string) {
 }
 
 // ErrorResponse 标准错误响应
+//
+// ARCH-06: 原实现把内部错误原文（`err.Error()`）原样拼进响应体，
+// SQL 语句、表结构、服务端绝对路径等内部细节会直接泄露给客户端。
+// 现在 5xx 一律只回固定文案 + request_id，完整错误只写服务端日志；
+// 4xx 属于客户端可修正的错误，仍返回具体原因以便用户自助处理。
 func ErrorResponse(c *gin.Context, httpStatus int, code int, message string) {
 	if httpStatus >= 500 {
-		logger.Log.Errorf("[API Error %d] %s", httpStatus, message)
-		if message == "" {
-			message = "Internal Server Error"
-		} else {
-			message = "Internal Server Error: " + message
+		requestID := RequestIDFrom(c)
+		// 完整堆栈与上下文只进日志，绝不外泄
+		logger.Log.Errorf("[API Error %d] request_id=%s | %s %s | %s",
+			httpStatus, requestID, requestMethodPath(c), "", message)
+		message = "Internal Server Error"
+		if requestID != "" && requestID != "-" {
+			message = "Internal Server Error (request_id: " + requestID + ")"
 		}
 	}
 	c.JSON(httpStatus, gin.H{
@@ -36,4 +43,12 @@ func ErrorResponse(c *gin.Context, httpStatus int, code int, message string) {
 		"message": message,
 		"data":    nil,
 	})
+}
+
+// requestMethodPath 安全地拼出 "METHOD path"，供日志使用
+func requestMethodPath(c *gin.Context) string {
+	if c == nil || c.Request == nil {
+		return "-"
+	}
+	return c.Request.Method + " " + c.Request.URL.Path
 }

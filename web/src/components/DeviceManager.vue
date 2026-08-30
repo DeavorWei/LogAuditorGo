@@ -35,9 +35,10 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="device_type" label="设备类型" width="130">
+        <el-table-column prop="device_type" label="设备类型" width="150">
           <template #default="{ row }">
-            <el-tag size="small" effect="light">{{ row.device_type || 'Router' }}</el-tag>
+            <!-- WEB-16: 展示统一口径的中文名，而不是直接把 value 透给用户 -->
+            <el-tag size="small" effect="light">{{ deviceTypeLabel(row.device_type) }}</el-tag>
           </template>
         </el-table-column>
 
@@ -108,28 +109,34 @@
       width="540px"
       destroy-on-close
     >
-      <el-form :model="deviceForm" label-width="110px">
-        <el-form-item label="设备名称" required>
+      <el-form ref="deviceFormRef" :model="deviceForm" :rules="deviceFormRules" label-width="110px">
+        <el-form-item label="设备名称" prop="device_name" required>
           <el-input v-model="deviceForm.device_name" placeholder="例如: Router-Core-01" />
         </el-form-item>
 
-        <el-form-item label="设备类型" required>
+        <el-form-item label="设备类型" prop="device_type" required>
+          <!-- WEB-16: 选项统一取自常量（设备形态分类，与任务的匹配设备类型是两套口径） -->
           <el-select v-model="deviceForm.device_type" style="width: 100%;">
-            <el-option label="Router (路由器)" value="Router" />
-            <el-option label="Switch (交换机)" value="Switch" />
-            <el-option label="Firewall (防火墙)" value="Firewall" />
-            <el-option label="CloudEngine (数据中心交换机)" value="CloudEngine" />
-            <el-option label="NetEngine (核心路由器)" value="NetEngine" />
-            <el-option label="USG (安全网关)" value="HiSecEngine-USG" />
-            <el-option label="Other (其他网络设备)" value="Other" />
+            <el-option
+              v-for="opt in DEVICE_FORM_TYPE_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
           </el-select>
         </el-form-item>
 
-        <el-form-item label="匹配 Hostname">
+        <!--
+          UI-12: 补齐表单校验。
+          Hostname 用于日志自动归属，含空格或通配写法会导致归属命中错乱；
+          管理 IP 原先完全不校验，填成 "192.168.1" 或 "abc" 也能存进库，
+          导出报告与拓扑图上会直接显示成脏数据。
+        -->
+        <el-form-item label="匹配 Hostname" prop="hostname">
           <el-input v-model="deviceForm.hostname" placeholder="日志报文中的主机名，如 Router-Core-01" />
         </el-form-item>
 
-        <el-form-item label="管理 IP">
+        <el-form-item label="管理 IP" prop="management_ip">
           <el-input v-model="deviceForm.management_ip" placeholder="例如: 192.168.1.1" />
         </el-form-item>
 
@@ -198,6 +205,22 @@
         </el-tab-pane>
       </el-tabs>
 
+      <!--
+        UI-12: 冲突策略选择器。
+        原先两处导入路径都把 conflictMode 写死为 'overwrite'，
+        重复导入会静默覆盖同名文件已解析的结果（含人工确认过的归属），
+        且与文档导入页提供的 skip/overwrite/rename 选择体验不一致。
+      -->
+      <div class="conflict-strategy-box">
+        <span class="conflict-label">同名文件冲突策略</span>
+        <el-radio-group v-model="importConflictMode" size="small">
+          <el-radio-button value="rename">重命名保留</el-radio-button>
+          <el-radio-button value="skip">跳过同名</el-radio-button>
+          <el-radio-button value="overwrite">覆盖重解析</el-radio-button>
+        </el-radio-group>
+        <span class="conflict-hint">{{ conflictModeHint }}</span>
+      </div>
+
       <!-- 已选路径清单 -->
       <div v-if="selectedPaths.length > 0 && importTab !== 'text'" class="pending-paths-box">
         <div class="pending-paths-header">
@@ -236,7 +259,9 @@
 </template>
 
 <script setup>
-import { ref, onMounted, defineProps, defineEmits, watch } from 'vue'
+// UI-16: defineProps / defineEmits 是编译器宏，无需从 vue 导入
+import { ref, computed, nextTick, onMounted, watch } from 'vue'
+import { DEVICE_FORM_TYPE_OPTIONS, DEFAULT_DEVICE_FORM_TYPE, deviceTypeLabel } from '@/constants/deviceTypes'
 import { ElMessage } from 'element-plus'
 import { Monitor, UploadFilled, FolderAdd, Close } from '@element-plus/icons-vue'
 import api from '@/api'
@@ -267,14 +292,61 @@ const colorPresets = [
   '#6366F1', '#84CC16', '#06B6D4', '#64748B'
 ]
 
+const deviceFormRef = ref(null)
 const deviceForm = ref({
   device_name: '',
-  device_type: 'Router',
+  device_type: DEFAULT_DEVICE_FORM_TYPE,
   hostname: '',
   management_ip: '',
   color: '#3B82F6',
   description: ''
 })
+
+/**
+ * UI-12: 设备表单校验规则。
+ *
+ * Hostname 是日志自动归属的唯一依据，允许字母数字与 `.-_`（华为设备命名常规字符），
+ * 禁止空格与通配符，避免归属匹配时命中错乱。
+ * 管理 IP 支持标准 IPv4，留空表示不填写（该字段非必填）。
+ */
+const IPV4_PATTERN = /^((25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)\.){3}(25[0-5]|2[0-4]\d|1\d{2}|[1-9]?\d)$/
+const HOSTNAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/
+
+const deviceFormRules = {
+  device_name: [
+    { required: true, message: '请填写设备名称', trigger: 'blur' },
+    { min: 1, max: 64, message: '设备名称长度需在 1~64 个字符之间', trigger: 'blur' }
+  ],
+  device_type: [
+    { required: true, message: '请选择设备类型', trigger: 'change' }
+  ],
+  hostname: [
+    {
+      validator: (_rule, value, callback) => {
+        const v = (value || '').trim()
+        if (!v) return callback()
+        if (!HOSTNAME_PATTERN.test(v)) {
+          return callback(new Error('仅支持字母、数字、点、下划线与短横线，且需以字母或数字开头'))
+        }
+        callback()
+      },
+      trigger: 'blur'
+    }
+  ],
+  management_ip: [
+    {
+      validator: (_rule, value, callback) => {
+        const v = (value || '').trim()
+        if (!v) return callback()
+        if (!IPV4_PATTERN.test(v)) {
+          return callback(new Error('请填写合法的 IPv4 地址，例如 192.168.1.1'))
+        }
+        callback()
+      },
+      trigger: 'blur'
+    }
+  ]
+}
 
 const showImportDialog = ref(false)
 const targetDevice = ref(null)
@@ -284,6 +356,16 @@ const showPathPicker = ref(false)
 const pickerMode = ref('dir')
 const logExts = ['.log', '.txt', '.syslog']
 const textLogContent = ref('')
+
+// UI-12: 同名文件冲突策略，默认"重命名保留"（最安全，不会覆盖已有解析结果）
+const importConflictMode = ref('rename')
+
+const CONFLICT_MODE_HINTS = {
+  rename: '重名文件自动追加后缀保留，已解析结果不受影响（推荐）',
+  skip: '遇到重名文件直接跳过，仅导入新文件',
+  overwrite: '覆盖同名文件的既有解析结果，可能丢失已确认的归属与标注'
+}
+const conflictModeHint = computed(() => CONFLICT_MODE_HINTS[importConflictMode.value] || '')
 
 const fetchDevices = async () => {
   if (!props.taskId) return
@@ -323,13 +405,15 @@ const openCreateDialog = () => {
   const defaultColor = colorPresets[deviceList.value.length % colorPresets.length]
   deviceForm.value = {
     device_name: `Device-${deviceList.value.length + 1}`,
-    device_type: 'Router',
+    device_type: DEFAULT_DEVICE_FORM_TYPE,
     hostname: '',
     management_ip: '',
     color: defaultColor,
     description: ''
   }
   showDeviceDialog.value = true
+  // 打开下次对话框前清掉上一轮的校验高亮
+  nextTick(() => deviceFormRef.value?.clearValidate?.())
 }
 
 const openEditDialog = (row) => {
@@ -344,12 +428,17 @@ const openEditDialog = (row) => {
     description: row.description || ''
   }
   showDeviceDialog.value = true
+  nextTick(() => deviceFormRef.value?.clearValidate?.())
 }
 
 const saveDevice = async () => {
-  if (!deviceForm.value.device_name) {
-    ElMessage.warning('请输入设备名称')
-    return
+  // UI-12: 提交前走完整表单校验（原先只校验 device_name 非空）
+  if (deviceFormRef.value) {
+    try {
+      await deviceFormRef.value.validate()
+    } catch (e) {
+      return
+    }
   }
   submitting.value = true
   try {
@@ -422,7 +511,7 @@ const submitImportLogs = async () => {
       const res = await api.importDeviceLogsText(props.taskId, targetDevice.value.id, {
         content: textLogContent.value,
         fileName: `${targetDevice.value.device_name}_manual.txt`,
-        conflictMode: 'overwrite'
+        conflictMode: importConflictMode.value
       })
       if (res.code === 0) {
         showImportDialog.value = false
@@ -451,7 +540,7 @@ const submitImportLogs = async () => {
       paths: selectedPaths.value,
       exts: logExts,
       recursive: true,
-      conflictMode: 'overwrite'
+      conflictMode: importConflictMode.value
     })
     if (res.code === 0) {
       showImportDialog.value = false
@@ -480,7 +569,9 @@ onMounted(() => {
 })
 
 defineExpose({
-  fetchDevices
+  fetchDevices,
+  // 供父组件在设备变更后主动刷新（替代 :key 强制重挂载，避免丢失内部状态）
+  refresh: fetchDevices
 })
 </script>
 
@@ -507,6 +598,33 @@ defineExpose({
   line-height: 1.7;
   margin: 0 auto 14px auto;
   max-width: 440px;
+}
+
+/* UI-12: 同名文件冲突策略选择器 */
+.conflict-strategy-box {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.conflict-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #334155;
+  flex-shrink: 0;
+}
+
+.conflict-hint {
+  font-size: 12px;
+  color: #64748b;
+  flex: 1;
+  min-width: 200px;
 }
 
 /* 已选路径清单 */

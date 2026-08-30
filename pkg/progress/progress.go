@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -105,6 +106,14 @@ type JobTracker struct {
 	overallLabel string
 	// forwardOnly 为 true 时阶段只允许前进，避免批量处理阶段条来回跳动
 	forwardOnly bool
+
+	// ctx / cancel 支持协作式取消 (UI-02)。
+	// 长耗时任务（日志导入、重分析、HDX 文档导入）在阶段循环中检查 ctx.Done()，
+	// 用户点击"终止任务"后服务端可在秒级内停止，而不是只能等跑完或强杀进程。
+	ctx        context.Context
+	cancelOnce sync.Once
+	cancelFn   context.CancelFunc
+	canceled   bool
 }
 
 // NewJobTracker 创建新的任务进度追踪器
@@ -135,6 +144,7 @@ func NewJobTracker(jobID string, taskID string, jobType string, stageDefs []Stag
 		logs:           make([]LogEntry, 0, 50),
 		overallPercent: -1,
 	}
+	tracker.ctx, tracker.cancelFn = context.WithCancel(context.Background())
 
 	return tracker
 }
@@ -145,6 +155,56 @@ func (t *JobTracker) JobID() string {
 
 func (t *JobTracker) TaskID() string {
 	return t.taskID
+}
+
+// Context 返回与本次任务绑定的上下文。
+// 长耗时任务应在阶段循环中定期检查 ctx.Done() 并尽快退出。
+func (t *JobTracker) Context() context.Context {
+	if t.ctx == nil {
+		return context.Background()
+	}
+	return t.ctx
+}
+
+// IsCanceled 返回任务是否已被请求取消
+func (t *JobTracker) IsCanceled() bool {
+	return t.Context().Err() != nil
+}
+
+// Cancel 请求取消任务（幂等）。
+//
+// UI-02: 这是"终止任务"按钮的后端支撑。取消是协作式的——
+// 它只会关闭 ctx 并把任务标记为 FAILED，真正的停止由业务循环检查 ctx 完成，
+// 不会粗暴地杀死 goroutine 导致数据处于半截状态。
+// 返回值表示本次调用是否真正触发了取消（已终态的任务返回 false）。
+func (t *JobTracker) Cancel(reason string) bool {
+	if t == nil {
+		return false
+	}
+	// 先读取状态，避免对已终态任务重复打日志
+	t.mu.RLock()
+	done := t.status == JobCompleted || t.status == JobFailed
+	t.mu.RUnlock()
+	if done {
+		return false
+	}
+
+	triggered := false
+	t.cancelOnce.Do(func() {
+		if t.cancelFn != nil {
+			t.cancelFn()
+		}
+		triggered = true
+	})
+	if !triggered {
+		return false
+	}
+
+	if reason == "" {
+		reason = "用户主动终止任务"
+	}
+	t.Fail(fmt.Errorf("%s", reason), reason)
+	return true
 }
 
 // SetStage 切换到指定阶段
@@ -629,6 +689,18 @@ func (h *Hub) GetJob(jobID string) *JobTracker {
 	return h.jobs[jobID]
 }
 
+// CancelJob 按 jobID 请求取消任务 (UI-02)。
+// 返回 false 表示任务不存在或已处于终态。
+func (h *Hub) CancelJob(jobID string, reason string) bool {
+	h.mu.RLock()
+	job := h.jobs[jobID]
+	h.mu.RUnlock()
+	if job == nil {
+		return false
+	}
+	return job.Cancel(reason)
+}
+
 // startJanitor 定期清理超过 30 分钟未更新的任务
 func (h *Hub) startJanitor() {
 	ticker := time.NewTicker(5 * time.Minute)
@@ -649,6 +721,10 @@ func (h *Hub) startJanitor() {
 
 				if isDone && now.Sub(lastUp) > 30*time.Minute {
 					delete(h.jobs, id)
+					// 释放与任务绑定的 context，避免取消函数与子 context 长期驻留
+					if job.cancelFn != nil {
+						job.cancelFn()
+					}
 				}
 			}
 			h.mu.Unlock()

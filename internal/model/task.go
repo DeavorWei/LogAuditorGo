@@ -16,7 +16,13 @@ type TaskInfo struct {
 	TaskID       string     `gorm:"primaryKey;size:64" json:"task_id"`
 	TaskName     string     `gorm:"size:255" json:"task_name"`
 	DeviceType   string     `gorm:"size:128" json:"device_type"`
-	FileCount    int        `json:"file_count"`
+	// DeviceVersion 设备软件版本（如 V200R024C00）。
+	//
+	// PARSE-04: 新增字段。此前生产代码恒以空版本号调用 Match()，
+	// 使"同型号同版本优先"档位（150 分）永不生效、偏好较新版本的排序也无从谈起，
+	// 旧版本知识可能盖掉新版本正确知识。只有把版本真正透传进去，版本分档才有意义。
+	DeviceVersion string    `gorm:"size:64" json:"device_version"`
+	FileCount     int       `json:"file_count"`
 	DeviceCount  int        `json:"device_count"` // 设备数量
 	LogCount     int        `json:"log_count"`
 	MatchedCount int        `json:"matched_count"`
@@ -60,5 +66,15 @@ type LogQueryFilter struct {
 	Matched    *bool      `form:"matched" json:"matched"`
 	TimeStart  *time.Time `form:"time_start" json:"time_start"`
 	TimeEnd    *time.Time `form:"time_end" json:"time_end"`
+
+	// AfterID 游标分页锚点 (TASK-13)。
+	//
+	// 深翻页（offset 很大）时 SQLite 必须先扫描并丢弃 offset 之前的全部行，
+	// 大表上越往后越慢。传入上一页最后一行的 ID 即可改为
+	// `WHERE id > AfterID ORDER BY id ASC LIMIT n`，代价恒定。
+	// 为 0 时回退到传统的 offset 分页，保证既有调用不受影响。
+	AfterID uint `form:"after_id" json:"after_id"`
 }
+
+
 

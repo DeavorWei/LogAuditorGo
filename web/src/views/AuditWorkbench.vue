@@ -55,37 +55,50 @@
 
     <!-- 功能视图切换导航 -->
     <div v-if="currentTaskId" class="workbench-nav-bar">
+      <!--
+        WEB-16: 视图模式改为由常量驱动。
+        原先 label 是 5 个裸字符串，与下面 v-if 的判断条件各写各的，
+        改一处漏一处就会渲染成空白视图。现在统一取自 VIEW_MODE_OPTIONS。
+      -->
       <el-radio-group v-model="currentViewMode" size="default">
-        <el-radio-button label="workbench">
+        <el-radio-button :label="VIEW_MODE.WORKBENCH">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Document /></el-icon>
           <span>日志审计工作台</span>
         </el-radio-button>
-        <el-radio-button label="devices">
+        <el-radio-button :label="VIEW_MODE.DEVICES">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Monitor /></el-icon>
           <span>设备管理</span>
           <el-badge v-if="currentTask && currentTask.device_count" :value="currentTask.device_count" type="primary" style="margin-left: 6px;" />
         </el-radio-button>
-        <el-radio-button label="multi-timeline">
+        <el-radio-button :label="VIEW_MODE.MULTI_TIMELINE">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
           <span>多设备协同时间线</span>
         </el-radio-button>
-        <el-radio-button label="rca">
+        <el-radio-button :label="VIEW_MODE.RCA">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Aim /></el-icon>
           <span>RCA 故障联动</span>
           <el-badge v-if="currentTask && currentTask.rca_count" :value="currentTask.rca_count" type="danger" style="margin-left: 6px;" />
         </el-radio-button>
-        <el-radio-button label="multi-report">
+        <el-radio-button :label="VIEW_MODE.MULTI_REPORT">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
           <span>多设备对比诊断报告</span>
         </el-radio-button>
       </el-radio-group>
     </div>
 
+    <!--
+      视图切换说明（WEB-02）：
+      原实现外层用 v-show 控制显隐、内层 v-if 只判断 currentTaskId，
+      导致选中任务后 4 个子组件被**同时挂载**（各自 onMounted 立即发请求），
+      首屏并发 10+ 请求（含 500 条时间线数据），且 4 个重型组件常驻内存。
+      现将显隐条件收敛到 v-if 上，未激活的视图不创建实例、不发请求；
+      同时去掉 refreshTrigger 拼 key 的强制重挂载，改由子组件的 refresh() 方法刷新。
+    -->
+
     <!-- 视图 1：设备管理视图 -->
-    <div v-show="currentTaskId && currentViewMode === 'devices'" class="workbench-sub-view">
+    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.DEVICES" class="workbench-sub-view">
       <DeviceManager
         ref="deviceManagerRef"
-        v-if="currentTaskId"
         :task-id="currentTaskId"
         @device-updated="handleDeviceUpdated"
         @open-progress="openProgressModalWithId"
@@ -93,35 +106,32 @@
     </div>
 
     <!-- 视图 2：多设备时间线视图 -->
-    <div v-show="currentTaskId && currentViewMode === 'multi-timeline'" class="workbench-sub-view">
+    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.MULTI_TIMELINE" class="workbench-sub-view">
       <MultiDeviceTimeline
-        v-if="currentTaskId"
-        :key="currentTaskId + '_timeline_' + refreshTrigger"
+        ref="timelineRef"
         :task-id="currentTaskId"
       />
     </div>
 
     <!-- 视图 3：独立 RCA 故障联动分析中心 -->
-    <div v-show="currentTaskId && currentViewMode === 'rca'" class="workbench-sub-view">
+    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.RCA" class="workbench-sub-view">
       <RcaCenter
-        v-if="currentTaskId"
-        :key="currentTaskId + '_rca_' + refreshTrigger"
+        ref="rcaCenterRef"
         :task-id="currentTaskId"
         @jump-to-log="handleJumpToLog"
       />
     </div>
 
     <!-- 视图 4：多设备对比诊断报告视图 -->
-    <div v-show="currentTaskId && currentViewMode === 'multi-report'" class="workbench-sub-view">
+    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.MULTI_REPORT" class="workbench-sub-view">
       <MultiDeviceReport
-        v-if="currentTaskId"
-        :key="currentTaskId + '_report_' + refreshTrigger"
+        ref="multiReportRef"
         :task-id="currentTaskId"
       />
     </div>
 
     <!-- 视图 5：经典日志审计工作台视图 -->
-    <div v-show="currentTaskId && (currentViewMode === 'workbench' || !currentViewMode)" class="workbench-main-view">
+    <div v-show="currentTaskId && (currentViewMode === VIEW_MODE.WORKBENCH || !currentViewMode)" class="workbench-main-view">
       <!-- 空任务（PENDING 状态）引导卡片 -->
       <div v-if="currentTask && (currentTask.status === 'PENDING' || (totalLogs === 0 && !loadingLogs))" class="empty-task-guide">
         <el-card shadow="never" class="guide-card">
@@ -264,7 +274,7 @@
               <strong>系统已识别 {{ rcaEvents.length }} 个协议联动事件</strong>
             </span>
           </div>
-          <el-button type="warning" link size="small" icon="ArrowRight" @click="currentViewMode = 'rca'">
+          <el-button type="warning" link size="small" icon="ArrowRight" @click="currentViewMode = VIEW_MODE.RCA">
             查看 RCA 全景分析
           </el-button>
         </div>
@@ -399,7 +409,7 @@
                   <div class="kb-subtitle">📖 日志/告警含义解释</div>
                   <div
                     class="kb-text"
-                    v-html="renderContextualizedHtml(selectedLog.knowledge.description || selectedLog.knowledge.message)"
+                    v-html="renderedKnowledgeHtml.description"
                   ></div>
                 </div>
 
@@ -408,7 +418,7 @@
                   <div class="kb-subtitle">🔍 官方可能原因</div>
                   <div
                     class="kb-text cause-text"
-                    v-html="renderContextualizedHtml(selectedLog.knowledge.cause || '官方文档未提供特定原因')"
+                    v-html="renderedKnowledgeHtml.cause"
                   ></div>
                 </div>
 
@@ -417,7 +427,7 @@
                   <div class="kb-subtitle">🛠️ 官方处理排错步骤</div>
                   <div
                     class="kb-text action-box"
-                    v-html="renderContextualizedHtml(selectedLog.knowledge.action || '按标准网络排错规范处理')"
+                    v-html="renderedKnowledgeHtml.action"
                   ></div>
                 </div>
 
@@ -426,7 +436,7 @@
                   <div class="kb-subtitle">⚠️ 对系统的影响</div>
                   <div
                     class="kb-text"
-                    v-html="renderContextualizedHtml(selectedLog.knowledge.impact)"
+                    v-html="renderedKnowledgeHtml.impact"
                   ></div>
                 </div>
 
@@ -510,10 +520,14 @@
           <el-input v-model="newTaskForm.taskName" placeholder="例如: Core-SW-01排查-20260415" />
         </el-form-item>
         <el-form-item label="设备类型">
+          <!-- WEB-16: 选项统一取自常量，与 Dashboard 保持同一口径（原先此处只有 3 项） -->
           <el-select v-model="newTaskForm.deviceType" style="width: 100%;">
-            <el-option label="CloudEngine 数据中心交换机" value="CloudEngine" />
-            <el-option label="HiSecEngine 防火墙 (USG)" value="HiSecEngine-USG" />
-            <el-option label="通用华为 VRP 设备" value="Huawei-VRP" />
+            <el-option
+              v-for="opt in DEVICE_TYPE_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
           </el-select>
         </el-form-item>
       </el-form>
@@ -645,7 +659,7 @@
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
@@ -655,25 +669,66 @@ import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import RcaCenter from '@/components/RcaCenter.vue'
+import { useFilterStore } from '@/stores/filter'
+import { useTaskStore } from '@/stores/task'
+import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
+import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
+import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
+import { useReanalyze } from '@/composables/useReanalyze'
 
 const route = useRoute()
-const router = useRouter()
+// WEB-14: 原文件声明了 `const router = useRouter()` 却从未使用（全文件无 router. 调用），
+// 属于死代码，已移除。需要跳转时请重新引入 useRouter。
 
 const taskList = ref([])
 const currentTaskId = ref('')
 const currentTask = ref(null)
-const currentViewMode = ref('workbench')
+/**
+ * 视图模式：优先恢复上次使用的视图（持久化在 filter store），
+ * 并用 isValidViewMode 校验外部输入——localStorage 可能被手工改坏，
+ * 脏值回退到默认视图，避免出现"什么都渲染不出来"的空白页面。
+ */
+const currentViewMode = ref(
+  isValidViewMode(filterStore.filters.viewMode)
+    ? filterStore.filters.viewMode
+    : DEFAULT_VIEW_MODE
+)
+
+// 视图切换即落盘，下次进入工作台直接回到上次的分析视图
+watch(currentViewMode, (mode) => {
+  filterStore.filters.viewMode = mode
+})
 const taskFiles = ref([])
 const showFilesDrawer = ref(false)
 const refreshTrigger = ref(0)
 const deviceManagerRef = ref(null)
+const timelineRef = ref(null)
+const rcaCenterRef = ref(null)
+const multiReportRef = ref(null)
+
+// 主动刷新当前激活的子视图。
+// 原实现靠 refreshTrigger++ 触发 :key 变化来"销毁重建"子组件，代价是丢失滚动位置与内部筛选状态；
+// 现改为调用子组件暴露的 refresh()，仅在子视图已挂载时生效（未激活的视图本就不该拉数据）。
+const refreshActiveSubView = async () => {
+  const target = {
+    [VIEW_MODE.DEVICES]: deviceManagerRef,
+    [VIEW_MODE.MULTI_TIMELINE]: timelineRef,
+    [VIEW_MODE.RCA]: rcaCenterRef,
+    [VIEW_MODE.MULTI_REPORT]: multiReportRef
+  }[currentViewMode.value]
+  try {
+    await target?.value?.refresh?.()
+  } catch (e) {
+    // 子组件尚未实现 refresh() 时静默降级，不影响主流程
+  }
+}
 
 const handleDeviceUpdated = async (devices) => {
   if (currentTask.value) {
     currentTask.value.device_count = devices ? devices.length : 0
   }
   taskDevices.value = devices || []
-  refreshTrigger.value++
+  await refreshActiveSubView()
 }
 
 const openProgressModalWithId = (jobId) => {
@@ -682,7 +737,7 @@ const openProgressModalWithId = (jobId) => {
 }
 
 const handleJumpToLog = async (logId) => {
-  currentViewMode.value = 'workbench'
+  currentViewMode.value = DEFAULT_VIEW_MODE
   try {
     const res = await api.queryTaskLogs(currentTaskId.value, {
       page: 1,
@@ -701,27 +756,35 @@ const logRecords = ref([])
 const totalLogs = ref(0)
 const loadingLogs = ref(false)
 const selectedLog = ref(null)
-const rcaEvents = ref([])
 const activeTab = ref('knowledge')
 
 const taskDevices = ref([])
 
-const filter = ref({
-  page: 1,
-  pageSize: 50,
-  keyword: '',
-  severity: null,
-  matched: null,
-  sourceFile: '',
-  deviceId: null
-})
+/**
+ * WEB-05: 筛选条件上收至 Pinia store。
+ * 原先是组件内的局部 ref，切换视图即丢失，刷新页面也要重新勾选。
+ * 这里直接复用 store 中的响应式对象（读写都走同一份状态，不做二次拷贝）。
+ */
+const filterStore = useFilterStore()
+const filter = computed(() => filterStore.filters)
+
+/**
+ * WEB-05 / WEB-13: RCA 事件与其倒排索引上收至 task store。
+ *
+ * 原先 `rcaEvents` 是本地 ref，且 `matchedRCA` 在模板里对每条日志
+ * 都要遍历全部 RCA 事件并 `JSON.parse(correlated_log_ids)`——
+ * 日志列表一翻页就成百上千次重复解析。
+ * 改为由 store 在拉取时预建 `Map<logId, rcaEvent>`，查询降为 O(1)。
+ */
+const taskStore = useTaskStore()
+const rcaEvents = computed(() => taskStore.rcaEvents)
 
 // 新建任务相关
 const showNewTaskDialog = ref(false)
 const submitting = ref(false)
 const newTaskForm = ref({
   taskName: '',
-  deviceType: 'CloudEngine'
+  deviceType: DEFAULT_DEVICE_TYPE
 })
 
 // 导入相关
@@ -738,10 +801,9 @@ const logExts = ['.log', '.txt', '.syslog']
 const showProgressModal = ref(false)
 const currentJobId = ref('')
 
-const filesInputRef = ref(null)
-const dirInputRef = ref(null)
-const guideFilesInputRef = ref(null)
-const guideDirInputRef = ref(null)
+// WEB-14: filesInputRef / dirInputRef / guideFilesInputRef / guideDirInputRef
+// 四个 ref 原先只出现在定义处，模板与脚本均无引用（历史遗留的 input[type=file] 方案残留），
+// 已一并移除。当前的文件选择统一走 ServerPathPicker 服务端直读模式。
 
 // 冲突弹窗
 const showConflictDialog = ref(false)
@@ -777,11 +839,6 @@ const formatTooltipHtml = (text) => {
   if (!text) return ''
   const escaped = escapeHtml(text).replace(/\r?\n/g, '<br/>')
   return `<div style="max-width: 420px; max-height: 280px; overflow-y: auto; white-space: normal; line-height: 1.6; font-size: 12px; padding: 2px 4px;"><strong>官方文档定义:</strong><br/>${escaped}</div>`
-}
-
-const escapeRegExp = (str) => {
-  if (!str) return ''
-  return String(str).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // 动态变量与官方文档参数定义融合
@@ -957,18 +1014,17 @@ const renderedTemplateHtml = computed(() => {
 // 现场排查上下文参数注入开关
 const contextualizeMode = ref(true)
 
-// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染，并保证换行清晰展示
-const renderContextualizedHtml = (text) => {
-  if (!text) return ''
-
-  // 1. 归一化换行符（处理字面量 \n 以及 \r\n）
-  let normalized = String(text)
+/**
+ * 换行符归一化（处理字面量 \n 与 \r\n），并对"步骤/原因序号"智能补换行。
+ * 抽成独立函数后可供 renderContextualizedHtml 与其 computed 缓存共用。
+ */
+const normalizeLineBreaks = (raw) => {
+  let normalized = String(raw)
     .replace(/\\r\\n/g, '\n')
     .replace(/\\n/g, '\n')
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
 
-  // 2. 如果缺少换行但包含步骤序号（如 " 1. "、" 2. " 或 " 步骤1" 或 " 原因1"），智能补全换行
   if (!normalized.includes('\n')) {
     normalized = normalized
       .replace(/(\s+)(\d+[\.、]\s*)/g, '\n$2')
@@ -976,10 +1032,18 @@ const renderContextualizedHtml = (text) => {
       .replace(/(\s+)(原因\s*\d+[\.、:：]?\s*)/g, '\n$2')
       .trim()
   }
+  return normalized
+}
 
+// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染，并保证换行清晰展示
+const renderContextualizedHtml = (text) => {
+  if (!text) return ''
   if (!contextualizeMode.value) {
-    return escapeHtml(normalized).replace(/\n/g, '<br/>')
+    // 关闭注入时无需占位符处理，走纯转义路径
+    return escapeHtml(normalizeLineBreaks(String(text))).replace(/\n/g, '<br/>')
   }
+
+  const normalized = normalizeLineBreaks(text)
 
   const params = parsedParameters.value || {}
   const normParams = new Map()
@@ -1019,6 +1083,28 @@ const renderContextualizedHtml = (text) => {
   return html
 }
 
+/**
+ * WEB-11: 知识面板四段长文本的渲染结果缓存。
+ *
+ * 原实现在模板里直接调用 renderContextualizedHtml(...) 共 4 处，
+ * 该函数内含多次 replace + 正则 while 循环 + escapeHtml，
+ * 组件每次重渲染（例如切换分页、勾选筛选）都会把四段长文本全部重算一遍
+ * 并重建 4 个 v-html 子树。改为 computed 后只在
+ * selectedLog / contextualizeMode / parsedParameters 变化时才重算。
+ */
+const renderedKnowledgeHtml = computed(() => {
+  const kb = selectedLog.value?.knowledge
+  if (!kb) {
+    return { description: '', cause: '', action: '', impact: '' }
+  }
+  return {
+    description: renderContextualizedHtml(kb.description || kb.message),
+    cause: renderContextualizedHtml(kb.cause || '官方文档未提供特定原因'),
+    action: renderContextualizedHtml(kb.action || '按标准网络排错规范处理'),
+    impact: renderContextualizedHtml(kb.impact)
+  }
+})
+
 // 官方知识库参数字典与现场实际值对照列表
 const kbParamDefs = computed(() => {
   const kb = selectedLog.value?.knowledge
@@ -1056,34 +1142,37 @@ const kbParamDefs = computed(() => {
   })
 })
 
+// WEB-13: 由 store 预建的 logId -> rcaEvent 倒排索引直接命中，O(1) 查询。
+// 旧实现每次渲染都要遍历全部 RCA 事件并 JSON.parse 其关联日志列表。
 const matchedRCA = computed(() => {
-  if (!selectedLog.value || !rcaEvents.value.length) return null
-  return rcaEvents.value.find(ev => {
-    if (ev.root_log_id === selectedLog.value.id) return true
-    try {
-      const corr = JSON.parse(ev.correlated_log_ids)
-      return corr.includes(selectedLog.value.id)
-    } catch (e) {
-      return false
-    }
-  })
+  const logId = selectedLog.value?.id
+  if (!logId) return null
+  return taskStore.rcaOfLog(logId)
 })
 
+/**
+ * WEB-06: 只负责拉取任务列表，不再顺带触发一次完整加载。
+ *
+ * 原实现在拿到列表后会内部再调用 `handleTaskChange(...)`，
+ * 而调用方（导入完成、创建任务）紧接着又调一次，
+ * 于是一次操作发出 8+ 个请求、页面反复闪烁 loading。
+ * 现在"拉列表"与"切任务"职责分离，由调用方显式编排。
+ */
 const fetchTasks = async () => {
   try {
     const res = await api.getTasks()
-    if (res.code === 0) {
-      taskList.value = res.data
-      if (route.params.id) {
-        currentTaskId.value = route.params.id
-      } else if (taskList.value.length > 0 && !currentTaskId.value) {
-        currentTaskId.value = taskList.value[0].task_id
-      }
-      if (currentTaskId.value) {
-        handleTaskChange(currentTaskId.value)
-      }
+    if (res.code !== 0) return
+    taskList.value = res.data || []
+    if (route.params.id) {
+      currentTaskId.value = route.params.id
+    } else if (taskList.value.length > 0 && !currentTaskId.value) {
+      currentTaskId.value = taskList.value[0].task_id
     }
-  } catch (e) {}
+    // 同步 currentTask 快照，避免列表刷新后标题栏仍显示旧任务名
+    currentTask.value = taskList.value.find(t => t.task_id === currentTaskId.value) || null
+  } catch (e) {
+    // 错误已由 api 拦截器统一弹出
+  }
 }
 
 const handleTaskChange = async (taskId) => {
@@ -1093,10 +1182,13 @@ const handleTaskChange = async (taskId) => {
   filter.value.sourceFile = ''
   filter.value.deviceId = null
   selectedLog.value = null
-  await fetchTaskFiles()
-  await fetchTaskDevices()
+
+  /**
+   * WEB-12: 文件 / 设备 / RCA 三个维度彼此独立，旧实现串行 await 需要 3 个 RTT。
+   * 这里改为并发拉取；日志列表依赖设备与文件下拉框就绪，仍放在最后串行执行。
+   */
+  await Promise.all([fetchTaskFiles(), fetchTaskDevices(), fetchRCA()])
   await fetchLogs()
-  await fetchRCA()
 }
 
 const fetchTaskFiles = async () => {
@@ -1130,17 +1222,9 @@ const fetchLogs = async () => {
   if (!currentTaskId.value) return
   loadingLogs.value = true
   try {
-    const params = {
-      page: filter.value.page,
-      page_size: filter.value.pageSize,
-      keyword: filter.value.keyword,
-      severity: filter.value.severity,
-      matched: filter.value.matched,
-      source_file: filter.value.sourceFile
-    }
-    if (filter.value.deviceId !== null && filter.value.deviceId !== undefined && filter.value.deviceId !== '') {
-      params.device_id = filter.value.deviceId
-    }
+    // 复用 filter store 的参数组装逻辑：空值一律不下发，
+    // 避免把 "" / null 当成有效过滤条件传给后端 (WEB-05)
+    const params = filterStore.toLogQueryParams(filter.value.page, filter.value.pageSize)
     const res = await api.queryTaskLogs(currentTaskId.value, params)
     if (res.code === 0) {
       logRecords.value = res.data.records
@@ -1161,12 +1245,12 @@ const fetchLogs = async () => {
 
 const fetchRCA = async () => {
   if (!currentTaskId.value) return
+  // 交由 task store 统一拉取，并在内部同步构建 logId -> rcaEvent 倒排索引 (WEB-13)
   try {
-    const res = await api.getTaskRCA(currentTaskId.value)
-    if (res.code === 0) {
-      rcaEvents.value = res.data
-    }
-  } catch (e) {}
+    await taskStore.fetchRCA(currentTaskId.value)
+  } catch (e) {
+    console.error('Fetch RCA events failed:', e)
+  }
 }
 
 const selectLog = (log) => {
@@ -1191,7 +1275,7 @@ const handleExportHTML = async () => {
 const openNewTaskDialog = () => {
   const nowStr = new Date().toISOString().replace(/[-:T.]/g, '').substring(0, 14)
   newTaskForm.value.taskName = `Audit-${nowStr}`
-  newTaskForm.value.deviceType = 'CloudEngine'
+  newTaskForm.value.deviceType = DEFAULT_DEVICE_TYPE
   showNewTaskDialog.value = true
 }
 
@@ -1364,30 +1448,20 @@ const executeImportWithConflict = async (conflictMode) => {
 }
 
 // 触发当前任务全量重新分析
+// WEB-16: 与 Tasks 共用同一套"重新分析"编排，消除逐行重复与行为分叉
+const { reanalyze } = useReanalyze({
+  onJobStarted: (jobId) => {
+    currentJobId.value = jobId
+    showProgressModal.value = true
+  },
+  onSettled: async (data) => {
+    await handleLogImportCompleted(data)
+  }
+})
+
 const handleReanalyzeTask = () => {
   if (!currentTaskId.value || !currentTask.value) return
-  ElMessageBox.confirm(
-    `确认对任务【${currentTask.value.task_name}】的全部 ${currentTask.value.log_count} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？`,
-    '重新分析确认',
-    {
-      confirmButtonText: '开始重新分析',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(async () => {
-    try {
-      const res = await api.reanalyzeTask(currentTaskId.value, true)
-      if (res.code === 0 && res.data?.job_id) {
-        currentJobId.value = res.data.job_id
-        showProgressModal.value = true
-      } else {
-        ElMessage.success('重新分析请求已提交')
-        await handleLogImportCompleted(res.data)
-      }
-    } catch (e) {
-      ElMessage.error('触发重新分析失败: ' + (e.message || '网络异常'))
-    }
-  }).catch(() => {})
+  reanalyze(currentTask.value)
 }
 
 // 日志导入完成回调：自动刷新并无缝载入审计工作台
@@ -1399,34 +1473,25 @@ const handleLogImportCompleted = async (result) => {
   await fetchTasks()
   if (currentTaskId.value) {
     await handleTaskChange(currentTaskId.value)
-    refreshTrigger.value++
-    deviceManagerRef.value?.fetchDevices?.()
+    await refreshActiveSubView()
   }
 }
 
 // 监听视图模式切换：确保切换到多设备时间线、设备管理、RCA分析等子视图时展示最新数据
 watch(currentViewMode, async (newMode) => {
   if (!currentTaskId.value) return
-  if (newMode === 'devices') {
+  if (newMode === VIEW_MODE.DEVICES) {
     await fetchTaskDevices()
     deviceManagerRef.value?.fetchDevices?.()
-  } else if (newMode === 'workbench') {
+  } else if (newMode === VIEW_MODE.WORKBENCH) {
     await fetchLogs()
     await fetchTaskFiles()
   }
 })
 
-const formatTime = (ts) => {
-  if (!ts || ts.startsWith('0001-01-01') || ts === '0001-01-01T00:00:00Z') return '无法解析'
-  return ts.replace('T', ' ').substring(0, 19)
-}
-
-const formatSize = (bytes) => {
-  if (!bytes) return '0 B'
-  if (bytes < 1024) return bytes + ' B'
-  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
-  return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-}
+// WEB-16: 时间/体积格式化统一走 utils/format，消除与 Tasks、ServerPathPicker 的重复实现
+const formatTime = (ts) => sharedFormatTime(ts, '无法解析')
+const formatSize = sharedFormatSize
 
 const getSevClass = (sev) => {
   if (sev <= 2) return 'sev-crit'
@@ -1435,9 +1500,29 @@ const getSevClass = (sev) => {
   return 'sev-info'
 }
 
-onMounted(() => {
-  fetchTasks()
+// WEB-06: 首屏显式编排——先拉列表，再按解析出的任务 ID 加载一次详情，
+// 避免"列表内部偷偷加载一次 + 外部再加载一次"的重复请求。
+onMounted(async () => {
+  await fetchTasks()
+  if (currentTaskId.value) {
+    await handleTaskChange(currentTaskId.value)
+  }
 })
+
+// WEB-03：/audit 与 /audit/:id 指向同一组件，Vue Router 会复用组件实例。
+// 此前只在 fetchTasks 里读一次 route.params.id，导致从 /audit/xxx 导航回 /audit
+// （或在两个任务间跳转）时页面完全不刷新，仍停留在旧任务。
+watch(
+  () => route.params.id,
+  async (newId, oldId) => {
+    if (newId === oldId) return
+    // 路由带明确任务 ID 时以路由为准；回到 /audit 时保留当前选择，避免列表被重置
+    if (newId) {
+      currentTaskId.value = newId
+      await handleTaskChange(newId)
+    }
+  }
+)
 </script>
 
 <style scoped>

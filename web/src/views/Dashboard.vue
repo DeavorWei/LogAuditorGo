@@ -93,12 +93,14 @@
           <el-input v-model="newTaskForm.taskName" placeholder="例如: Core-SW-01故障排查-20260415" />
         </el-form-item>
         <el-form-item label="设备类型">
+          <!-- WEB-16: 选项统一取自常量，与 AuditWorkbench 保持同一口径 -->
           <el-select v-model="newTaskForm.deviceType" style="width: 100%;">
-            <el-option label="CloudEngine 数据中心交换机" value="CloudEngine" />
-            <el-option label="HiSecEngine 防火墙 (USG)" value="HiSecEngine-USG" />
-            <el-option label="Campus 园区交换机 (S系列)" value="Campus-Switch" />
-            <el-option label="NetEngine 核心路由器 (NE系列)" value="NetEngine" />
-            <el-option label="通用华为 VRP 设备" value="Huawei-VRP" />
+            <el-option
+              v-for="opt in DEVICE_TYPE_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
           </el-select>
         </el-form-item>
         <el-form-item label="粘贴 Syslog 日志文本">
@@ -115,6 +117,14 @@
         <el-button type="primary" :loading="creatingTask" @click="handleCreateTask">立即分析</el-button>
       </template>
     </el-dialog>
+
+    <!-- 后台分析进度追踪弹窗（WEB-04） -->
+    <ImportProgressModal
+      v-model="showProgressModal"
+      :job-id="currentJobId"
+      @completed="handleTaskCreateCompleted"
+      @failed="handleTaskCreateFailed"
+    />
   </div>
 </template>
 
@@ -122,8 +132,11 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import * as echarts from 'echarts'
+// UI-09: 改用按需引入的 echarts 入口，避免把全量图表类型打进首屏
+import echarts from '@/plugins/echarts'
 import api from '@/api'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 
 const router = useRouter()
 const stats = ref({})
@@ -134,9 +147,14 @@ const showNewTaskDialog = ref(false)
 const creatingTask = ref(false)
 const newTaskForm = ref({
   taskName: '',
-  deviceType: 'CloudEngine',
+  deviceType: DEFAULT_DEVICE_TYPE,
   content: ''
 })
+
+// 后台分析进度追踪（WEB-04）：createTask 默认异步返回 job_id
+const showProgressModal = ref(false)
+const currentJobId = ref('')
+const pendingTaskId = ref('')
 
 const fetchStats = async () => {
   try {
@@ -195,22 +213,67 @@ const handleCreateTask = async () => {
       device_type: newTaskForm.value.deviceType,
       content: newTaskForm.value.content
     })
-    if (res.code === 0) {
-      ElMessage.success('任务创建并分析完成！')
-      showNewTaskDialog.value = false
-      router.push(`/audit/${res.data.task_id}`)
+    if (res.code !== 0) return
+
+    const taskId = res.data?.task_id
+    const jobId = res.data?.job_id
+    showNewTaskDialog.value = false
+
+    // WEB-04: api.createTask 默认 is_async = true，后端返回时分析仍在后台跑。
+    // 原实现直接提示"任务创建并分析完成！"并跳转，用户进入工作台看到的是空/PENDING 数据，
+    // 极易误判为创建失败。这里改为：有 job_id 就打开进度弹窗，真正完成后再跳转。
+    if (jobId) {
+      pendingTaskId.value = taskId || ''
+      currentJobId.value = jobId
+      showProgressModal.value = true
+      ElMessage.info('任务已创建，正在后台分析中...')
+      return
     }
+
+    ElMessage.success('任务创建并分析完成！')
+    if (taskId) router.push(`/audit/${taskId}`)
   } finally {
     creatingTask.value = false
   }
 }
 
+// 后台分析完成：提示并跳转到对应任务的工作台
+const handleTaskCreateCompleted = () => {
+  showProgressModal.value = false
+  ElMessage.success('任务创建并分析完成！')
+  if (pendingTaskId.value) {
+    router.push(`/audit/${pendingTaskId.value}`)
+    pendingTaskId.value = ''
+  }
+}
+
+const handleTaskCreateFailed = (payload) => {
+  const reason = typeof payload === 'string' ? payload : payload?.error || payload?.message
+  ElMessage.error('任务分析失败' + (reason ? ': ' + reason : ''))
+}
+
+// WEB-07: 原实现注册的是匿名函数且从不移除，每次进入仪表盘都会泄漏一个闭包监听器，
+// 反复进出后 resize 会触发 N 次已 dispose 实例的调用。这里改为具名 + 防抖 + 成对移除。
+let resizeTimer = null
+const handleResize = () => {
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    try {
+      chartInstance?.resize()
+    } catch (e) {
+      // 实例已 dispose 时静默忽略
+    }
+  }, 150)
+}
+
 onMounted(() => {
   fetchStats()
-  window.addEventListener('resize', () => chartInstance?.resize())
+  window.addEventListener('resize', handleResize)
 })
 
 onUnmounted(() => {
+  window.removeEventListener('resize', handleResize)
+  if (resizeTimer) clearTimeout(resizeTimer)
   chartInstance?.dispose()
 })
 </script>

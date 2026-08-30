@@ -72,7 +72,8 @@
     <ImportProgressModal
       v-model="showProgressModal"
       :job-id="currentJobId"
-      @complete="handleProgressComplete"
+      @completed="handleProgressComplete"
+      @failed="handleProgressFailed"
     />
   </div>
 </template>
@@ -80,9 +81,11 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import api from '@/api'
+import { formatTime as sharedFormatTime } from '@/utils/format'
+import { useReanalyze } from '@/composables/useReanalyze'
 
 const router = useRouter()
 const loading = ref(false)
@@ -120,33 +123,27 @@ const exportMultiHTML = async (taskId) => {
   } catch (e) {}
 }
 
-const handleReanalyze = (row) => {
-  ElMessageBox.confirm(
-    `确认对任务【${row.task_name}】的全部 ${row.log_count} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？`,
-    '重新分析确认',
-    {
-      confirmButtonText: '开始重新分析',
-      cancelButtonText: '取消',
-      type: 'warning'
-    }
-  ).then(async () => {
-    try {
-      const res = await api.reanalyzeTask(row.task_id, true)
-      if (res.code === 0 && res.data?.job_id) {
-        currentJobId.value = res.data.job_id
-        showProgressModal.value = true
-      } else {
-        ElMessage.success('重新分析请求已提交')
-        fetchTasks()
-      }
-    } catch (e) {
-      ElMessage.error('触发重新分析失败: ' + (e.message || '网络异常'))
-    }
-  }).catch(() => {})
-}
+// WEB-16: 与 AuditWorkbench 共用同一套"重新分析"编排，消除逐行重复与行为分叉
+const { reanalyze: handleReanalyze } = useReanalyze({
+  onJobStarted: (jobId) => {
+    currentJobId.value = jobId
+    showProgressModal.value = true
+  },
+  onSettled: async () => {
+    await fetchTasks()
+  }
+})
 
+// 注意：事件名必须与 ImportProgressModal 的 defineEmits 保持一致（completed / failed）。
+// 此前误写为 @complete，导致重新分析完成后回调永不触发、列表长期停留在旧状态。
 const handleProgressComplete = () => {
   ElMessage.success('重新分析已全部完成！')
+  fetchTasks()
+}
+
+const handleProgressFailed = (payload) => {
+  const reason = typeof payload === 'string' ? payload : payload?.error || payload?.message
+  ElMessage.error('重新分析失败' + (reason ? ': ' + reason : ''))
   fetchTasks()
 }
 
@@ -160,10 +157,8 @@ const handleDelete = async (taskId) => {
   } catch (e) {}
 }
 
-const formatTime = (ts) => {
-  if (!ts) return '-'
-  return ts.replace('T', ' ').substring(0, 19)
-}
+// WEB-16: 复用统一实现，补齐 Go time.Time 零值保护（本地实现缺少该保护）
+const formatTime = sharedFormatTime
 
 onMounted(() => {
   fetchTasks()

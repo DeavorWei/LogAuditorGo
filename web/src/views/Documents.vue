@@ -219,6 +219,7 @@ import { FolderOpened, Files, FolderAdd, Close, Search, Refresh, Upload } from '
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
+import { formatTime as sharedFormatTime } from '@/utils/format'
 
 const loading = ref(false)
 const docList = ref([])
@@ -405,10 +406,8 @@ const handleDelete = async (id) => {
   } catch (e) {}
 }
 
-const formatTime = (ts) => {
-  if (!ts) return '-'
-  return ts.replace('T', ' ').substring(0, 19)
-}
+// WEB-16: 复用统一实现（同时补齐 Go time.Time 零值保护）
+const formatTime = sharedFormatTime
 
 onMounted(() => {
   fetchDocs()

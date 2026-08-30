@@ -640,26 +640,30 @@ func TestCORSMiddleware(t *testing.T) {
 		t.Errorf("expected Vary header to contain Origin, got %s", w1.Header().Get("Vary"))
 	}
 
-	// 2. 请求带有非受信 Origin 头（如外部域），应当安全降级为 * 且不带 Credentials (M-08)
+	// 2. 请求带有非受信 Origin 头（如外部域），必须**完全不返回** Access-Control-Allow-Origin (ARCH-08)。
+	//
+	//    原实现在此处兜底返回 `*`，等于对任意网站放开了本服务全部数据（任务、知识库、配置）的读写，
+	//    配合"文件系统浏览接口"可形成本地文件泄露链。正确做法是不设置该响应头，
+	//    浏览器会按同源策略直接拦截响应。
 	reqExternal, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
 	reqExternal.Header.Set("Origin", "http://evil.com:3000")
 	wExt := httptest.NewRecorder()
 	router.ServeHTTP(wExt, reqExternal)
 
-	if wExt.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("expected Access-Control-Allow-Origin: * for untrusted origin, got %s", wExt.Header().Get("Access-Control-Allow-Origin"))
+	if got := wExt.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("ARCH-08: expected NO Access-Control-Allow-Origin for untrusted origin, got %q", got)
 	}
 	if wExt.Header().Get("Access-Control-Allow-Credentials") != "" {
 		t.Errorf("expected Access-Control-Allow-Credentials to be empty for untrusted origin, got %s", wExt.Header().Get("Access-Control-Allow-Credentials"))
 	}
 
-	// 3. 请求不带 Origin 头，应当返回 Allow-Origin: * 且不设置 Allow-Credentials: true
+	// 3. 请求不带 Origin 头（同源请求或非浏览器客户端），同样不设置 CORS 相关响应头
 	req2, _ := http.NewRequest("GET", "/api/v1/system/stats", nil)
 	w2 := httptest.NewRecorder()
 	router.ServeHTTP(w2, req2)
 
-	if w2.Header().Get("Access-Control-Allow-Origin") != "*" {
-		t.Errorf("expected Access-Control-Allow-Origin: *, got %s", w2.Header().Get("Access-Control-Allow-Origin"))
+	if got := w2.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("ARCH-08: expected NO Access-Control-Allow-Origin when request has no Origin, got %q", got)
 	}
 	if w2.Header().Get("Access-Control-Allow-Credentials") != "" {
 		t.Errorf("expected Access-Control-Allow-Credentials to be empty when no Origin, got %s", w2.Header().Get("Access-Control-Allow-Credentials"))

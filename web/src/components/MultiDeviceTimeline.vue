@@ -97,7 +97,20 @@
     <el-card shadow="never" class="timeline-card" v-loading="loading">
       <div class="timeline-header">
         <div class="header-summary">
-          <span>共汇总 <strong>{{ totalEvents }}</strong> 条时序事件</span>
+          <!--
+            UI-04: 原实现只显示服务端 total，却不说明页面实际只渲染了 500 条，
+            造成"共 N 条"与实际展示条数严重不符。这里把截断事实显式呈现。
+          -->
+          <span v-if="timelineTruncated">
+            共汇总 <strong>{{ totalEvents }}</strong> 条时序事件，当前仅展示前
+            <strong>{{ timelineEvents.length }}</strong> 条
+            <el-tooltip content="请通过设备、模块、级别或时间范围收敛筛选条件后查看其余事件">
+              <el-tag type="warning" size="small" effect="plain">已截断</el-tag>
+            </el-tooltip>
+          </span>
+          <span v-else>
+            共汇总 <strong>{{ totalEvents }}</strong> 条时序事件
+          </span>
           <span v-if="selectedDeviceIds.length > 0" class="sub-summary">
             (已选择 {{ selectedDeviceIds.length }} 台设备，按绝对时间升序排列)
           </span>
@@ -153,7 +166,8 @@
               <div class="event-summary-box">
                 <div class="summary-line">
                   <span class="summary-badge">解析摘要</span>
-                  <span class="summary-content">{{ formatEventSummary(ev) }}</span>
+                  <!-- UI-06: 使用预计算的摘要缓存，避免每次重渲染都重算全部事件 -->
+                  <span class="summary-content">{{ ev._summary || formatEventSummary(ev) }}</span>
                 </div>
               </div>
 
@@ -275,10 +289,13 @@
 </template>
 
 <script setup>
-import { ref, onMounted, defineProps, watch } from 'vue'
+// UI-16: defineProps 是编译器宏，无需从 vue 导入
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Download } from '@element-plus/icons-vue'
 import api from '@/api'
+import { useRequest } from '@/composables/useRequest'
+import { formatTime as sharedFormatTime } from '@/utils/format'
 
 const props = defineProps({
   taskId: {
@@ -339,6 +356,17 @@ const fetchModules = async () => {
 const viewMode = ref('timeline')
 const timelineEvents = ref([])
 const totalEvents = ref(0)
+
+// UI-04: 时间线是否被截断（服务端总数 > 本次实际渲染条数）
+const timelineTruncated = computed(
+  () => totalEvents.value > timelineEvents.value.length
+)
+// UI-05: CSV 导出范围说明，用于提示文案，避免"导出 500 条却号称全量"
+const exportScopeText = computed(() =>
+  timelineTruncated.value
+    ? `${timelineEvents.value.length} / 共 ${totalEvents.value} 条`
+    : `${timelineEvents.value.length} 条`
+)
 
 const dateRange = ref([])
 const filter = ref({
@@ -411,28 +439,60 @@ const resetFilters = () => {
   fetchTimeline()
 }
 
+// 单次拉取的时间线条数上限。
+//
+// UI-04: 原实现固定 `page_size: 500` 且头部显示"共汇总 N 条"（N 来自服务端 total），
+// 于是大任务会出现"提示 12000 条、实际只渲染 500 条"的严重不一致，
+// 运维据此归档会漏数据。这里保留服务端上限，但把截断事实显式告知用户。
+const TIMELINE_PAGE_SIZE = 500
+
+/**
+ * UI-06: 事件摘要的预计算。
+ *
+ * 原实现在模板里直接调用 `formatEventSummary(ev)`，
+ * 而该函数内含 8 个协议分支 + 参数归一化正则循环，
+ * 每次组件重渲染都会对全部事件重算一遍——
+ * 切视图或勾选设备时明显卡顿。
+ * 这里在数据落库时算一次并缓存到 `_summary` 字段。
+ */
+const withSummary = (ev) => {
+  if (!ev || ev._summary) return ev
+  ev._summary = formatEventSummary(ev)
+  return ev
+}
+
+/**
+ * 拉取时间线。
+ *
+ * UI-07 / WEB-08: 接入统一的 useRequest 竞态守卫。
+ * 原先连续点选设备/级别时并发请求会乱序返回，
+ * 最后一次响应的结果未必对应最后一次筛选条件，出现"数据与条件不符"。
+ */
+// 失败提示由 api 拦截器统一弹出，这里不再重复 toast
+const { run: runFetchTimeline } = useRequest(api.queryMultiDeviceLogs)
+
 const fetchTimeline = async () => {
   if (!props.taskId) return
+
+  const payload = {
+    device_ids: selectedDeviceIds.value,
+    modules: filter.value.modules,
+    severity: filter.value.severity,
+    keyword: filter.value.keyword,
+    time_start: filter.value.time_start,
+    time_end: filter.value.time_end,
+    page: 1,
+    page_size: TIMELINE_PAGE_SIZE,
+    asc_order: true
+  }
+
   loading.value = true
   try {
-    const payload = {
-      device_ids: selectedDeviceIds.value,
-      modules: filter.value.modules,
-      severity: filter.value.severity,
-      keyword: filter.value.keyword,
-      time_start: filter.value.time_start,
-      time_end: filter.value.time_end,
-      page: 1,
-      page_size: 500,
-      asc_order: true
-    }
-    const res = await api.queryMultiDeviceLogs(props.taskId, payload)
-    if (res.code === 0) {
-      timelineEvents.value = res.data?.events || []
-      totalEvents.value = res.data?.total || 0
-    }
-  } catch (e) {
-    console.error('Fetch multi device timeline failed:', e)
+    const res = await runFetchTimeline(props.taskId, payload)
+    // 被 newer 请求取消时返回 undefined，直接丢弃
+    if (!res || res.code !== 0) return
+    timelineEvents.value = (res.data?.events || []).map(withSummary)
+    totalEvents.value = res.data?.total || 0
   } finally {
     loading.value = false
   }
@@ -620,10 +680,8 @@ const formatParamsArray = (paramsObj) => {
   }))
 }
 
-const formatTime = (ts) => {
-  if (!ts || ts.startsWith('0001-01-01') || ts === '0001-01-01T00:00:00Z') return '无法解析'
-  return ts.replace('T', ' ').substring(0, 19)
-}
+// WEB-16: 复用统一实现，零值展示由占位符统一控制
+const formatTime = (ts) => sharedFormatTime(ts, '无法解析')
 
 const severityClass = (sev) => {
   if (sev <= 2) return 'sev-crit'
@@ -658,7 +716,7 @@ const exportCSV = () => {
     ev.severity ?? '',
     ev.module || '',
     ev.brief || '',
-    formatEventSummary(ev),
+    ev._summary || formatEventSummary(ev),
     ev.knowledge_id ? '是' : '否',
     ev.source_file || ''
   ])
@@ -687,8 +745,16 @@ const exportCSV = () => {
   link.click()
   document.body.removeChild(link)
   URL.revokeObjectURL(url)
-  ElMessage.success(`成功导出 ${timelineEvents.value.length} 条时序事件为 CSV 文件`)
+  // UI-05: 明确导出范围。旧文案只说"导出 N 条"，
+  // 与头部"共汇总 M 条"矛盾，运维据此归档会漏数据。
+  ElMessage.success(
+    `成功导出 ${exportScopeText.value}时序事件为 CSV 文件${
+      timelineTruncated.value ? '（仅含当前已加载部分，请收敛筛选条件后分批导出）' : ''
+    }`
+  )
 }
+
+// 注：在途请求的取消已由 useRequest 内部的 onScopeDispose 统一处理 (WEB-08)
 
 watch(() => props.taskId, (newVal) => {
   if (newVal) {
@@ -700,6 +766,14 @@ watch(() => props.taskId, (newVal) => {
 onMounted(() => {
   fetchDevices()
   fetchModules()
+})
+
+// 供父组件主动刷新（替代 :key 强制重挂载，避免丢失筛选条件与滚动位置）
+defineExpose({
+  refresh: async () => {
+    await fetchDevices()
+    await fetchTimeline()
+  }
 })
 </script>
 

@@ -15,6 +15,7 @@ import (
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/task"
+	"logauditorgo/pkg/logger"
 	"logauditorgo/web"
 )
 
@@ -30,22 +31,58 @@ func SetupRouter(
 		panic("nil pointer passed to SetupRouter")
 	}
 
-	if cfg.Server.Mode == "release" {
+	// ARCH-15: 原实现仅在 mode == "release" 时切换到 ReleaseMode，
+	// 配置写成 prod / 空值 / 大小写不一致时会停留在 debug 模式，
+	// 向 stdout 打印全部路由注册噪声且丢失 release 下的若干优化。
+	// 这里显式 switch，未知值一律按 release 处理并告警。
+	switch strings.ToLower(strings.TrimSpace(cfg.Server.Mode)) {
+	case "debug":
+		gin.SetMode(gin.DebugMode)
+	case "test":
+		gin.SetMode(gin.TestMode)
+	case "release":
 		gin.SetMode(gin.ReleaseMode)
+	default:
+		gin.SetMode(gin.ReleaseMode)
+		logger.Log.Warnf("[Router] unknown server.mode=%q, falling back to release mode", cfg.Server.Mode)
 	}
 
 	r := gin.New()
-	r.Use(gin.Recovery())
+
+	// ARCH-02: 装配全局路径白名单守卫，三个导入入口共用同一实例
+	pathGuard = fsx.NewSecurePathGuard(cfg.Storage.AllowedRoots)
+	if pathGuard.Enabled() {
+		logger.Log.Infof("[Router] Path guard enabled, allowed roots: %v", pathGuard.Roots())
+	}
+
+	// ARCH-06: RequestID 必须在所有中间件之前注册，
+	// 这样后续中间件与 handler 产生的 5xx 都能带上同一个可追溯 ID。
+	r.Use(RequestIDMiddleware())
+
+	// ARCH-01: 显式关闭对 X-Forwarded-For / X-Real-IP 的信任。
+	// gin 默认信任所有代理，会让基于 IP 的访问控制（如 RequireLoopback）可被请求头伪造绕过。
+	// 本工具是本地单机服务，不存在前置代理，直接禁用最安全。
+	if err := r.SetTrustedProxies(nil); err != nil {
+		logger.Log.Warnf("[Router] Disable trusted proxies failed: %v", err)
+	}
+
+	// ARCH-09: 默认 gin.Recovery() 只把 panic 栈打到 stderr，落不到日志轮转文件，
+	// 离线工具出问题时无法回溯。这里改为写入 zap，并附带请求方法与路径。
+	r.Use(gin.CustomRecovery(func(c *gin.Context, recovered interface{}) {
+		logger.Log.Errorf("[Router] Panic recovered: %v | %s %s", recovered, c.Request.Method, c.Request.URL.Path)
+		c.AbortWithStatus(http.StatusInternalServerError)
+	}))
 
 	// CORS 跨域支持中间件
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
+		// ARCH-08: 原实现在来源不被允许时兜底回 `Access-Control-Allow-Origin: *`，
+		// 等于对任意网站放开了本服务全部数据（任务、知识库、配置）的读写。
+		// 未通过校验的来源直接不设置 ACAO 头，浏览器会按同源策略拦截响应。
 		if origin != "" && isAllowedOrigin(origin, c.Request.Host) {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 			c.Writer.Header().Add("Vary", "Origin")
-		} else {
-			c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
@@ -63,6 +100,10 @@ func SetupRouter(
 	statsHandler := NewStatsHandler(globalDB)
 	systemHandler := NewSystemHandler()
 	progressHandler := NewProgressHandler()
+
+	// ARCH-11: 暴露统计处理器引用，供导入/删除等业务变更主动失效缓存，
+	// 避免仪表盘停留在最多 15s 前的陈旧数据。
+	globalStatsHandler = statsHandler
 	fsHandler := NewFSHandler(fsx.Root{Name: "数据存储目录", Path: cfg.Storage.DataDir})
 
 	v1 := r.Group("/api/v1")
@@ -76,9 +117,10 @@ func SetupRouter(
 			fs.POST("/stat", fsHandler.Stat)
 		}
 
-		// 全流程阶段进度实时追踪 (SSE 流与 HTTP 轮询)
+		// 全流程阶段进度实时追踪 (SSE 流与 HTTP 轮询) 与长任务终止 (UI-02)
 		v1.GET("/progress/:job_id", progressHandler.GetProgress)
 		v1.GET("/progress/:job_id/stream", progressHandler.StreamProgress)
+		v1.DELETE("/progress/:job_id", progressHandler.CancelProgress)
 
 		// 系统统计与系统配置
 		v1.GET("/system/stats", statsHandler.GetSystemStats)
@@ -87,6 +129,8 @@ func SetupRouter(
 		v1.POST("/system/config/log", systemHandler.UpdateLogConfig)
 		v1.GET("/system/logs", systemHandler.GetLogs)
 		v1.POST("/system/logs/clean", systemHandler.CleanLogs)
+		// KB-01: 索引健康状态（静态路径，避免与 /knowledge/:id 通配路由冲突）
+		v1.GET("/system/knowledge-index/status", knowHandler.GetIndexStatus)
 
 		// 文档管理（服务端本地路径导入）
 		v1.POST("/documents/import-dir", docHandler.ImportDir)
@@ -96,6 +140,8 @@ func SetupRouter(
 		// 知识库
 		v1.GET("/knowledge/search", knowHandler.SearchKnowledge)
 		v1.GET("/knowledge/:id", knowHandler.GetKnowledgeDetail)
+		// KB-01: 索引重建入口。默认走异步模式，返回 job_id 由前端挂进度弹窗
+		v1.POST("/knowledge/reindex", knowHandler.RebuildIndex)
 
 		// 任务分析
 		v1.POST("/tasks", taskHandler.CreateTask)
@@ -142,9 +188,11 @@ func SetupRouter(
 
 		// 如果是 API 请求，返回 404 JSON
 		if strings.HasPrefix(path, "/api/") {
+			// ARCH-10: 补全 data 字段，保证与 SuccessResponse/ErrorResponse 同一契约
 			c.JSON(http.StatusNotFound, gin.H{
 				"code":    404,
 				"message": "API endpoint not found",
+				"data":    nil,
 			})
 			return
 		}

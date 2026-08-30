@@ -225,10 +225,12 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, defineProps, defineEmits, watch } from 'vue'
+// UI-16: defineProps / defineEmits 是编译器宏，无需从 vue 导入
+import { ref, computed, onMounted, watch } from 'vue'
 import { Position } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
+import { useRequest } from '@/composables/useRequest'
 
 const props = defineProps({
   taskId: {
@@ -258,26 +260,33 @@ const filteredRcaList = computed(() => {
   return rcaList.value.filter(e => (e.impact_level || 'HIGH').toUpperCase() === levelFilter.value)
 })
 
+/**
+ * WEB-08: 用 useRequest 包裹 RCA 列表请求。
+ *
+ * 原实现没有任何取消机制：父组件 refresh 与 taskId 切换可能并发触发两次拉取，
+ * 慢请求后返回会覆盖新任务的 RCA 结果，用户看到的根因链与当前任务不符。
+ */
+// 失败提示由 api 拦截器统一弹出，这里不再重复 toast
+const { run: runFetchRCA } = useRequest(api.getTaskRCA)
+
 const fetchRCAEvents = async () => {
   if (!props.taskId) return
   loading.value = true
   try {
-    const res = await api.getTaskRCA(props.taskId)
-    if (res.code === 0) {
-      rcaList.value = res.data || []
-      if (rcaList.value.length > 0) {
-        // 默认选中第一个
-        if (!selectedRCA.value || !rcaList.value.find(e => e.id === selectedRCA.value.id)) {
-          selectedRCA.value = rcaList.value[0]
-        } else {
-          selectedRCA.value = rcaList.value.find(e => e.id === selectedRCA.value.id)
-        }
+    const res = await runFetchRCA(props.taskId)
+    // 竞态守卫：请求被 newer 请求取消时返回 undefined，直接丢弃
+    if (!res || res.code !== 0) return
+    rcaList.value = res.data || []
+    if (rcaList.value.length > 0) {
+      // 默认选中第一个
+      if (!selectedRCA.value || !rcaList.value.find(e => e.id === selectedRCA.value.id)) {
+        selectedRCA.value = rcaList.value[0]
       } else {
-        selectedRCA.value = null
+        selectedRCA.value = rcaList.value.find(e => e.id === selectedRCA.value.id)
       }
+    } else {
+      selectedRCA.value = null
     }
-  } catch (e) {
-    console.error('Fetch RCA events failed:', e)
   } finally {
     loading.value = false
   }
@@ -286,6 +295,25 @@ const fetchRCAEvents = async () => {
 const selectRCA = (ev) => {
   selectedRCA.value = ev
 }
+
+/**
+ * UI-13: 级别筛选后校正选中项。
+ *
+ * 原实现只过滤左栏列表，右栏详情仍指向被过滤掉的事件，
+ * 用户会看到"左栏没有这一条，右栏却在展示它"的脱节状态。
+ * 这里在筛选结果变化时自动校正：选中项若不在结果内则切到首条（或清空）。
+ */
+watch(filteredRcaList, (list) => {
+  if (!list || list.length === 0) {
+    selectedRCA.value = null
+    return
+  }
+  const stillVisible =
+    selectedRCA.value && list.some((e) => e.id === selectedRCA.value.id)
+  if (!stillVisible) {
+    selectedRCA.value = list[0]
+  }
+})
 
 const jumpToAuditStream = (logId) => {
   if (logId) {
@@ -301,6 +329,11 @@ watch(() => props.taskId, (newVal) => {
 
 onMounted(() => {
   fetchRCAEvents()
+})
+
+// 供父组件主动刷新（替代 :key 强制重挂载，避免丢失选中项与滚动位置）
+defineExpose({
+  refresh: fetchRCAEvents
 })
 </script>
 

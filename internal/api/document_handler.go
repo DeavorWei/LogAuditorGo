@@ -63,6 +63,13 @@ func (h *DocumentHandler) ImportDir(c *gin.Context) {
 		return
 	}
 
+	// ARCH-02: 根目录白名单校验。由于全局 CORS 允许 localhost 来源，
+	// 任意网页都能调用本接口让服务端读取本地文件并入库，
+	// 必须在 fsx.Stat 之前拦截跳出白名单的路径。
+	if !guardPaths(c, targets) {
+		return
+	}
+
 	// 预检路径，避免进入导入流程后才发现路径不可用
 	var invalid []string
 	for _, e := range fsx.Stat(targets) {

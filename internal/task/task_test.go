@@ -505,7 +505,7 @@ func TestFileUploadItemStreamingAndCleanup(t *testing.T) {
 
 func TestGenerateHTMLReportDetailed(t *testing.T) {
 	// 1. Test nil task
-	nilHTML := task.GenerateHTMLReport(nil, nil, nil)
+	nilHTML := task.GenerateHTMLReport(nil, nil, nil, 0)
 	if !strings.Contains(nilHTML, "Task not found") {
 		t.Errorf("expected 'Task not found' for nil task, got: %s", nilHTML)
 	}
@@ -554,7 +554,8 @@ func TestGenerateHTMLReportDetailed(t *testing.T) {
 		},
 	}
 
-	htmlReport := task.GenerateHTMLReport(taskInfo, records, rcas)
+	// 第 4 个参数为任务日志总数；传 len(records) 表示未截断
+	htmlReport := task.GenerateHTMLReport(taskInfo, records, rcas, len(records))
 
 	// Verify escaping of task name
 	if strings.Contains(htmlReport, "<Escaping>") {
@@ -590,7 +591,7 @@ func TestGenerateHTMLReportDetailed(t *testing.T) {
 		LogCount:     0,
 		MatchedCount: 0,
 	}
-	emptyHTML := task.GenerateHTMLReport(emptyTask, nil, nil)
+	emptyHTML := task.GenerateHTMLReport(emptyTask, nil, nil, 0)
 	if strings.Contains(emptyHTML, "根因分析（RCA）排查建议") {
 		t.Errorf("expected no RCA section when rcas is empty")
 	}

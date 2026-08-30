@@ -36,6 +36,11 @@ func (h *FSHandler) Browse(c *gin.Context) {
 		return
 	}
 
+	// ARCH-02: 文件系统浏览同样受根目录白名单约束
+	if !guardPaths(c, []string{path}) {
+		return
+	}
+
 	offset, _ := strconv.Atoi(c.Query("offset"))
 	limit, _ := strconv.Atoi(c.Query("limit"))
 
@@ -71,15 +76,25 @@ func (h *FSHandler) Stat(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "too many paths, limit is "+strconv.Itoa(maxStatPaths))
 		return
 	}
+	// ARCH-02: 即使只读 Stat 也必须受白名单约束，
+	// 否则攻击者可先用 Stat 探测敏感路径是否存在，再走导入接口外带内容。
+	if !guardPaths(c, req.Paths) {
+		return
+	}
 	SuccessResponse(c, gin.H{"entries": fsx.Stat(req.Paths)})
 }
 
 // RequireLoopback 限制文件系统浏览仅允许本机回环访问。
 // 由于全局 CORS 允许任意来源，若不加以限制，任意网页都可以通过
 // 用户浏览器读取其本地磁盘文件。
+//
+// ARCH-01: 原实现使用 c.ClientIP()。gin 默认开启 ForwardedByClientIP 且信任全部代理
+// （trustedProxies = 0.0.0.0/0, ::/0），ClientIP() 会优先采信 X-Forwarded-For / X-Real-IP，
+// 攻击者只需带上 `X-Forwarded-For: 127.0.0.1` 即可让该中间件形同虚设。
+// 这里改用 c.RemoteIP()，它直接解析 RemoteAddr，不受任何请求头影响。
 func RequireLoopback() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		ip := net.ParseIP(c.ClientIP())
+		ip := net.ParseIP(c.RemoteIP())
 		if ip == nil || !ip.IsLoopback() {
 			ErrorResponse(c, http.StatusForbidden, -1, "filesystem browsing is only allowed from localhost")
 			c.Abort()

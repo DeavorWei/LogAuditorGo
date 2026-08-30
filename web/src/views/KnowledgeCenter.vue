@@ -114,6 +114,7 @@
 
 <script setup>
 import { ref, onMounted } from 'vue'
+import { ElMessage } from 'element-plus'
 import api from '@/api'
 
 const loading = ref(false)
@@ -121,6 +122,8 @@ const knowledgeList = ref([])
 const total = ref(0)
 const showDrawer = ref(false)
 const selectedKnowledge = ref(null)
+// UI-15: 检索失败原因，用于在空态之上叠加可重试的错误态
+const searchError = ref('')
 
 const query = ref({
   keyword: '',
@@ -145,6 +148,7 @@ const resetSearch = () => {
 
 const fetchKnowledge = async () => {
   loading.value = true
+  searchError.value = ''
   try {
     const res = await api.searchKnowledge({
       keyword: query.value.keyword,
@@ -161,9 +165,13 @@ const fetchKnowledge = async () => {
       total.value = 0
     }
   } catch (e) {
+    // UI-15: 原实现 `catch (e) {}` 完全静默——检索失败与"确实没有匹配知识"
+    // 在界面上长得一模一样，用户无法判断是该换关键词还是该找运维。
     console.error('Fetch knowledge failed:', e)
     knowledgeList.value = []
     total.value = 0
+    searchError.value = e?.message || '检索失败，请稍后重试'
+    ElMessage.error(searchError.value)
   } finally {
     loading.value = false
   }
@@ -177,7 +185,10 @@ const openDetail = async (k) => {
       selectedKnowledge.value = res.data
       showDrawer.value = true
     }
-  } catch (e) {}
+  } catch (e) {
+    // UI-15: 详情拉取失败同样不再静默吞掉
+    ElMessage.error('知识详情加载失败：' + (e?.message || '未知错误'))
+  }
 }
 
 onMounted(() => {

@@ -3,8 +3,21 @@ import { ElMessage } from 'element-plus'
 
 const request = axios.create({
   baseURL: '/api/v1',
-  timeout: 300000 // 放宽至 5 分钟
+  // WEB-17: 原实现所有接口共用 300s 超时，连 /system/stats 这种毫秒级接口
+  // 也要等 5 分钟才判定失败。这里按接口类别设置差异化的超时。
+  timeout: 30000
 })
+
+// 长耗时操作（导入 / 重分析 / 文档导入）单独放宽超时
+const LONG_TIMEOUT = 300000
+// 导出可能涉及百万行流式生成，给到 10 分钟
+const EXPORT_TIMEOUT = 600000
+
+/**
+ * 统一的请求配置合并。
+ * 调用方可传入 { signal }（AbortController）实现请求取消 (WEB-08)。
+ */
+const withTimeout = (timeoutMs, extra = {}) => ({ timeout: timeoutMs, ...extra })
 
 request.interceptors.response.use(
   response => {
@@ -17,6 +30,10 @@ request.interceptors.response.use(
     return res
   },
   async error => {
+    // WEB-08: 主动取消（AbortController）不属于错误，静默抛出交由调用方的竞态守卫处理
+    if (axios.isCancel(error) || error?.code === 'ERR_CANCELED' || error?.name === 'CanceledError') {
+      return Promise.reject(error)
+    }
     let msg = error.message || '网络请求失败'
     if (error.response?.data instanceof Blob) {
       try {
@@ -34,11 +51,17 @@ request.interceptors.response.use(
 
 export default {
   // 进度追踪与 SSE 实时订阅
-  getProgress(jobId) {
-    return request.get(`/progress/${jobId}`)
+  getProgress(jobId, options = {}) {
+    return request.get(`/progress/${jobId}`, options)
+  },
+  // UI-02: 终止一个正在运行的长耗时任务
+  cancelProgress(jobId) {
+    return request.delete(`/progress/${jobId}`)
   },
   createProgressStream(jobId, onMessage, onError) {
-    const es = new EventSource(`/api/v1/progress/${jobId}/stream`)
+    // WEB-17: 复用 axios 实例的 baseURL，避免硬编码绝对路径导致部署在非根路径时失效
+    const base = request.defaults.baseURL || '/api/v1'
+    const es = new EventSource(`${base}/progress/${jobId}/stream`)
     es.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
@@ -57,14 +80,14 @@ export default {
   fsRoots() {
     return request.get('/fs/roots')
   },
-  fsBrowse({ path, exts, keyword, dirsOnly, offset, limit }) {
+  fsBrowse({ path, exts, keyword, dirsOnly, offset, limit }, options = {}) {
     const params = { path }
     if (exts && exts.length) params.exts = exts.join(',')
     if (keyword) params.keyword = keyword
     if (dirsOnly) params.dirs_only = 'true'
     if (offset) params.offset = offset
     if (limit) params.limit = limit
-    return request.get('/fs/browse', { params })
+    return request.get('/fs/browse', { params, ...options })
   },
   fsStat(paths) {
     return request.post('/fs/stat', { paths })
@@ -86,6 +109,14 @@ export default {
   cleanSystemLogs() {
     return request.post('/system/logs/clean')
   },
+  // KB-01: 索引健康状态（是否需要重建）
+  getKnowledgeIndexStatus() {
+    return request.get('/system/knowledge-index/status')
+  },
+  // KB-01: 触发全量重建索引
+  rebuildKnowledgeIndex() {
+    return request.post('/knowledge/reindex', {}, { params: { async: 'true' } })
+  },
 
   // 文档管理
   getDocuments() {
@@ -97,15 +128,15 @@ export default {
       paths: Array.isArray(paths) ? paths : [paths],
       conflict_mode: conflictMode,
       async: isAsync
-    })
+    }, withTimeout(LONG_TIMEOUT))
   },
   deleteDocument(id) {
     return request.delete(`/documents/${id}`)
   },
 
   // 知识库
-  searchKnowledge(params) {
-    return request.get('/knowledge/search', { params })
+  searchKnowledge(params, options = {}) {
+    return request.get('/knowledge/search', { params, ...options })
   },
   getKnowledgeDetail(id) {
     return request.get(`/knowledge/${id}`)
@@ -119,12 +150,14 @@ export default {
       }
       return request.post('/tasks', formDataOrJson, {
         headers: { 'Content-Type': 'multipart/form-data' },
-        params: isAsync ? { async: 'true' } : {}
+        params: isAsync ? { async: 'true' } : {},
+        timeout: LONG_TIMEOUT
       })
     }
     const payload = typeof formDataOrJson === 'object' ? { ...formDataOrJson, async: isAsync } : formDataOrJson
     return request.post('/tasks', payload, {
-      params: isAsync ? { async: 'true' } : {}
+      params: isAsync ? { async: 'true' } : {},
+      timeout: LONG_TIMEOUT
     })
   },
   getTasks() {
@@ -137,37 +170,42 @@ export default {
     return request.get(`/tasks/${taskId}/files`)
   },
   // 按服务端本地路径导入日志（支持一次提交多个目录或文件路径）
-  importTaskLogsByPaths(taskId, { paths, exts, recursive = true, conflictMode = 'rename' }, isAsync = true) {
+  importTaskLogsByPaths(taskId, { paths, exts, recursive = true, conflictMode = 'rename', deviceVersion }, isAsync = true) {
     return request.post(`/tasks/${taskId}/import`, {
       paths,
       exts,
       recursive,
       conflict_mode: conflictMode,
+      // PARSE-04: 允许补录设备软件版本以启用版本分档匹配
+      ...(deviceVersion ? { device_version: deviceVersion } : {}),
       async: isAsync
-    }, { params: isAsync ? { async: 'true' } : {} })
+    }, withTimeout(LONG_TIMEOUT, { params: isAsync ? { async: 'true' } : {} }))
   },
   // 以文本形式导入日志
-  importTaskLogsText(taskId, { content, fileName, conflictMode = 'rename' }, isAsync = true) {
+  importTaskLogsText(taskId, { content, fileName, conflictMode = 'rename', deviceVersion }, isAsync = true) {
     return request.post(`/tasks/${taskId}/import`, {
       content,
       file_name: fileName,
       conflict_mode: conflictMode,
+      ...(deviceVersion ? { device_version: deviceVersion } : {}),
       async: isAsync
-    }, { params: isAsync ? { async: 'true' } : {} })
+    }, withTimeout(LONG_TIMEOUT, { params: isAsync ? { async: 'true' } : {} }))
   },
-  queryTaskLogs(taskId, params) {
-    return request.get(`/tasks/${taskId}/logs`, { params })
+  queryTaskLogs(taskId, params, options = {}) {
+    return request.get(`/tasks/${taskId}/logs`, { params, ...options })
   },
   getTaskModules(taskId) {
     return request.get(`/tasks/${taskId}/modules`)
   },
   reanalyzeTask(taskId, isAsync = true) {
     return request.post(`/tasks/${taskId}/reanalyze`, { async: isAsync }, {
-      params: isAsync ? { async: 'true' } : {}
+      params: isAsync ? { async: 'true' } : {},
+      timeout: LONG_TIMEOUT
     })
   },
-  getTaskRCA(taskId) {
-    return request.get(`/tasks/${taskId}/rca`)
+  // WEB-08: 补齐 options 透传，供 useRequest 注入 AbortSignal 实现请求取消
+  getTaskRCA(taskId, options = {}) {
+    return request.get(`/tasks/${taskId}/rca`, options)
   },
   deleteTask(taskId) {
     return request.delete(`/tasks/${taskId}`)
@@ -197,7 +235,7 @@ export default {
       recursive,
       conflict_mode: conflictMode,
       async: isAsync
-    }, { params: isAsync ? { async: 'true' } : {} })
+    }, withTimeout(LONG_TIMEOUT, { params: isAsync ? { async: 'true' } : {} }))
   },
   // 以文本形式向指定设备导入日志
   importDeviceLogsText(taskId, deviceId, { content, fileName, conflictMode = 'rename' }, isAsync = true) {
@@ -206,30 +244,40 @@ export default {
       file_name: fileName,
       conflict_mode: conflictMode,
       async: isAsync
-    }, { params: isAsync ? { async: 'true' } : {} })
+    }, withTimeout(LONG_TIMEOUT, { params: isAsync ? { async: 'true' } : {} }))
   },
   autoAssignDevices(taskId) {
     return request.post(`/tasks/${taskId}/devices/auto-assign`)
   },
 
   // 多设备时间线与协同分析
-  queryMultiDeviceLogs(taskId, filter) {
-    return request.post(`/tasks/${taskId}/multi-device/logs`, filter)
+  queryMultiDeviceLogs(taskId, filter, options = {}) {
+    return request.post(`/tasks/${taskId}/multi-device/logs`, filter, options)
   },
-  getDeviceTimeline(taskId, filter) {
-    return request.post(`/tasks/${taskId}/multi-device/timeline`, filter)
+  getDeviceTimeline(taskId, filter, options = {}) {
+    return request.post(`/tasks/${taskId}/multi-device/timeline`, filter, options)
   },
-  getMultiDeviceReport(taskId, deviceIds = []) {
-    return request.post(`/tasks/${taskId}/multi-device/report`, { device_ids: deviceIds })
+  getMultiDeviceReport(taskId, deviceIds = [], options = {}) {
+    return request.post(`/tasks/${taskId}/multi-device/report`, { device_ids: deviceIds }, options)
   },
 
   // 报表导出下载 (基于 Blob，防御重复提交并由拦截器统一弹窗报错)
+  //
+  // ARCH-07: 新增 csv 格式——后端已实现游标流式导出，内存占用恒定，
+  // 适合大任务的全量留痕；html / json 仍受服务端上限约束。
   async downloadTaskReport(taskId, format = 'html') {
+    const mimeTypes = {
+      html: 'text/html;charset=utf-8',
+      json: 'application/json;charset=utf-8',
+      csv: 'text/csv;charset=utf-8'
+    }
     const res = await request.get(`/tasks/${taskId}/export`, {
       params: { format },
-      responseType: 'blob'
+      responseType: 'blob',
+      timeout: EXPORT_TIMEOUT
     })
-    const blob = new Blob([res], { type: 'text/html;charset=utf-8' })
+    // WEB-17: 不再固定写死 text/html，按实际格式设置 MIME，避免 JSON/CSV 被错误处理
+    const blob = new Blob([res], { type: mimeTypes[format] || 'application/octet-stream' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -238,11 +286,17 @@ export default {
     window.URL.revokeObjectURL(url)
   },
   async downloadMultiDeviceReport(taskId, format = 'html') {
+    const mimeTypes = {
+      html: 'text/html;charset=utf-8',
+      json: 'application/json;charset=utf-8',
+      csv: 'text/csv;charset=utf-8'
+    }
     const res = await request.get(`/tasks/${taskId}/multi-device/export`, {
       params: { format },
-      responseType: 'blob'
+      responseType: 'blob',
+      timeout: EXPORT_TIMEOUT
     })
-    const blob = new Blob([res], { type: 'text/html;charset=utf-8' })
+    const blob = new Blob([res], { type: mimeTypes[format] || 'application/octet-stream' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url

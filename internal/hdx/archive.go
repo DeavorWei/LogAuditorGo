@@ -64,7 +64,13 @@ func UnzipConcurrent(src string, dest string, tracker *progress.JobTracker) erro
 		return nil
 	}
 
-	// 2. 自适应计算 Worker 协程数量
+	// 2. 解压前基于元数据做总量校验，拦截解压炸弹 (KB-03)。
+	// 必须在真正写盘之前执行，否则恶意/异常压缩包已把磁盘写满才被发现。
+	if err := checkArchiveBudget(filesToExtract); err != nil {
+		return fmt.Errorf("archive rejected: %w", err)
+	}
+
+	// 3. 自适应计算 Worker 协程数量
 	workerNum := runtime.NumCPU() * 2
 	if workerNum < 4 {
 		workerNum = 4
@@ -139,6 +145,47 @@ func UnzipConcurrent(src string, dest string, tracker *progress.JobTracker) erro
 
 // MaxUncompressedFileSize 单文件解压最大尺寸上限 (2GB)
 const MaxUncompressedFileSize = int64(2 * 1024 * 1024 * 1024)
+
+// 解压炸弹（Zip Bomb）防护阈值 (KB-03)。
+//
+// 此前只校验"单文件 2GB"，对压缩包内的**条目总数、解压后总字节、压缩比**毫无约束：
+// 一个含 1 万个 1.9GB 条目的压缩包就能写出约 19TB 数据，瞬间打满磁盘。
+// 本工具虽是本地单机、输入来自用户本人，但导入源可能是他人提供的文档包，仍应设防。
+const (
+	// MaxArchiveTotalUncompressed 单个压缩包解压后的总字节上限 (20GB)
+	MaxArchiveTotalUncompressed = int64(20 * 1024 * 1024 * 1024)
+	// MaxArchiveFileCount 单个压缩包内的文件条目数上限
+	MaxArchiveFileCount = 200000
+	// MaxArchiveCompressionRatio 单个条目的最大压缩比，超过即判定为疑似解压炸弹
+	MaxArchiveCompressionRatio = 1000
+)
+
+// checkArchiveBudget 在解压前基于压缩包元数据做总量校验，拦截解压炸弹
+func checkArchiveBudget(files []*zip.File) error {
+	if len(files) > MaxArchiveFileCount {
+		return fmt.Errorf("archive contains %d entries, exceeds limit of %d", len(files), MaxArchiveFileCount)
+	}
+
+	var total uint64
+	for _, f := range files {
+		if f.UncompressedSize64 > uint64(MaxUncompressedFileSize) {
+			return fmt.Errorf("entry '%s' uncompressed size %d bytes exceeds single-file limit", f.Name, f.UncompressedSize64)
+		}
+		// 压缩比 = 解压后大小 / 压缩后大小；压缩后为 0 时跳过（目录/空文件）
+		if f.CompressedSize64 > 0 {
+			ratio := f.UncompressedSize64 / f.CompressedSize64
+			if ratio > MaxArchiveCompressionRatio {
+				return fmt.Errorf("entry '%s' compression ratio %d:1 exceeds limit %d:1, suspected zip bomb",
+					f.Name, ratio, MaxArchiveCompressionRatio)
+			}
+		}
+		total += f.UncompressedSize64
+		if total > uint64(MaxArchiveTotalUncompressed) {
+			return fmt.Errorf("archive total uncompressed size exceeds limit (max %d bytes)", MaxArchiveTotalUncompressed)
+		}
+	}
+	return nil
+}
 
 // extractSingleZipFile 解压单个文件到目标路径
 func extractSingleZipFile(f *zip.File, targetPath string) error {

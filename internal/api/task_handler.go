@@ -11,10 +11,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 
+	"logauditorgo/internal/enrich"
 	"logauditorgo/internal/fsx"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/model"
-	"logauditorgo/internal/summary"
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
@@ -29,12 +29,20 @@ func isValidTaskID(taskID string) bool {
 type TaskHandler struct {
 	taskSvc      *task.Service
 	knowledgeSvc *knowledge.Service
+	// enricher 富化服务 (ARCH-12)。handler 只做参数绑定与响应封装，
+	// 具体的"日志 × 知识库"融合编排由 enrich.Service 承载，供导出等非 HTTP 出口复用。
+	enricher *enrich.Service
 }
 
 func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *TaskHandler {
+	var resolver enrich.KnowledgeResolver
+	if knowledgeSvc != nil {
+		resolver = knowledgeSvc
+	}
 	return &TaskHandler{
 		taskSvc:      taskSvc,
 		knowledgeSvc: knowledgeSvc,
+		enricher:     enrich.NewService(resolver),
 	}
 }
 
@@ -42,6 +50,8 @@ func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *Tas
 type logImportRequest struct {
 	TaskName   string `json:"task_name"`
 	DeviceType string `json:"device_type"`
+	// PARSE-04: 设备软件版本（如 V200R024C00），透传给匹配引擎做版本分档打分
+	DeviceVersion string `json:"device_version"`
 
 	// 服务端本地路径模式
 	Paths     []string `json:"paths"`
@@ -70,6 +80,9 @@ func bindLogImportRequest(c *gin.Context) logImportRequest {
 	}
 	if v := c.PostForm("device_type"); v != "" {
 		req.DeviceType = v
+	}
+	if v := c.PostForm("device_version"); v != "" {
+		req.DeviceVersion = v
 	}
 	if v := c.PostForm("conflict_mode"); v != "" {
 		req.ConflictMode = v
@@ -139,6 +152,7 @@ func buildPathItems(paths []string, exts []string, recursive bool) ([]task.FileU
 func (h *TaskHandler) CreateTask(c *gin.Context) {
 	taskName := c.PostForm("task_name")
 	deviceType := c.PostForm("device_type")
+	deviceVersion := c.PostForm("device_version")
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 
 	req := bindLogImportRequest(c)
@@ -148,6 +162,9 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	if req.DeviceType != "" {
 		deviceType = req.DeviceType
 	}
+	if req.DeviceVersion != "" {
+		deviceVersion = req.DeviceVersion
+	}
 	if req.Async {
 		isAsync = true
 	}
@@ -156,6 +173,10 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 
 	// 1. 服务端本地路径模式：由服务端进程直接读取磁盘，浏览器只传递路径字符串
 	if len(req.Paths) > 0 {
+		// ARCH-02: 根目录白名单校验，必须发生在真正读取磁盘之前
+		if !guardPaths(c, req.Paths) {
+			return
+		}
 		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
 		if err != nil {
 			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
@@ -186,7 +207,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 
 	// 1. 如果没有上传文件也没有日志文本，创建空任务 (PENDING)
 	if len(items) == 0 {
-		taskInfo, err := h.taskSvc.CreateEmptyTask(taskName, deviceType)
+		taskInfo, err := h.taskSvc.CreateEmptyTask(taskName, deviceType, deviceVersion)
 		if err != nil {
 			ErrorResponse(c, http.StatusInternalServerError, -1, "Create empty task failed: "+err.Error())
 			return
@@ -196,7 +217,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	}
 
 	// 2. 如果包含日志，先创建任务再启动分析
-	taskInfo, err := h.taskSvc.CreateEmptyTask(taskName, deviceType)
+	taskInfo, err := h.taskSvc.CreateEmptyTask(taskName, deviceType, deviceVersion)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Create task failed: "+err.Error())
 		return
@@ -285,6 +306,14 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 		return
 	}
 
+	// PARSE-04: 补充导入时允许用户补录/修正设备版本，
+	// 必须在启动导入前回写，否则本次匹配仍会沿用旧版本分档。
+	if req.DeviceVersion != "" {
+		if err := h.taskSvc.SetTaskDeviceVersion(taskID, req.DeviceVersion); err != nil {
+			logger.Log.Warnf("[API Tasks] Update device_version for task %s failed: %v", taskID, err)
+		}
+	}
+
 	logger.Log.Debugf("[API Tasks] Importing %d items into task %s (conflictMode: %s)", len(items), taskID, conflictMode)
 
 	tracker := progress.GetHub().NewJob("log", taskID, task.LogAuditStages)
@@ -359,55 +388,6 @@ func (h *TaskHandler) GetTask(c *gin.Context) {
 	}
 
 	SuccessResponse(c, t)
-}
-
-// EnrichedRecord 包含日志、知识库与融合参数的完整记录实体
-type EnrichedRecord struct {
-	model.LogRecord
-	Knowledge          *model.Knowledge         `json:"knowledge,omitempty"`
-	ContextualizedKB   *ContextualizedKnowledge `json:"contextualized_knowledge,omitempty"`
-	EnrichedParameters []EnrichedParameter      `json:"enriched_parameters,omitempty"`
-	RenderedMessage    string                   `json:"rendered_message,omitempty"`
-}
-
-func (h *TaskHandler) enrichRecords(records []model.LogRecord) []EnrichedRecord {
-	uniqueKIDs := make([]uint, 0)
-	kidSet := make(map[uint]bool)
-	for _, rec := range records {
-		if rec.KnowledgeID > 0 && !kidSet[rec.KnowledgeID] {
-			kidSet[rec.KnowledgeID] = true
-			uniqueKIDs = append(uniqueKIDs, rec.KnowledgeID)
-		}
-	}
-
-	var knowledgeMap map[uint]*model.Knowledge
-	if len(uniqueKIDs) > 0 && h.knowledgeSvc != nil {
-		knowledgeMap, _ = h.knowledgeSvc.GetKnowledgeMapByIDs(uniqueKIDs)
-	}
-
-	enrichedList := make([]EnrichedRecord, 0, len(records))
-	for _, rec := range records {
-		er := EnrichedRecord{LogRecord: rec}
-		rawParams := ParseParametersJSON(rec.ParametersJSON)
-		var kb *model.Knowledge
-		if rec.KnowledgeID > 0 && knowledgeMap != nil {
-			kb = knowledgeMap[rec.KnowledgeID]
-		}
-		er.EventSummary = summary.GenerateSummary(rec.Module, rec.Brief, rec.Severity, rec.MessageBody, rawParams, kb)
-
-		if kb != nil {
-			er.Knowledge = kb
-			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, kb)
-			er.ContextualizedKB = ContextualizeKnowledge(kb, rec.ParametersJSON)
-			if kb.Message != "" {
-				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
-			}
-		} else if rec.ParametersJSON != "" {
-			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, nil)
-		}
-		enrichedList = append(enrichedList, er)
-	}
-	return enrichedList
 }
 
 // QueryLogs 查询任务内日志并分页
@@ -529,10 +509,32 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 		return
 	}
 
-	// JSON format export (PageSize: -1 导出全量日志)
-	t, _ := h.taskSvc.GetTaskByID(taskID)
-	records, _, _ := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{PageSize: -1})
-	rcas, _ := h.taskSvc.GetTaskRCAEvents(taskID)
+	// CSV 导出：真流式逐行下发，内存占用恒定 (ARCH-07 / TASK-09)
+	if format == "csv" {
+		h.streamCSVExport(c, taskID)
+		return
+	}
+
+	// JSON format export
+	//
+	// REANA-12 / ARCH-07: 原实现 `t, _ := ...; records, _, _ := ...; rcas, _ := ...`
+	// 三个错误全部丢弃，导出失败时静默返回残缺报告。这里全部判空并返回 500。
+	// 同时 RCA 改用 GetEnrichedRCAEvents，与列表接口保持同一字段形态。
+	t, err := h.taskSvc.GetTaskByID(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load task failed: "+err.Error())
+		return
+	}
+	records, _, err := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{PageSize: 0})
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load log records failed: "+err.Error())
+		return
+	}
+	rcas, err := h.taskSvc.GetEnrichedRCAEvents(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load RCA events failed: "+err.Error())
+		return
+	}
 	enrichedRecords := h.enrichRecords(records)
 
 	c.JSON(http.StatusOK, gin.H{
@@ -540,6 +542,78 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 		"records": enrichedRecords,
 		"rcas":    rcas,
 	})
+}
+
+// streamCSVExport 以数据库游标逐行生成 CSV 并流式下发 (ARCH-07)。
+//
+// 与 JSON 导出的区别：JSON 需要完整的数组结构，只能整体序列化；
+// CSV 天然是行式格式，配合 http.Flusher 可以做到"查一行、写一行、刷一行"，
+// 百万行导出的内存占用与单条日志同阶。
+func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
+	c.Header("Content-Type", "text/csv; charset=utf-8")
+	c.Header("Content-Disposition", "attachment; filename=logs_"+taskID+".csv")
+
+	// UTF-8 BOM：保证 Excel 打开中文不乱码
+	if _, err := c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
+		return
+	}
+	if _, err := c.Writer.WriteString("ID,时间,级别,模块,助记符,主机名,来源文件,匹配层级,置信度,原始报文\n"); err != nil {
+		return
+	}
+
+	err := h.taskSvc.StreamTaskLogs(taskID, model.LogQueryFilter{}, func(rec model.LogRecord) error {
+		row := buildCSVRow(rec)
+		if _, err := c.Writer.WriteString(row); err != nil {
+			return err
+		}
+		if flusher, ok := c.Writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return nil
+	})
+	if err != nil {
+		// 流已开始，无法再改响应头，只能追加一条错误行供调用方识别
+		logger.Log.Errorf("[API Tasks] stream CSV export for task %s failed: %v", taskID, err)
+		_, _ = c.Writer.WriteString("\n# EXPORT_ABORTED: " + strings.ReplaceAll(err.Error(), "\n", " ") + "\n")
+	}
+}
+
+// buildCSVRow 把单条日志序列化为 CSV 行。
+// 对引号、换行与公式注入前缀做防护，避免导出的 CSV 被表格软件当作公式执行。
+func buildCSVRow(rec model.LogRecord) string {
+	fields := []string{
+		strconv.FormatUint(uint64(rec.ID), 10),
+		rec.Timestamp.Format("2006-01-02 15:04:05"),
+		strconv.Itoa(rec.Severity),
+		rec.Module,
+		rec.Brief,
+		rec.Hostname,
+		rec.SourceFile,
+		rec.MatchTier,
+		strconv.FormatFloat(rec.MatchConfidence, 'f', 2, 64),
+		rec.RawLog,
+	}
+	var sb strings.Builder
+	for i, f := range fields {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		sb.WriteString(escapeCSVField(f))
+	}
+	sb.WriteByte('\n')
+	return sb.String()
+}
+
+// escapeCSVField 转义 CSV 字段：包裹引号 + 双写内部引号，并防御公式注入
+func escapeCSVField(v string) string {
+	// 以 = + - @ 开头的字段会被 Excel/Sheets 当作公式求值，统一加前导单引号
+	if len(v) > 0 && (v[0] == '=' || v[0] == '+' || v[0] == '-' || v[0] == '@') {
+		v = "'" + v
+	}
+	if strings.ContainsAny(v, ",\"\n\r") {
+		return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
+	}
+	return v
 }
 
 // DeleteTask 删除任务
@@ -557,6 +631,53 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	SuccessResponse(c, nil, "Task deleted successfully")
 }
 
+// updateDeviceRequest 设备更新的请求 DTO (ARCH-03)。
+// 使用指针字段以区分"未传"与"传了零值"；未在结构体中声明的字段一律不接受，
+// 从源头杜绝 id / task_id / log_count 等敏感列被客户端注入。
+type updateDeviceRequest struct {
+	DeviceName   *string `json:"device_name"`
+	DeviceType   *string `json:"device_type"`
+	ManagementIP *string `json:"management_ip"`
+	Hostname     *string `json:"hostname"`
+	Description  *string `json:"description"`
+	Color        *string `json:"color"`
+}
+
+// toUpdateMap 将 DTO 转换为白名单更新集，只包含本次真正传入的字段
+func (r updateDeviceRequest) toUpdateMap() map[string]interface{} {
+	updates := make(map[string]interface{})
+	if v := r.DeviceName; v != nil {
+		updates["device_name"] = *v
+	}
+	if v := r.DeviceType; v != nil {
+		updates["device_type"] = *v
+	}
+	if v := r.ManagementIP; v != nil {
+		updates["management_ip"] = *v
+	}
+	if v := r.Hostname; v != nil {
+		updates["hostname"] = *v
+	}
+	if v := r.Description; v != nil {
+		updates["description"] = *v
+	}
+	if v := r.Color; v != nil {
+		updates["color"] = *v
+	}
+	return updates
+}
+
+// createDeviceRequest 设备创建的请求 DTO (ARCH-03)。
+// 原实现直接绑定 model.Device，客户端可预设 id / created_at 等字段。
+type createDeviceRequest struct {
+	DeviceName   string `json:"device_name"`
+	DeviceType   string `json:"device_type"`
+	ManagementIP string `json:"management_ip"`
+	Hostname     string `json:"hostname"`
+	Description  string `json:"description"`
+	Color        string `json:"color"`
+}
+
 // CreateDevice 在任务中创建新设备
 func (h *TaskHandler) CreateDevice(c *gin.Context) {
 	taskID := c.Param("id")
@@ -565,19 +686,29 @@ func (h *TaskHandler) CreateDevice(c *gin.Context) {
 		return
 	}
 
-	var req model.Device
+	var req createDeviceRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
 		return
 	}
 
-	dev, err := h.taskSvc.CreateDevice(taskID, &req)
+	// 只取白名单字段构造实体，忽略请求体中可能携带的 id / task_id / 计数类字段
+	dev := &model.Device{
+		DeviceName:   req.DeviceName,
+		DeviceType:   req.DeviceType,
+		ManagementIP: req.ManagementIP,
+		Hostname:     req.Hostname,
+		Description:  req.Description,
+		Color:        req.Color,
+	}
+
+	created, err := h.taskSvc.CreateDevice(taskID, dev)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
 	}
 
-	SuccessResponse(c, dev, "Device created successfully")
+	SuccessResponse(c, created, "Device created successfully")
 }
 
 // ListDevices 获取指定任务下的所有设备列表
@@ -632,9 +763,18 @@ func (h *TaskHandler) UpdateDevice(c *gin.Context) {
 		return
 	}
 
-	var updates map[string]interface{}
-	if err := c.ShouldBindJSON(&updates); err != nil {
+	// ARCH-03: 原实现直接把请求体绑定成 map[string]interface{} 透传给 GORM 的 Updates()，
+	// 客户端可以注入 id / task_id / log_count / created_at 等任意列，
+	// 实现"改主键、跨任务划转设备、伪造统计数字"的越权写入。
+	// 这里在 API 边界做字段白名单，只放行业务可编辑字段。
+	var req updateDeviceRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
+		return
+	}
+	updates := req.toUpdateMap()
+	if len(updates) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "No editable fields provided")
 		return
 	}
 
@@ -809,8 +949,17 @@ func (h *TaskHandler) GetDeviceTimeline(c *gin.Context) {
 		return
 	}
 
+	// ARCH-14: 原实现 `_ = c.ShouldBindJSON(&filter)` 把解析错误完全吞掉，
+	// 非法 JSON 会被静默当作"空筛选条件"返回全量数据，掩盖客户端 bug。
+	// 这里与同文件其他接口一致，解析失败返回 400。
 	var filter model.MultiDeviceLogFilter
-	_ = c.ShouldBindJSON(&filter)
+	if err := c.ShouldBindJSON(&filter); err != nil {
+		// 时间线接口允许空 body（等价于"不带筛选条件"），只有非空且解析失败才报错
+		if c.Request.ContentLength > 0 {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid filter JSON: "+err.Error())
+			return
+		}
+	}
 
 	events, err := h.taskSvc.GetDeviceTimeline(taskID, filter)
 	if err != nil {
@@ -832,7 +981,13 @@ func (h *TaskHandler) GetMultiDeviceReport(c *gin.Context) {
 	var req struct {
 		DeviceIDs []uint `json:"device_ids"`
 	}
-	_ = c.ShouldBindJSON(&req)
+	// ARCH-14: 同上，非空 body 解析失败必须返回 400 而不是静默降级为"全量设备"
+	if err := c.ShouldBindJSON(&req); err != nil {
+		if c.Request.ContentLength > 0 {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
+			return
+		}
+	}
 
 	report, err := h.taskSvc.GetMultiDeviceReport(taskID, req.DeviceIDs)
 	if err != nil {
@@ -944,4 +1099,3 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 
 	SuccessResponse(c, taskInfo, "Task reanalyzed successfully")
 }
-

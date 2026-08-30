@@ -3,6 +3,7 @@ package summary
 import (
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"logauditorgo/internal/model"
@@ -10,6 +11,13 @@ import (
 
 // 常见官方文档前缀口癖过滤正则
 var kbPrefixRegex = regexp.MustCompile(`^(?:该(?:日志|告警|事件)(?:表示|用于记录|产生于|提示)?|此(?:告警|日志|事件)(?:表示|提示)?|本(?:日志|告警)(?:用于记录|表示)?|当.*?时(?:，|,)?(?:产生此告警|记录此日志)?)\s*`)
+
+// htmlTagRegex 剥离 HTML 标签。
+//
+// RCA-10: 该正则原先写在 CleanDescriptionTitle 函数体内，
+// 每条日志生成摘要都要重新编译一次（百万行日志下是可观的 CPU 与 GC 开销）。
+// 提升为包级变量，与同文件的 kbPrefixRegex 保持一致的写法。
+var htmlTagRegex = regexp.MustCompile(`<[^>]+>`)
 
 // CleanDescriptionTitle 从知识库 Description 中提取干净简明的中文核心含义
 func CleanDescriptionTitle(desc string) string {
@@ -19,9 +27,9 @@ func CleanDescriptionTitle(desc string) string {
 	}
 
 	// 1. 去除 HTML 标签（如果存在）
+	// RCA-10: 复用包级已编译正则，不再每次调用都重新编译
 	if strings.Contains(desc, "<") && strings.Contains(desc, ">") {
-		tagRegex := regexp.MustCompile(`<[^>]+>`)
-		desc = tagRegex.ReplaceAllString(desc, "")
+		desc = htmlTagRegex.ReplaceAllString(desc, "")
 	}
 
 	// 2. 取第一句（以句号、换行、分号截断）
@@ -51,67 +59,84 @@ func CleanDescriptionTitle(desc string) string {
 	return firstSentence
 }
 
-// ExtractCoreContextParams 提取最重要的关键上下文参数标签（最多提取3个关键实体）
-func ExtractCoreContextParams(normParams map[string]string) string {
-	var parts []string
+// coreParamExtractors 关键上下文参数的提取顺序。
+//
+// RCA-15: 原实现按"实例→MAC→接口→对端→聚合→状态→原因"的**采集顺序**截断前 3 项，
+// 而 parts 顺序恰好与诊断价值相反——最有价值的"原因/状态"永远排在最末，
+// 一旦参数超过 3 个就会被最先砍掉。
+//
+// 这里改为显式声明诊断优先级：原因 > 接口 > 对端 > 状态 > 实例/MAC/聚合。
+// 截断时先按 priority 升序（数值越小越重要）排序，再取前 N 个，最后按展示顺序输出。
+var coreParamExtractors = []struct {
+	label    string
+	role     string
+	priority int // 数值越小诊断价值越高
+}{
+	{"原因", "reason", 0},
+	{"接口", "interface", 1},
+	{"对端", "peer", 2},
+	{"IP", "ip", 3},
+	{"状态", "state", 4},
+	{"实例", "evpninstance", 5},
+	{"MAC", "mac", 6},
+	{"聚合", "trunk", 7},
+}
 
-	// 1. 操作用户与命令（管理审计类）
+// ExtractCoreContextParams 提取最重要的关键上下文参数标签（最多提取 3 个关键实体）
+func ExtractCoreContextParams(normParams map[string]string) string {
+	// 1. 管理审计类：用户 + 命令是一个语义整体，命中即完整返回
 	user := ResolveParam(normParams, "user")
 	cmd := ResolveParam(normParams, "command")
 	if user != "" && cmd != "" {
 		return fmt.Sprintf("用户: %s, 执行: %s", user, cmd)
 	}
 
-	// 2. 实例 / VPN
-	if inst := ResolveParam(normParams, "evpninstance"); inst != "" {
-		parts = append(parts, "实例: "+inst)
+	type item struct {
+		text     string
+		priority int
 	}
 
-	// 3. MAC 地址
-	if mac := ResolveParam(normParams, "mac"); mac != "" {
-		parts = append(parts, "MAC: "+mac)
-	}
-
-	// 4. 接口 / 端口
-	if iface := ResolveParam(normParams, "interface"); iface != "" {
-		parts = append(parts, "接口: "+iface)
-	}
-
-	// 5. 对端 / 邻居 IP
-	if peer := ResolveParam(normParams, "peer"); peer != "" {
-		parts = append(parts, "对端: "+peer)
-	} else if ip := ResolveParam(normParams, "ip"); ip != "" {
-		parts = append(parts, "IP: "+ip)
-	}
-
-	// 6. 聚合组 / Trunk
-	if trunk := ResolveParam(normParams, "trunk"); trunk != "" {
-		parts = append(parts, "聚合: "+trunk)
-	}
-
-	// 7. 状态
-	if state := ResolveParam(normParams, "state"); state != "" {
-		parts = append(parts, "状态: "+state)
-	}
-
-	// 8. 错误/原因
-	if reason := ResolveParam(normParams, "reason"); reason != "" {
-		// 截短原因
-		if len([]rune(reason)) > 30 {
-			reason = string([]rune(reason)[:30]) + "..."
+	items := make([]item, 0, len(coreParamExtractors))
+	for _, ex := range coreParamExtractors {
+		val := ResolveParam(normParams, ex.role)
+		if val == "" {
+			continue
 		}
-		parts = append(parts, "原因: "+reason)
+		// "对端"与"IP"语义重叠，取其一即可
+		if ex.label == "IP" {
+			dup := false
+			for _, it := range items {
+				if it.priority == 2 { // 已存在"对端"
+					dup = true
+					break
+				}
+			}
+			if dup {
+				continue
+			}
+		}
+		if ex.label == "原因" && len([]rune(val)) > 30 {
+			val = string([]rune(val)[:30]) + "..."
+		}
+		items = append(items, item{text: ex.label + ": " + val, priority: ex.priority})
 	}
 
-	if len(parts) == 0 {
+	if len(items) == 0 {
 		return ""
 	}
 
-	// 最多保留前 3 项关键参数，保持摘要精炼
-	if len(parts) > 3 {
-		parts = parts[:3]
+	// 2. 按诊断优先级排序后截断：保证"原因/接口/对端"这类高价值字段永不被砍
+	sort.SliceStable(items, func(i, j int) bool { return items[i].priority < items[j].priority })
+	if len(items) > 3 {
+		items = items[:3]
 	}
+	// 3. 输出时再按采集顺序（即上面声明的顺序）展示，读起来更自然
+	sort.SliceStable(items, func(i, j int) bool { return items[i].priority < items[j].priority })
 
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, it.text)
+	}
 	return strings.Join(parts, ", ")
 }
 
@@ -148,13 +173,12 @@ func RenderTemplateWithParams(template string, rawParams map[string]string, norm
 			return val
 		}
 		// 别名同义词匹配
-		for role, aliases := range AliasGroups {
-			for _, alias := range aliases {
-				if alias == normK {
-					if v := ResolveParam(normParams, role); v != "" {
-						return v
-					}
-				}
+		//
+		// RCA-11: 改用构建期生成的反查表，O(1) 命中且结果确定，
+		// 不再依赖 Go map 的随机遍历顺序。
+		if role := ResolveAliasRole(normK); role != "" {
+			if v := ResolveParam(normParams, role); v != "" {
+				return v
 			}
 		}
 

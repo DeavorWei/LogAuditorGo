@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/goccy/go-yaml"
@@ -27,6 +28,10 @@ type StorageConfig struct {
 	BleveIndex  string `mapstructure:"bleve_index" json:"bleve_index" yaml:"bleve_index"`
 	TaskDir     string `mapstructure:"task_dir" json:"task_dir" yaml:"task_dir"`
 	UploadDir   string `mapstructure:"upload_dir" json:"upload_dir" yaml:"upload_dir"`
+	// AllowedRoots 允许被导入类接口读取的服务端根目录白名单 (ARCH-02)。
+	// 为空表示不做限制（保留既有的本地单机工具行为）；一旦配置，
+	// 任何跳出这些根目录的路径都会被 SecurePathGuard 拒绝。
+	AllowedRoots []string `mapstructure:"allowed_roots" json:"allowed_roots" yaml:"allowed_roots"`
 }
 
 type LogConfig struct {
@@ -70,6 +75,12 @@ storage:
   bleve_index: "LogAuditorGoData/bleve/knowledge.bleve" # Bleve 全文检索索引目录
   task_dir: "LogAuditorGoData/tasks"                   # 日志审计任务专属 SQLite 存储目录
   upload_dir: "LogAuditorGoData/uploads"               # 临时上传目录
+  # allowed_roots: 导入类接口允许读取的服务端根目录白名单 (ARCH-02)
+  #   留空 = 不限制（本地单机工具默认行为）
+  #   配置后，任何跳出这些根目录的路径都会被拒绝并返回 403
+  # allowed_roots:
+  #   - "D:/logs"
+  #   - "D:/hdx"
 
 log:
   level: info                # 日志级别: debug, info, warn, error
@@ -105,12 +116,23 @@ func Load(configPath string) (*Config, error) {
 	}
 
 	// 如果配置文件不存在，自动在对应目录下生成一份默认配置文件
+	//
+	// ARCH-17: 原实现 `_ = os.WriteFile(...)` 把写入错误完全吞掉，
+	// 只读目录下会静默降级——用户以为自己在改配置，实际改的文件从未生效。
+	// 产品决策：默认配置回写失败不阻断启动，但必须打 WARN 并带上配置路径，
+	// 让用户知道"当前跑的是内存默认配置"。
 	if _, err := os.Stat(targetConfigFile); os.IsNotExist(err) {
 		configDir := filepath.Dir(targetConfigFile)
 		if configDir != "" && configDir != "." {
-			_ = os.MkdirAll(configDir, 0755)
+			if mkdirErr := os.MkdirAll(configDir, 0755); mkdirErr != nil {
+				// 此阶段 zap 尚未初始化（main.go 中 config.Load 先于 logger.Init），直接写 stderr
+				fmt.Fprintf(os.Stderr, "[Config][WARN] create config dir %s failed: %v (falling back to in-memory defaults)\n", configDir, mkdirErr)
+			}
 		}
-		_ = os.WriteFile(targetConfigFile, []byte(defaultConfigFileTemplate), 0600)
+		if writeErr := os.WriteFile(targetConfigFile, []byte(defaultConfigFileTemplate), 0600); writeErr != nil {
+			fmt.Fprintf(os.Stderr, "[Config][WARN] write default config to %s failed: %v (server starts with in-memory defaults; settings will NOT persist)\n",
+				targetConfigFile, writeErr)
+		}
 	}
 
 	v.SetConfigFile(targetConfigFile)
@@ -153,6 +175,14 @@ func Load(configPath string) (*Config, error) {
 		cfg.Log.MaxDays = 180
 	}
 
+	// ARCH-16: 原实现只设默认值不做任何范围校验。
+	// `port: 0` 会监听随机端口（客户端连不上且不报错），`port: 99999` 启动失败
+	// 且错误信息里没有配置路径，用户根本不知道该改哪个文件。
+	// 这里统一做范围校验，错误信息一律附上 ConfigFileUsed 便于定位。
+	if err := validate(&cfg); err != nil {
+		return nil, err
+	}
+
 	// 确保存储目录存在
 	dirs := []string{
 		cfg.Storage.DataDir,
@@ -173,6 +203,76 @@ func Load(configPath string) (*Config, error) {
 	ConfigFileUsed = targetConfigFile
 	GlobalConfig = &cfg
 	return &cfg, nil
+}
+
+// validServerModes 允许的运行模式
+var validServerModes = map[string]bool{
+	"debug":   true,
+	"release": true,
+	"test":    true,
+}
+
+// validate 校验配置合法范围。
+//
+// 产品决策：端口越界与未知模式采用"回退到安全默认值 + WARN"，而不是拒绝启动——
+// 本工具定位为本地离线单机工具，因配置笔误直接拒绝启动会显著降低可用性。
+// 但回退必须留下可追溯的告警，绝不能像原实现那样静默接受。
+func validate(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("nil config")
+	}
+	where := ConfigFileUsed
+	if where == "" {
+		where = "(in-memory defaults)"
+	}
+
+	if cfg.Server.Port < 1 || cfg.Server.Port > 65535 {
+		fmt.Fprintf(os.Stderr, "[Config][WARN] server.port=%d out of range [1,65535], falling back to 8080 (config file: %s)\n",
+			cfg.Server.Port, where)
+		cfg.Server.Port = 8080
+	}
+	if cfg.Server.Mode == "" {
+		cfg.Server.Mode = "debug"
+	}
+	if !validServerModes[strings.ToLower(strings.TrimSpace(cfg.Server.Mode))] {
+		fmt.Fprintf(os.Stderr, "[Config][WARN] unknown server.mode=%q, falling back to release (config file: %s)\n",
+			cfg.Server.Mode, where)
+		cfg.Server.Mode = "release"
+	} else {
+		cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
+	}
+
+	if cfg.Log.MaxSizeMB < 0 {
+		fmt.Fprintf(os.Stderr, "[Config][WARN] log.max_size_mb=%d invalid, falling back to %d (config file: %s)\n",
+			cfg.Log.MaxSizeMB, 1024, where)
+		cfg.Log.MaxSizeMB = 1024
+	}
+	if cfg.Log.MaxDays < 0 {
+		fmt.Fprintf(os.Stderr, "[Config][WARN] log.max_days=%d invalid, falling back to %d (config file: %s)\n",
+			cfg.Log.MaxDays, 180, where)
+		cfg.Log.MaxDays = 180
+	}
+
+	// 白名单根目录必须存在且为目录，否则该条目无效（打 WARN 后丢弃）
+	if len(cfg.Storage.AllowedRoots) > 0 {
+		valid := make([]string, 0, len(cfg.Storage.AllowedRoots))
+		for _, root := range cfg.Storage.AllowedRoots {
+			abs, err := filepath.Abs(strings.TrimSpace(root))
+			if err != nil || abs == "" {
+				continue
+			}
+			st, err := os.Stat(abs)
+			if err != nil || !st.IsDir() {
+				fmt.Fprintf(os.Stderr, "[Config][WARN] storage.allowed_roots entry %q is not an accessible directory, ignored (config file: %s)\n",
+					root, where)
+				continue
+			}
+			valid = append(valid, abs)
+		}
+		cfg.Storage.AllowedRoots = valid
+	}
+
+	return nil
 }
 
 // Save 将当前全局配置持久化保存至配置文件

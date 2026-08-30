@@ -10,7 +10,16 @@ import (
 	"logauditorgo/pkg/logger"
 )
 
-var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>(?:[A-Za-z]{3}\s+\d+\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?|UTC[+-]\d{1,2}(?::?\d{2})?\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?))\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+// vrpRegex 标准 VRP 日志格式。
+//
+// PARSE-10: 两处变体兼容修正——
+//  1. severity 由 `[1-8]` 放宽为 `[0-8]`：华为部分产品的 Emergency 级别日志 severity 为 0，
+//     旧正则会让它整行解析失败并退化成 UNPARSED 噪声；
+//  2. 类型组 `(?i:\((?P<type>[a-z])\))` 由必选改为可选 `(?:...)?`：
+//     部分变体日志省略了 (l)/(s)/(p)/(d)/(c) 标识，旧正则同样会整行失配。
+// PARSE-09: 时间组复用 commonTimePattern，与 USG 解析器共享同一套时间格式认知，
+// 避免"某条解析链路只认部分时间格式"的历史问题再次出现。
+var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>` + commonTimePattern + `)\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 var (
 	vrpPriIdx     = vrpRegex.SubexpIndex("pri")
@@ -27,7 +36,8 @@ var (
 )
 
 // 简化的 VRP 格式正则 (某些 syslog 转发器可能丢弃了部分 header)
-var vrpSimpleRegex = regexp.MustCompile(`%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[1-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+// PARSE-10: 同主正则，severity 放宽为 [0-8]、类型组改为可选。
+var vrpSimpleRegex = regexp.MustCompile(`%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 var (
 	vrpSimpleVersionIdx = vrpSimpleRegex.SubexpIndex("version")
@@ -46,9 +56,16 @@ func (p *VRPParser) Name() string {
 	return "Huawei-VRP-Standard-Parser"
 }
 
+// vrpSupportRegex 用于判定一行是否属于 VRP 体系。
+//
+// PARSE-10: 原实现靠 `strings.Contains(line, "(s)")` 这类子串猜测，
+// 报文体里只要出现 (s) 就会被误判为受支持的华为日志；
+// 同时省略了类型标识的合法变体（如 `%%01IFNET/4/IF_DOWN:`）反而不被认领。
+// 改为对 header 段（`%%` + 模块/级别/助记符）做一次预匹配，既准又覆盖变体。
+var vrpSupportRegex = regexp.MustCompile(`%%\d{0,2}[A-Za-z0-9_\-]+/[0-8]/[A-Za-z0-9_\-]+`)
+
 func (p *VRPParser) Support(line string) bool {
-	lineLower := strings.ToLower(line)
-	return strings.Contains(line, "%%") && (strings.Contains(lineLower, "(l)") || strings.Contains(lineLower, "(s)") || strings.Contains(lineLower, "(p)") || strings.Contains(lineLower, "(d)") || strings.Contains(lineLower, "(c)"))
+	return vrpSupportRegex.MatchString(line)
 }
 
 func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {

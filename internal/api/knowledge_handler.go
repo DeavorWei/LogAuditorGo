@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -8,6 +9,8 @@ import (
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
+	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
 
 type KnowledgeHandler struct {
@@ -109,6 +112,59 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 		"page":      page,
 		"page_size": pageSize,
 		"hits":      enrichedHits,
+	})
+}
+
+// RebuildIndex 全量重建 Bleve 全文检索索引 (KB-01)。
+//
+// 默认异步执行并返回 job_id，前端可复用进度弹窗展示重建进度；
+// 传 `?async=false` 时同步执行（便于测试与脚本调用）。
+func (h *KnowledgeHandler) RebuildIndex(c *gin.Context) {
+	isAsync := c.Query("async") != "false" && c.PostForm("async") != "false"
+
+	tracker := progress.GetHub().NewJob("reindex", "", knowledge.ReindexStages)
+	tracker.AddLog("info", "收到重建索引请求 (mode: %s)", map[bool]string{true: "async", false: "sync"}[isAsync])
+
+	if isAsync {
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					tracker.Fail(fmt.Errorf("panic in rebuild index: %v", r))
+				}
+			}()
+			if err := h.knowledgeSvc.RebuildIndex(tracker); err != nil {
+				logger.Log.Errorf("[API Knowledge] Rebuild index failed: %v", err)
+			}
+		}()
+
+		SuccessResponse(c, gin.H{
+			"job_id":   tracker.JobID(),
+			"is_async": true,
+		}, "索引重建任务已在后台启动")
+		return
+	}
+
+	if err := h.knowledgeSvc.RebuildIndex(tracker); err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Rebuild index failed: "+err.Error())
+		return
+	}
+	SuccessResponse(c, nil, "索引重建完成")
+}
+
+// GetIndexStatus 返回索引健康状态，供前端判断是否提示"需要重建索引"
+func (h *KnowledgeHandler) GetIndexStatus(c *gin.Context) {
+	dirty := false
+	if h.indexer != nil {
+		dirty = h.indexer.IsMappingOutdated()
+	}
+	var docCount uint64
+	if h.indexer != nil {
+		docCount, _ = h.indexer.DocCount()
+	}
+	SuccessResponse(c, gin.H{
+		"mapping_version":   search.IndexMappingVersion,
+		"mapping_outdated":  dirty,
+		"indexed_documents": docCount,
 	})
 }
 

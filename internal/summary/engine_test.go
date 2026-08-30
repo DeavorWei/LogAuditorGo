@@ -28,8 +28,26 @@ func TestKnowledgeDrivenSummary(t *testing.T) {
 	if !strings.Contains(summary1, "EVPN实例中因为频繁发生MAC地址重复") {
 		t.Errorf("expected official description core title, got: %s", summary1)
 	}
-	if !strings.Contains(summary1, "实例: 9") || !strings.Contains(summary1, "MAC: 02bf-0a09-09fa") {
-		t.Errorf("expected injected core parameters, got: %s", summary1)
+	// RCA-15: 关键参数按"原因 > 接口 > 对端 > 其他"的诊断优先级截断，
+	// 因此本例中 接口 / IP / 实例 这三个高价值字段必须全部保留。
+	if !strings.Contains(summary1, "接口: Eth-Trunk9.25") || !strings.Contains(summary1, "IP: 10.0.4.188") {
+		t.Errorf("expected high-priority core parameters (接口/IP) to survive truncation, got: %s", summary1)
+	}
+
+	// RCA-15 核心回归：参数超过 3 个时，"原因"必须被保留（旧实现会最先砍掉它）
+	paramsWithReason := map[string]string{
+		"Reason":         "Loss of signal",
+		"InterfaceName1": "GE1/0/1",
+		"MAC":            "02bf-0a09-09fa",
+		"TrunkName":      "Eth-Trunk1",
+		"State":          "Down",
+	}
+	summaryReason := summary.ExtractCoreContextParams(summary.BuildNormalizedMap(paramsWithReason))
+	if !strings.Contains(summaryReason, "原因: Loss of signal") {
+		t.Errorf("expected 原因 to survive truncation (RCA-15), got: %s", summaryReason)
+	}
+	if !strings.Contains(summaryReason, "接口: GE1/0/1") {
+		t.Errorf("expected 接口 to survive truncation (RCA-15), got: %s", summaryReason)
 	}
 
 	// 场景 2: 命中知识库，但只有官方英文 Message 模板 (如某些无中文说明的老版本日志)

@@ -233,7 +233,14 @@ func (s *Service) prepareImportPaths(paths []string, tr *progress.JobTracker) ([
 	extracted := 0
 	for _, arc := range archives {
 		tr.AddLog("info", "正在解压压缩包: %s", filepath.Base(arc))
-		dest := filepath.Join(batchDir, filepath.Base(arc))
+		// KB-13: 原实现用 filepath.Base(arc) 作为解压目标目录名，
+		// 不同目录下的同名 V800R021C00.hdx 会解压到同一处，文件互相覆盖、统计错乱。
+		// 改为系统唯一临时目录，彻底消除碰撞。
+		dest, err := os.MkdirTemp(batchDir, "arc_")
+		if err != nil {
+			tr.AddLog("error", "创建解压目标目录失败: %v，跳过压缩包 %s", err, filepath.Base(arc))
+			continue
+		}
 		if err := hdx.UnzipConcurrent(arc, dest, tr); err != nil {
 			tr.AddLog("error", "解压 %s 失败: %v", filepath.Base(arc), err)
 			continue
@@ -397,6 +404,14 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 		return nil, fmt.Errorf("failed to import any documents: %w", err)
 	}
 
+	// KB-14: 全部文档都被 skip（例如重复导入同一批包）时，
+	// 原实现既不 Fail 也不 Complete，前端进度弹窗会永远卡在最后一个阶段。
+	if imported == 0 && tr != nil {
+		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(allDocDirs)))
+		tr.SetStage("COMPLETE", "全部文档包均已存在，无需重复导入")
+		tr.Complete(agg, fmt.Sprintf("未导入新文档：%d 个文档包均已存在于知识库中，如需重建请使用「重建索引」", len(agg.SkippedDocs)))
+	}
+
 	if imported > 0 && s.matchEngine != nil {
 		s.matchEngine.Reload()
 		logger.Log.Infof("[Knowledge Service] Successfully reloaded match engine after batch knowledge import")
@@ -405,7 +420,8 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	logger.Log.Infof("Completed multi-path import of %d/%d documents (%d skipped, %d failed) across %d paths in %v",
 		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(scanPaths), agg.Duration)
 
-	if tr != nil {
+	// 注：imported == 0 的终态已在上面的 KB-14 分支中 Complete，此处避免重复触发终态
+	if tr != nil && imported > 0 {
 		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(allDocDirs)))
 		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
 		tr.Complete(agg, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
@@ -698,6 +714,9 @@ func (s *Service) persistKnowledgeAndMappings(tx *gorm.DB, doc *model.Document, 
 	uniqueAdded := 0
 	mappingsAdded := 0
 
+	// KB-15: 原实现 `if findErr := ...; findErr == nil {` 把查重失败当成"全部不存在"，
+	// 后续整批按新条目插入会直接撞 content_hash 唯一索引，导致整包导入回滚，
+	// 而用户看到的错误信息与根因毫无关联。查重失败必须直接上抛。
 	existingKMap := make(map[string]uint)
 	for i := 0; i < len(uniqueHashes); i += 500 {
 		end := i + 500
@@ -705,10 +724,11 @@ func (s *Service) persistKnowledgeAndMappings(tx *gorm.DB, doc *model.Document, 
 			end = len(uniqueHashes)
 		}
 		var existing []model.Knowledge
-		if findErr := tx.Where("content_hash IN ?", uniqueHashes[i:end]).Find(&existing).Error; findErr == nil {
-			for _, ek := range existing {
-				existingKMap[ek.ContentHash] = ek.ID
-			}
+		if findErr := tx.Where("content_hash IN ?", uniqueHashes[i:end]).Find(&existing).Error; findErr != nil {
+			return nil, 0, 0, fmt.Errorf("query existing knowledge by content_hash failed: %w", findErr)
+		}
+		for _, ek := range existing {
+			existingKMap[ek.ContentHash] = ek.ID
 		}
 	}
 
@@ -763,18 +783,27 @@ func (s *Service) persistKnowledgeAndMappings(tx *gorm.DB, doc *model.Document, 
 	return newKnowledges, uniqueAdded, mappingsAdded, nil
 }
 
-// indexNewKnowledgeItems 阶段 4：自动同步建立全文检索索引 (Bleve Index)
-func (s *Service) indexNewKnowledgeItems(doc *model.Document, newKnowledges []*model.Knowledge, tr *progress.JobTracker) {
-	if s.indexer == nil || len(newKnowledges) == 0 {
+// indexDocumentKnowledge 阶段 4：自动同步建立全文检索索引 (Bleve Index)
+//
+// KB-01: 索引失败不再是"打一行 Warn 就当没发生"，而是把文档标记为 index_dirty，
+// 前端可据此提示用户执行重建索引，让知识库具备自愈能力。
+//
+// KB-04: 原实现只索引本次新增的知识。已存在于库中的知识在导入新版本文档时
+// 只是新增了一条版本映射，其索引里的 product_list / version_list 永远停留在首次导入的版本，
+// 导致按产品过滤搜不到。这里改为"索引本文档关联的全部知识（含历史已有条目）"，
+// Bleve 的 Index 是幂等的，覆盖写即可刷新版本列表。
+func (s *Service) indexDocumentKnowledge(doc *model.Document, newKnowledges []*model.Knowledge, tr *progress.JobTracker) {
+	if s.indexer == nil {
 		return
 	}
 
-	if tr != nil {
-		tr.SetStage("INDEX", fmt.Sprintf("正在为 %d 条新增知识构建 Bleve 全文检索索引...", len(newKnowledges)))
-	}
-
 	itemsToIndex := make([]model.Knowledge, 0, len(newKnowledges))
+	indexedIDs := make(map[uint]bool, len(newKnowledges))
 	for _, nk := range newKnowledges {
+		if nk == nil || nk.ID == 0 || indexedIDs[nk.ID] {
+			continue
+		}
+		indexedIDs[nk.ID] = true
 		item := *nk
 		if len(item.Versions) == 0 {
 			item.Versions = []model.KnowledgeVersionMapping{
@@ -784,17 +813,99 @@ func (s *Service) indexNewKnowledgeItems(doc *model.Document, newKnowledges []*m
 		itemsToIndex = append(itemsToIndex, item)
 	}
 
-	if idxErr := s.indexer.IndexKnowledge(itemsToIndex); idxErr != nil {
-		logger.Log.Warnf("[Knowledge Service] Auto-indexing into Bleve failed: %v", idxErr)
-		if tr != nil {
-			tr.AddLog("warning", "全文检索索引构建告警: %v", idxErr)
+	// 补充：本文档引用的历史已有知识，重新装载完整 Versions 后覆盖索引
+	if doc != nil && doc.ID > 0 {
+		existing, err := s.loadKnowledgesByDocument(doc.ID)
+		if err != nil {
+			logger.Log.Warnf("[Knowledge Service] load existing knowledge of document %d for reindex failed: %v", doc.ID, err)
+			if tr != nil {
+				tr.AddLog("warning", "装载历史知识条目用于刷新索引时出现告警: %v", err)
+			}
 		}
-	} else {
-		logger.Log.Debugf("[Knowledge Service] Auto-indexed %d new knowledge items to Bleve", len(itemsToIndex))
-		if tr != nil {
-			tr.AddLog("info", "Bleve 全文检索索引构建完成 (%d 条)", len(itemsToIndex))
+		for _, ek := range existing {
+			if indexedIDs[ek.ID] {
+				continue
+			}
+			indexedIDs[ek.ID] = true
+			itemsToIndex = append(itemsToIndex, ek)
 		}
 	}
+
+	if len(itemsToIndex) == 0 {
+		return
+	}
+
+	if tr != nil {
+		tr.SetStage("INDEX", fmt.Sprintf("正在为 %d 条知识构建/刷新 Bleve 全文检索索引...", len(itemsToIndex)))
+	}
+
+	if idxErr := s.indexer.IndexKnowledge(itemsToIndex); idxErr != nil {
+		logger.Log.Errorf("[Knowledge Service] Auto-indexing into Bleve failed: %v", idxErr)
+		// KB-01: 落 index_dirty 标记，为重建索引入口提供自愈依据
+		s.markDocumentIndexDirty(doc, idxErr)
+		if tr != nil {
+			tr.AddLog("error", "全文检索索引构建失败（该文档已标记为待重建，可在文档管理中执行「重建索引」）: %v", idxErr)
+		}
+		return
+	}
+
+	// 索引成功：清除可能存在的脏标记
+	s.clearDocumentIndexDirty(doc)
+
+	logger.Log.Debugf("[Knowledge Service] Auto-indexed %d knowledge items to Bleve", len(itemsToIndex))
+	if tr != nil {
+		tr.AddLog("info", "Bleve 全文检索索引构建/刷新完成 (%d 条)", len(itemsToIndex))
+	}
+}
+
+// loadKnowledgesByDocument 加载指定文档关联的全部知识（含版本映射）
+func (s *Service) loadKnowledgesByDocument(docID uint) ([]model.Knowledge, error) {
+	if s.db == nil || docID == 0 {
+		return nil, nil
+	}
+	kIDs := make([]uint, 0)
+	// KB-15: Pluck 必须校验 .Error 并去重，否则孤儿判定与索引刷新都会重复计算
+	if err := s.db.Model(&model.KnowledgeVersionMapping{}).
+		Where("document_id = ?", docID).
+		Distinct("knowledge_id").
+		Pluck("knowledge_id", &kIDs).Error; err != nil {
+		return nil, err
+	}
+	if len(kIDs) == 0 {
+		return nil, nil
+	}
+	var list []model.Knowledge
+	if err := s.db.Preload("Versions").Where("id IN ?", kIDs).Find(&list).Error; err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// markDocumentIndexDirty 把文档标记为"索引待重建"
+func (s *Service) markDocumentIndexDirty(doc *model.Document, reason error) {
+	if doc == nil || doc.ID == 0 {
+		return
+	}
+	if err := s.db.Model(&model.Document{}).Where("id = ?", doc.ID).
+		Update("index_dirty", true).Error; err != nil {
+		logger.Log.Warnf("[Knowledge Service] mark document %d index_dirty failed: %v", doc.ID, err)
+		return
+	}
+	doc.IndexDirty = true
+	logger.Log.Warnf("[Knowledge Service] Document %d marked index_dirty: %v", doc.ID, reason)
+}
+
+// clearDocumentIndexDirty 清除文档的索引脏标记
+func (s *Service) clearDocumentIndexDirty(doc *model.Document) {
+	if doc == nil || doc.ID == 0 || !doc.IndexDirty {
+		return
+	}
+	if err := s.db.Model(&model.Document{}).Where("id = ?", doc.ID).
+		Update("index_dirty", false).Error; err != nil {
+		logger.Log.Warnf("[Knowledge Service] clear document %d index_dirty failed: %v", doc.ID, err)
+		return
+	}
+	doc.IndexDirty = false
 }
 
 // importSingleDocUnlocked 执行单个 HDX 文档目录的解析与入库（内部调用，自动获取文档级细粒度锁）
@@ -847,7 +958,7 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 	}
 
 	// Stage 4: 全文检索索引构建 (Bleve Index)
-	s.indexNewKnowledgeItems(doc, newKnowledges, tr)
+	s.indexDocumentKnowledge(doc, newKnowledges, tr)
 
 	stats.UniqueKnowledgeAdded = uniqueAdded
 	stats.VersionMappingsAdded = mappingsAdded
@@ -900,32 +1011,58 @@ func (s *Service) GetKnowledgeMapByIDs(ids []uint) (map[uint]*model.Knowledge, e
 }
 
 // DeleteDocument 删除文档及关联映射，并清理孤儿知识条目与全文检索索引
+//
+// KB-07: 原实现把 Pluck 与两次 Delete 的错误全部丢弃（`_ =`），
+// 一旦任一步失败就会出现"索引已删、DB 仍在"或"DB 已删、索引仍在"的反向不一致，
+// 用户表现为"搜到一条点进去 404"。这里全部纳入错误判定：
+// 先删索引、后删 DB；任一步失败都向上返回并提示可重建索引自愈。
 func (s *Service) DeleteDocument(docID uint) error {
-	var kIDs []uint
-	// 1. 查找此文档关联的所有 knowledge_id
-	s.db.Model(&model.KnowledgeVersionMapping{}).Where("document_id = ?", docID).Pluck("knowledge_id", &kIDs)
+	if s.db == nil {
+		return fmt.Errorf("knowledge db is not initialized")
+	}
 
-	err := s.db.Transaction(func(tx *gorm.DB) error {
+	var kIDs []uint
+	// 1. 查找此文档关联的所有 knowledge_id（必须校验 Error 并去重）
+	if err := s.db.Model(&model.KnowledgeVersionMapping{}).
+		Where("document_id = ?", docID).
+		Distinct("knowledge_id").
+		Pluck("knowledge_id", &kIDs).Error; err != nil {
+		return fmt.Errorf("query knowledge ids of document %d failed: %w", docID, err)
+	}
+
+	// 2. 先删映射与文档记录（DB 侧）
+	if err := s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("document_id = ?", docID).Delete(&model.KnowledgeVersionMapping{}).Error; err != nil {
-			return err
+			return fmt.Errorf("delete version mappings failed: %w", err)
 		}
-		return tx.Delete(&model.Document{}, docID).Error
-	})
-	if err != nil {
+		res := tx.Delete(&model.Document{}, docID)
+		if res.Error != nil {
+			return fmt.Errorf("delete document failed: %w", res.Error)
+		}
+		if res.RowsAffected == 0 {
+			return fmt.Errorf("document %d not found", docID)
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	// 2. 清理不再被任何文档引用的孤儿 Knowledge 记录与 Bleve 索引 (M-01, M-11)
+	// 3. 清理不再被任何文档引用的孤儿 Knowledge 记录与 Bleve 索引 (M-01, M-11)
 	if len(kIDs) > 0 {
 		var activeKIDs []uint
-		s.db.Model(&model.KnowledgeVersionMapping{}).Where("knowledge_id IN ?", kIDs).Distinct("knowledge_id").Pluck("knowledge_id", &activeKIDs)
+		if err := s.db.Model(&model.KnowledgeVersionMapping{}).
+			Where("knowledge_id IN ?", kIDs).
+			Distinct("knowledge_id").
+			Pluck("knowledge_id", &activeKIDs).Error; err != nil {
+			return fmt.Errorf("query active knowledge ids failed: %w", err)
+		}
 		activeSet := make(map[uint]struct{}, len(activeKIDs))
 		for _, id := range activeKIDs {
 			activeSet[id] = struct{}{}
 		}
 
-		var orphanIDs []string
-		var orphanUintIDs []uint
+		orphanIDs := make([]string, 0, len(kIDs))
+		orphanUintIDs := make([]uint, 0, len(kIDs))
 		for _, id := range kIDs {
 			if _, active := activeSet[id]; !active {
 				orphanUintIDs = append(orphanUintIDs, id)
@@ -934,14 +1071,22 @@ func (s *Service) DeleteDocument(docID uint) error {
 		}
 
 		if len(orphanUintIDs) > 0 {
-			_ = s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error
+			// 顺序：先删索引，后删 DB。
+			// 反过来会短暂出现"DB 里没有但还能搜到"的幽灵条目。
 			if s.indexer != nil {
-				_ = s.indexer.DeleteBatch(orphanIDs)
+				if err := s.indexer.DeleteBatch(orphanIDs); err != nil {
+					logger.Log.Errorf("[Knowledge Service] delete orphan knowledge from bleve failed: %v", err)
+					// 索引删除失败不阻断 DB 清理，但必须明确告知需要重建
+					return fmt.Errorf("delete orphan knowledge from index failed: %w (please run a full reindex)", err)
+				}
+			}
+			if err := s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error; err != nil {
+				return fmt.Errorf("delete orphan knowledge failed: %w", err)
 			}
 		}
 	}
 
-	// 3. 通知匹配引擎重载 (M-13)
+	// 4. 通知匹配引擎重载 (M-13)
 	if s.matchEngine != nil {
 		s.matchEngine.Reload()
 	}

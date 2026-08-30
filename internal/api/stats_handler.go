@@ -1,7 +1,7 @@
 package api
 
 import (
-	"net/http"
+	"fmt"
 	"sync"
 	"time"
 
@@ -47,18 +47,30 @@ func (h *StatsHandler) InvalidateCache() {
 	h.cacheUntil = time.Time{}
 }
 
+// globalStatsHandler 全局统计处理器引用。
+//
+// ARCH-11: 原实现把 handler 只存在 SetupRouter 的局部变量里，
+// InvalidateCache() 全项目仅测试调用，导入/删任务后仪表盘最多陈旧 15s。
+// 这里暴露一个包级引用与便捷失效函数，让业务层在数据变更后能主动失效缓存。
+var globalStatsHandler *StatsHandler
+
+// InvalidateStatsCache 主动失效系统统计缓存（可在任何业务变更后调用）
+func InvalidateStatsCache() {
+	if globalStatsHandler != nil {
+		globalStatsHandler.InvalidateCache()
+	}
+}
+
 // GetSystemStats 获取全局系统概览与仪表盘统计（带 15s 内存缓存优化）
 func (h *StatsHandler) GetSystemStats(c *gin.Context) {
 	h.cacheMu.RLock()
 	if h.cacheData != nil && time.Now().Before(h.cacheUntil) {
 		data := *h.cacheData
 		h.cacheMu.RUnlock()
-		c.JSON(http.StatusOK, gin.H{
-			"code": 0,
-			"data": data,
-		})
+		// ARCH-10: 统一走 SuccessResponse，保证 message 字段始终存在
+		SuccessResponse(c, data)
 		return
-	}
+		}
 	h.cacheMu.RUnlock()
 
 	h.cacheMu.Lock()
@@ -66,39 +78,50 @@ func (h *StatsHandler) GetSystemStats(c *gin.Context) {
 
 	// 二次检查缓存
 	if h.cacheData != nil && time.Now().Before(h.cacheUntil) {
-		c.JSON(http.StatusOK, gin.H{
-			"code": 0,
-			"data": *h.cacheData,
-		})
+		SuccessResponse(c, *h.cacheData)
 		return
 	}
 
+	// 12.1: 统计类查询的错误不再静默丢弃。
+	// 原实现全部 `Count(&x)` 不接 Error，DB 故障时仪表盘会展示一份全是 0 的"正常"数据，
+	// 比直接报错更危险——用户会以为知识库是空的。
 	var totalKnowledge int64
 	var totalDocs int64
 	var totalTasks int64
 	var totalLogsAnalyzed int64
 
-	h.db.Model(&model.Knowledge{}).Count(&totalKnowledge)
-	h.db.Model(&model.Document{}).Count(&totalDocs)
-	h.db.Model(&model.TaskInfo{}).Count(&totalTasks)
+	var qErr error
+	collect := func(err error) {
+		if err != nil && qErr == nil {
+			qErr = err
+		}
+	}
+	collect(h.db.Model(&model.Knowledge{}).Count(&totalKnowledge).Error)
+	collect(h.db.Model(&model.Document{}).Count(&totalDocs).Error)
+	collect(h.db.Model(&model.TaskInfo{}).Count(&totalTasks).Error)
 
 	type LogSum struct {
 		Sum int64
 	}
 	var sumRes LogSum
-	h.db.Model(&model.TaskInfo{}).Select("COALESCE(SUM(log_count), 0) as sum").Scan(&sumRes)
+	collect(h.db.Model(&model.TaskInfo{}).Select("COALESCE(SUM(log_count), 0) as sum").Scan(&sumRes).Error)
 	totalLogsAnalyzed = sumRes.Sum
 
 	// 统计各模块知识数量 Top 10
 	var topModules []ModuleStat
-	h.db.Model(&model.Knowledge{}).
+	collect(h.db.Model(&model.Knowledge{}).
 		Select("module, count(*) as count").
 		Group("module").
 		Order("count desc").
 		Limit(10).
-		Scan(&topModules)
+		Scan(&topModules).Error)
 	if topModules == nil {
 		topModules = make([]ModuleStat, 0)
+	}
+
+	if qErr != nil {
+		ErrorResponse(c, 500, -1, fmt.Sprintf("load system stats failed: %v", qErr))
+		return
 	}
 
 	statsData := &SystemStatsData{
@@ -112,8 +135,5 @@ func (h *StatsHandler) GetSystemStats(c *gin.Context) {
 	h.cacheData = statsData
 	h.cacheUntil = time.Now().Add(h.cacheTTL)
 
-	c.JSON(http.StatusOK, gin.H{
-		"code": 0,
-		"data": *statsData,
-	})
+	SuccessResponse(c, *statsData)
 }

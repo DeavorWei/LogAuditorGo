@@ -132,9 +132,14 @@
                 <el-icon><Check /></el-icon>
                 <span>保存配置并应用</span>
               </el-button>
-              <el-button @click="fetchConfig">
+              <!--
+                UI-18: 原按钮文案是"重置"，实际行为却是"重新载入配置"，
+                用户会以为点了就会丢弃未保存的修改（结果什么都没发生），
+                或以为点了没生效。这里把文案改为与行为一致的"重新载入"。
+              -->
+              <el-button @click="fetchConfig" title="放弃未保存的修改，重新从服务端载入配置">
                 <el-icon><Refresh /></el-icon>
-                <span>重置</span>
+                <span>重新载入</span>
               </el-button>
             </div>
           </el-form>

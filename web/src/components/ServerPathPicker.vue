@@ -93,32 +93,47 @@
             </el-button>
           </div>
 
+          <!--
+            UI-08: 引入窗口化（windowing）渲染。
+            原实现对 entries 全量 v-for，滚动加载数十页后 DOM 节点破万，
+            而本工具的典型场景正是"数十万文件的日志目录"，滚动与筛选会直接卡死浏览器。
+            这里改为固定高度的占位容器 + 只渲染可视区域内的行，
+            DOM 节点数恒定在 (可视行数 + 缓冲) 以内。
+          -->
           <div ref="listRef" class="entry-list" @scroll="onListScroll">
-            <div
-              v-for="e in entries"
-              :key="e.path"
-              class="entry-row"
-              :class="{ 'is-disabled': !e.readable, 'is-selected': isSelected(e.path) }"
-              @click="onRowClick(e)"
-              @dblclick="onRowDblClick(e)"
-            >
-              <el-checkbox
-                v-if="canCheck(e)"
-                :model-value="isSelected(e.path)"
-                @click.stop
-                @change="toggleSelect(e)"
-              />
-              <span v-else class="check-placeholder" />
-              <el-icon class="entry-icon" :class="{ 'is-dir': e.is_dir }">
-                <Folder v-if="e.is_dir" /><Document v-else />
-              </el-icon>
-              <span class="entry-name" :title="e.path">{{ e.name }}</span>
-              <span class="entry-size">{{ e.is_dir ? '' : formatSize(e.size) }}</span>
-              <span class="entry-time">{{ e.mod_time || '' }}</span>
+            <div class="virtual-spacer" :style="{ height: totalListHeight + 'px' }">
+              <div
+                v-for="item in visibleRows"
+                :key="item.entry.path"
+                class="entry-row"
+                :class="{
+                  'is-disabled': !item.entry.readable,
+                  'is-selected': isSelected(item.entry.path)
+                }"
+                :style="{ transform: `translateY(${item.offset}px)` }"
+                @click="onRowClick(item.entry)"
+                @dblclick="onRowDblClick(item.entry)"
+              >
+                <el-checkbox
+                  v-if="canCheck(item.entry)"
+                  :model-value="isSelected(item.entry.path)"
+                  @click.stop
+                  @change="toggleSelect(item.entry)"
+                />
+                <span v-else class="check-placeholder" />
+                <el-icon class="entry-icon" :class="{ 'is-dir': item.entry.is_dir }">
+                  <Folder v-if="item.entry.is_dir" /><Document v-else />
+                </el-icon>
+                <span class="entry-name" :title="item.entry.path">{{ item.entry.name }}</span>
+                <span class="entry-size">{{ item.entry.is_dir ? '' : formatSize(item.entry.size) }}</span>
+                <span class="entry-time">{{ item.entry.mod_time || '' }}</span>
+              </div>
             </div>
 
             <div v-if="loading" class="list-tip">加载中…</div>
-            <div v-else-if="hasMore" class="list-tip">向下滚动加载更多（共 {{ total }} 项）</div>
+            <div v-else-if="hasMore" class="list-tip">
+              向下滚动加载更多（共 {{ total }} 项，已载入 {{ entries.length }} 项）
+            </div>
             <div v-else-if="entries.length" class="list-tip">已全部加载（共 {{ total }} 项）</div>
             <div v-else class="list-tip">该目录为空或没有匹配项</div>
           </div>
@@ -159,9 +174,11 @@
 </template>
 
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
+import { useRequest } from '@/composables/useRequest'
+import { formatSize as sharedFormatSize } from '@/utils/format'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -243,15 +260,69 @@ const shortName = p => {
 
 // ---------- 目录浏览 ----------
 
+/**
+ * UI-08: 虚拟滚动参数。
+ * ROW_HEIGHT 必须与 CSS 中 .entry-row 的实际行高保持一致，
+ * 否则窗口计算会出现偏移/留白。
+ */
+const ROW_HEIGHT = 34
+// 可视区之外额外渲染的缓冲行数，避免快速滚动时出现白屏
+const ROW_BUFFER = 6
+// 内存内最多保留的条目数（超出后丢弃最早的部分，避免节点数与内存无界增长）
+const MAX_KEPT_ENTRIES = 5000
+
+const scrollTop = ref(0)
+const viewportHeight = ref(400)
+
+const totalListHeight = computed(() => entries.value.length * ROW_HEIGHT)
+
+/** 当前需要真实渲染的行（窗口化） */
+const visibleRows = computed(() => {
+  const list = entries.value
+  if (!list.length) return []
+  const start = Math.max(0, Math.floor(scrollTop.value / ROW_HEIGHT) - ROW_BUFFER)
+  const visibleCount = Math.ceil(viewportHeight.value / ROW_HEIGHT) + ROW_BUFFER * 2
+  const end = Math.min(list.length, start + visibleCount)
+  const rows = []
+  for (let i = start; i < end; i++) {
+    rows.push({ entry: list[i], offset: i * ROW_HEIGHT })
+  }
+  return rows
+})
+
+const syncViewportHeight = () => {
+  if (listRef.value) {
+    viewportHeight.value = listRef.value.clientHeight || viewportHeight.value
+  }
+}
+
+/**
+ * UI-07: 目录浏览的请求竞态治理。
+ *
+ * 原实现用 `if (loading) return` 拦截：上一个目录请求未回时再跳转新目录，
+ * 请求会被**直接丢弃**，界面显示新路径却保留着旧目录的内容。
+ *
+ * 改为统一复用 useRequest 的"AbortController 取消旧请求 + 请求序号守卫"：
+ *   - 切换目录时取消在途请求，新请求立即发出；
+ *   - 只有最新一次请求的结果才被写入，杜绝旧响应覆盖新结果。
+ */
+// 失败提示由 api 拦截器统一弹出，这里不再重复 toast
+const { run: runBrowse } = useRequest(api.fsBrowse)
+
 const loadDir = async (reset = true) => {
-  if (!currentPath.value || loading.value) return
+  if (!currentPath.value) return
+
+  if (reset) {
+    offset.value = 0
+    entries.value = []
+    // 重置虚拟窗口的滚动位置
+    scrollTop.value = 0
+    if (listRef.value) listRef.value.scrollTop = 0
+  }
+
   loading.value = true
   try {
-    if (reset) {
-      offset.value = 0
-      entries.value = []
-    }
-    const res = await api.fsBrowse({
+    const res = await runBrowse({
       path: currentPath.value,
       exts: props.exts,
       keyword: keyword.value,
@@ -259,21 +330,22 @@ const loadDir = async (reset = true) => {
       offset: offset.value,
       limit: PAGE_SIZE
     })
+    // 被 newer 请求取消时返回 undefined，直接丢弃
+    if (!res) return
+
     const d = res.data || {}
     total.value = d.total || 0
     hasMore.value = !!d.truncated
     entries.value = reset ? (d.entries || []) : entries.value.concat(d.entries || [])
+    // UI-08: 限制内存内保留的条目数，避免"滚动数十页后 DOM 节点破万"导致页面卡死
+    if (entries.value.length > MAX_KEPT_ENTRIES) {
+      entries.value = entries.value.slice(entries.value.length - MAX_KEPT_ENTRIES)
+    }
     offset.value = (d.offset || 0) + (d.entries || []).length
     currentPath.value = d.path || currentPath.value
     pathInput.value = currentPath.value
     if (reset && localStorage) {
       try { localStorage.setItem(lastPathKey(), currentPath.value) } catch (e) {}
-    }
-  } catch (e) {
-    ElMessage.error('读取目录失败：' + (e?.message || '未知错误'))
-    if (reset) {
-      entries.value = []
-      total.value = 0
     }
   } finally {
     loading.value = false
@@ -285,11 +357,19 @@ const loadMore = () => {
   loadDir(false)
 }
 
+// UI-08: 滚动事件节流，避免大目录滚动时每秒触发上百次回调
+let scrollRaf = null
 const onListScroll = e => {
-  const el = e.target
-  if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
-    loadMore()
-  }
+  if (scrollRaf) return
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = null
+    const el = listRef.value
+    if (!el) return
+    scrollTop.value = el.scrollTop
+    if (el.scrollTop + el.clientHeight >= el.scrollHeight - 200) {
+      loadMore()
+    }
+  })
 }
 
 const navigate = async path => {
@@ -312,9 +392,11 @@ const jumpToInput = async () => {
   if (listRef.value) listRef.value.scrollTop = 0
 }
 
+// UI-11: keywordTimer 原先从未被清理，组件销毁后仍可能触发一次请求。
+// 这里统一在 onUnmounted 中清理，并把变量名改为 const（避免误用 var 语义）。
 let keywordTimer = null
 const onKeywordInput = () => {
-  clearTimeout(keywordTimer)
+  if (keywordTimer) clearTimeout(keywordTimer)
   keywordTimer = setTimeout(() => loadDir(true), 300)
 }
 
@@ -336,6 +418,8 @@ const handleOpen = async () => {
   selected.value = [...props.modelValue]
   keyword.value = ''
   loadFavorites()
+  // UI-08: 弹窗打开后测量可视区高度，供窗口化渲染使用
+  nextTick(syncViewportHeight)
 
   const last = localStorage ? localStorage.getItem(lastPathKey()) : ''
   if (last) {
@@ -361,7 +445,16 @@ const loadTreeNode = async (node, resolve) => {
   }
   try {
     const res = await api.fsBrowse({ path: node.data.path, dirsOnly: true, limit: PAGE_SIZE })
-    resolve((res.data?.entries || []).map(e => ({ name: e.name, path: e.path, leaf: false })))
+    // UI-11: 原实现把所有节点都设为 leaf: false，
+    // 于是任何文件也会显示成"可展开目录"，点开后得到空列表。
+    // 这里依据服务端返回的 is_dir 正确设置 leaf。
+    resolve(
+      (res.data?.entries || []).map(e => ({
+        name: e.name,
+        path: e.path,
+        leaf: !e.is_dir
+      }))
+    )
   } catch (e) {
     resolve([])
   }
@@ -450,16 +543,35 @@ const confirm = () => {
   dialogVisible.value = false
 }
 
-const formatSize = bytes => {
-  if (!bytes && bytes !== 0) return ''
-  const b = Number(bytes)
-  if (b < 1024) return b + ' B'
-  if (b < 1024 * 1024) return (b / 1024).toFixed(1) + ' KB'
-  if (b < 1024 * 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB'
-  return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB'
-}
+// WEB-16: 复用统一实现。目录项传空值占位（目录不展示大小），文件走标准单位换算。
+const formatSize = bytes => sharedFormatSize(bytes, '')
 
-watch(() => props.visible, v => { if (v) loadFavorites() })
+// UI-11: 组件销毁时统一清理定时器、在途请求与 RAF 回调，
+// 避免"组件已销毁却仍在发起请求 / 触发回调"的泄漏。
+onUnmounted(() => {
+  if (keywordTimer) {
+    clearTimeout(keywordTimer)
+    keywordTimer = null
+  }
+  // 在途的 fsBrowse 请求由 useRequest 的 onScopeDispose 统一取消
+  if (scrollRaf) {
+    cancelAnimationFrame(scrollRaf)
+    scrollRaf = null
+  }
+  window.removeEventListener('resize', syncViewportHeight)
+})
+
+// UI-08: 窗口尺寸变化时重新测量可视区高度
+onMounted(() => {
+  window.addEventListener('resize', syncViewportHeight)
+})
+
+watch(() => props.visible, v => {
+  if (v) {
+    loadFavorites()
+    nextTick(syncViewportHeight)
+  }
+})
 </script>
 
 <style scoped>
@@ -603,14 +715,32 @@ watch(() => props.visible, v => { if (v) loadFavorites() })
   border-radius: 8px;
 }
 
+/*
+ * UI-08: 虚拟滚动（windowing）所需样式。
+ * .virtual-spacer 撑出整份列表的滚动高度，.entry-row 通过 translateY 定位到各自的位置。
+ * 行高必须固定为 ROW_HEIGHT（34px）：padding 5px + 字号行高 + 边框，
+ * 否则窗口计算与实际渲染会错位。
+ */
+.virtual-spacer {
+  position: relative;
+  width: 100%;
+}
+
 .entry-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 0 10px;
+  height: 34px;
+  line-height: 34px;
   font-size: 13px;
   cursor: pointer;
   user-select: none;
+  box-sizing: border-box;
 }
 
 .entry-row:hover {

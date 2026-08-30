@@ -40,6 +40,21 @@
           <span>系统设置</span>
         </el-menu-item>
       </el-menu>
+
+      <!--
+        UI-01: 常驻的"运行中任务"指示器。
+        进度弹窗被关闭后任务仍在后台执行，此前没有任何入口可以回到弹窗，
+        长任务结果等于永久丢失。点击该徽标即可一键拉回进度弹窗。
+      -->
+      <div v-if="progressStore.hasRunningJob" class="running-jobs-indicator">
+        <el-tooltip :content="runningTooltip" placement="bottom">
+          <el-badge :value="progressStore.runningCount" :max="9" type="warning">
+            <el-button circle type="primary" plain @click="reopenProgressDialog">
+              <el-icon class="rotating-icon"><Loading /></el-icon>
+            </el-button>
+          </el-badge>
+        </el-tooltip>
+      </div>
     </el-header>
 
     <el-main class="app-main">
@@ -49,13 +64,48 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { Loading } from '@element-plus/icons-vue'
+import { useProgressStore } from '@/stores/progress'
 
 const route = useRoute()
+const progressStore = useProgressStore()
+
 const activeRoute = computed(() => {
   if (route.path.startsWith('/audit')) return '/audit'
   return route.path
+})
+
+const runningTooltip = computed(() => {
+  const jobs = progressStore.runningJobs
+  if (jobs.length === 0) return '暂无运行中的任务'
+  const names = jobs.map((j) => j.message || j.jobId).slice(0, 3).join('；')
+  return `${jobs.length} 个任务运行中：${names}（点击回到进度窗口）`
+})
+
+/**
+ * 点击徽标：广播"重新打开进度窗口"事件。
+ *
+ * 各视图内的 ImportProgressModal 仍持有自己的 jobId 与业务回调，
+ * 由它们自行判断是否响应这个请求——这样既保留了视图各自的
+ * "完成后刷新列表"逻辑，又不需要把弹窗状态强行集中到 App 层。
+ */
+const reopenProgressDialog = () => {
+  const first = progressStore.runningJobs[0]
+  if (!first) return
+  window.dispatchEvent(
+    new CustomEvent('logauditorgo:reopen-progress', { detail: { jobId: first.jobId } })
+  )
+}
+
+// 定期清理过期终态记录，避免 store 无界增长
+let pruneTimer = null
+onMounted(() => {
+  pruneTimer = setInterval(() => progressStore.prune(), 60 * 1000)
+})
+onUnmounted(() => {
+  if (pruneTimer) clearInterval(pruneTimer)
 })
 </script>
 
@@ -119,6 +169,25 @@ html, body, #app {
 .nav-menu {
   border-bottom: none !important;
   height: 60px;
+  flex: 1;
+  min-width: 0;
+}
+
+/* UI-01: 运行中任务指示器 */
+.running-jobs-indicator {
+  display: flex;
+  align-items: center;
+  margin-left: 16px;
+  flex-shrink: 0;
+}
+
+.rotating-icon {
+  animation: spin 1.6s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .app-main {
