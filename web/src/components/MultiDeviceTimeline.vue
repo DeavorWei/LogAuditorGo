@@ -138,7 +138,7 @@
           <el-timeline-item
             v-for="(ev, index) in timelineEvents"
             :key="ev.log_id || index"
-            :timestamp="formatTime(ev.timestamp)"
+            :timestamp="formatEventTime(ev)"
             placement="top"
             :color="ev.device_color || '#3B82F6'"
             size="large"
@@ -158,6 +158,9 @@
                   <span v-if="ev.hostname" class="hostname-tag">{{ ev.hostname }}</span>
                   <el-tag v-if="ev.knowledge_id" size="small" type="success" effect="plain">
                     已匹配知识
+                  </el-tag>
+                  <el-tag v-else-if="ev.module === 'COMMENT'" size="small" type="info" effect="plain">
+                    注释/元数据
                   </el-tag>
                 </div>
               </div>
@@ -187,7 +190,7 @@
         <el-table :data="timelineEvents" border style="width: 100%;">
           <el-table-column label="发生时间" width="165">
             <template #default="{ row }">
-              <span style="font-family: monospace;">{{ formatTime(row.timestamp) }}</span>
+              <span style="font-family: monospace;">{{ formatEventTime(row) }}</span>
             </template>
           </el-table-column>
 
@@ -239,7 +242,7 @@
         <div class="drawer-section">
           <h4>📌 基础事件元信息</h4>
           <div class="meta-grid">
-            <div><strong>发生时间:</strong> {{ formatTime(selectedEvent.timestamp) }}</div>
+            <div><strong>发生时间:</strong> {{ formatEventTime(selectedEvent) }}</div>
             <div>
               <strong>所属设备:</strong>
               <span class="device-pill" :style="{ backgroundColor: selectedEvent.device_color || '#3B82F6', marginLeft: '6px' }">
@@ -280,6 +283,23 @@
             <div class="kb-item action-box">
               <strong>官方推荐处置步骤:</strong>
               <p>{{ knowledgeDetail.action || '-' }}</p>
+            </div>
+          </div>
+        </div>
+        <div v-else-if="selectedEvent.module === 'COMMENT'" class="drawer-section">
+          <h4>💡 注释性日志说明</h4>
+          <div class="kb-card">
+            <div class="kb-item">
+              <strong>日志性质:</strong>
+              <p>网络设备系统注释或日志文件导出元数据（以 <code>#</code> 开头），非故障告警事件。</p>
+            </div>
+            <div class="kb-item">
+              <strong>典型作用:</strong>
+              <p>记录日志生成槽位与环境、设备型号及固件版本、防篡改哈希校验（Digest）或文件归档记录，用于溯源与完整性校验。</p>
+            </div>
+            <div class="kb-item action-box">
+              <strong>运维建议:</strong>
+              <p>系统已将其归档为信息性记录，无需进行故障排查或处置。</p>
             </div>
           </div>
         </div>
@@ -682,6 +702,13 @@ const formatParamsArray = (paramsObj) => {
 
 // WEB-16: 复用统一实现，零值展示由占位符统一控制
 const formatTime = (ts) => sharedFormatTime(ts, '无法解析')
+const formatEventTime = (ev) => {
+  if (!ev) return '-'
+  if (ev.module === 'COMMENT' && (!ev.timestamp || String(ev.timestamp).startsWith('0001-01-01'))) {
+    return '— (注释行)'
+  }
+  return formatTime(ev.timestamp)
+}
 
 const severityClass = (sev) => {
   if (sev <= 2) return 'sev-crit'

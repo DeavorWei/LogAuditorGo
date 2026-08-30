@@ -9,6 +9,7 @@ package enrich
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"logauditorgo/internal/model"
@@ -59,6 +60,20 @@ func GenerateEventSummary(module, brief string, severity int, rawMsg string, par
 	return summary.GenerateSummary(module, brief, severity, rawMsg, params, k)
 }
 
+// systemParamDescriptions 通用系统元数据与注释字段的标准含义字典
+var systemParamDescriptions = map[string]string{
+	"slot":            "生成日志文件的业务板卡或主控板槽位编号",
+	"devicemodel":     "记录该日志的设备硬件产品型号",
+	"model":           "记录该日志的设备硬件产品型号",
+	"version":         "设备运行的 VRP 操作系统固件版本",
+	"softwareversion": "设备运行的 VRP 操作系统固件版本",
+	"digestseq":       "日志文件防篡改完整性校验序列号",
+	"digest":          "日志内容完整性哈希校验值 (SHA256/MD5 Digest)",
+	"closeinfo":       "日志文件归档与关闭时间信息",
+	"comment":         "设备日志导出附加注释或文件元数据说明",
+	"filetype":        "日志文件结构字段类型说明",
+}
+
 // EnrichParameters 将日志提取的动态参数与知识库官方参数定义进行多层级匹配融合
 func EnrichParameters(paramsJSON string, kb *model.Knowledge) []EnrichedParameter {
 	rawParams := ParseParametersJSON(paramsJSON)
@@ -94,6 +109,9 @@ func EnrichParameters(paramsJSON string, kb *model.Knowledge) []EnrichedParamete
 		} else if d, ok := normMap[normalizeKey(k)]; ok && d != "" {
 			desc = d
 			matched = true
+		} else if d, ok := systemParamDescriptions[normalizeKey(k)]; ok && d != "" {
+			desc = d
+			matched = true
 		}
 
 		result = append(result, EnrichedParameter{
@@ -103,6 +121,10 @@ func EnrichParameters(paramsJSON string, kb *model.Knowledge) []EnrichedParamete
 			Matched:     matched,
 		})
 	}
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
 
 	return result
 }

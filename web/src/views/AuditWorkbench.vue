@@ -236,12 +236,13 @@
               <span :class="['sev-tag', getSevClass(rec.severity)]">Lv.{{ rec.severity }}</span>
               <span class="log-mod">{{ rec.module }}/{{ rec.brief }}</span>
               <span v-if="rec.knowledge_id > 0" class="match-tag">{{ rec.match_tier }}</span>
+              <span v-else-if="rec.module === 'COMMENT'" class="comment-tag">注释</span>
             </div>
             <div v-if="rec.event_summary" class="log-card-msg" :title="rec.event_summary">
               {{ rec.event_summary }}
             </div>
             <div class="log-card-footer">
-              <span class="log-time">{{ formatTime(rec.timestamp) }}</span>
+              <span class="log-time">{{ formatLogTime(rec) }}</span>
               <span v-if="rec.hostname" class="host-tag">{{ rec.hostname }}</span>
               <span v-if="rec.source_file" class="file-tag" :title="`来源文件: ${rec.source_file}`">
                 📄 {{ rec.source_file }}
@@ -282,7 +283,10 @@
         <div v-if="selectedLog" class="detail-container">
           <div class="panel-title">
             <span>📄 日志报文结构化解析 (#{{ selectedLog.id }})</span>
-            <el-tag size="small" :type="selectedLog.knowledge_id ? 'success' : 'info'">
+            <el-tag v-if="selectedLog.module === 'COMMENT'" size="small" type="info" effect="plain">
+              注释/元数据
+            </el-tag>
+            <el-tag v-else size="small" :type="selectedLog.knowledge_id ? 'success' : 'info'">
               {{ selectedLog.knowledge_id ? `知识库已匹配 (${(selectedLog.match_confidence * 100).toFixed(0)}%)` : '未匹配' }}
             </el-tag>
           </div>
@@ -307,11 +311,13 @@
             <div class="box-title">核心结构化字段</div>
             <el-descriptions :column="2" border size="small">
               <el-descriptions-item label="设备主机名">{{ selectedLog.hostname || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="时间戳">{{ formatTime(selectedLog.timestamp) }}</el-descriptions-item>
+              <el-descriptions-item label="时间戳">{{ formatLogTime(selectedLog) }}</el-descriptions-item>
               <el-descriptions-item label="所属模块">{{ selectedLog.module }}</el-descriptions-item>
               <el-descriptions-item label="事件简名">{{ selectedLog.brief }}</el-descriptions-item>
               <el-descriptions-item label="日志级别">
-                <span :class="['sev-tag', getSevClass(selectedLog.severity)]">Level {{ selectedLog.severity }}</span>
+                <span :class="['sev-tag', getSevClass(selectedLog.severity)]">
+                  Level {{ selectedLog.severity }}{{ selectedLog.module === 'COMMENT' ? ' (注释信息)' : '' }}
+                </span>
               </el-descriptions-item>
               <el-descriptions-item label="来源文件">{{ selectedLog.source_file || '-' }}</el-descriptions-item>
               <el-descriptions-item label="槽位/序列号">{{ selectedLog.slot_info || '-' }}</el-descriptions-item>
@@ -349,7 +355,9 @@
                 </div>
               </div>
             </div>
-            <div v-else class="empty-hint">该日志未解析出结构化动态键值变量</div>
+            <div v-else class="empty-hint">
+              {{ selectedLog.module === 'COMMENT' ? '此条记录为设备系统注释或文件导出元数据，非设备故障告警，无需提取业务动态键值。' : '该日志未解析出结构化动态键值变量' }}
+            </div>
           </div>
 
           <!-- 消息模板动态实例化对照 -->
@@ -460,6 +468,30 @@
                       </template>
                     </el-table-column>
                   </el-table>
+                </div>
+              </div>
+              <div v-else-if="selectedLog.module === 'COMMENT'" class="comment-kb-card">
+                <div class="comment-kb-header">
+                  <el-icon color="#0284c7" size="18"><InfoFilled /></el-icon>
+                  <span class="comment-kb-title">💡 注释性日志说明 (Comment / Metadata)</span>
+                </div>
+                <div class="comment-kb-body">
+                  <div class="comment-item">
+                    <span class="c-label">日志类型：</span>
+                    <span class="c-val">网络设备系统注释或日志文件导出元数据行（以 <code>#</code> 开头）</span>
+                  </div>
+                  <div class="comment-item">
+                    <span class="c-label">业务影响：</span>
+                    <span class="c-val">非网络故障、协议异常或系统告警事件，对网络业务及设备运行无负面影响</span>
+                  </div>
+                  <div class="comment-item">
+                    <span class="c-label">典型用途：</span>
+                    <span class="c-val">记录日志生成槽位与运行环境、设备型号及固件版本、防篡改哈希校验（Digest）或文件归档记录，用于日志审计溯源与文件完整性校验</span>
+                  </div>
+                  <div class="comment-item">
+                    <span class="c-label">运维建议：</span>
+                    <span class="c-val">系统已自动归档为注释性记录，运维人员无需进行故障排查或处置</span>
+                  </div>
                 </div>
               </div>
               <div v-else class="empty-kb">
@@ -1477,6 +1509,13 @@ watch(currentViewMode, async (newMode) => {
 
 // WEB-16: 时间/体积格式化统一走 utils/format，消除与 Tasks、ServerPathPicker 的重复实现
 const formatTime = (ts) => sharedFormatTime(ts, '无法解析')
+const formatLogTime = (log) => {
+  if (!log) return '-'
+  if (log.module === 'COMMENT' && (!log.timestamp || String(log.timestamp).startsWith('0001-01-01'))) {
+    return '— (注释行无时间戳)'
+  }
+  return formatTime(log.timestamp)
+}
 const formatSize = sharedFormatSize
 
 const getSevClass = (sev) => {
@@ -1685,6 +1724,14 @@ watch(
 .match-tag {
   background: #dcfce7;
   color: #166534;
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
+.comment-tag {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #cbd5e1;
   font-size: 10px;
   padding: 1px 4px;
   border-radius: 3px;
@@ -2035,6 +2082,53 @@ watch(
   border-left: 3px solid #f59e0b;
   padding: 8px 12px;
   border-radius: 0 4px 4px 0;
+}
+
+.comment-kb-card {
+  margin: 12px 0;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+.comment-kb-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #0369a1;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #cbd5e1;
+}
+.comment-kb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+}
+.comment-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.comment-item .c-label {
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.comment-item .c-val {
+  color: #1e293b;
+}
+.comment-item .c-val code {
+  background: #e2e8f0;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: monospace;
 }
 
 .empty-state {

@@ -1005,6 +1005,100 @@ func TestDuplicateFileNameImportAndOverwrite(t *testing.T) {
 	}
 }
 
+func TestTaskImportCommentLogs(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "task_comment_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	taskInfo, err := svc.CreateEmptyTask("Comment-Log-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create empty task failed: %v", err)
+	}
+
+	content := "# This logfile is generated at slot 1 (CE6865E V200R024C00SPC500B126)\n" +
+		"# Digest(0006756365):3e0f5f595bfa263fff2638e6692bb42ce44af9c01af42a075add1073b287b917\n" +
+		"May 19 2026 09:33:32+08:00 CE6865E-01 %%01IFNET/4/IF_DOWN(l)[0]: Interface 10GE1/0/1 has turned down.\n"
+
+	items := []task.FileUploadItem{
+		{
+			FileName: "device_with_comments.log",
+			FileSize: int64(len(content)),
+			Content:  content,
+		},
+	}
+
+	_, err = svc.ImportLogs(taskInfo.TaskID, items, "overwrite", nil)
+	if err != nil {
+		t.Fatalf("ImportLogs failed: %v", err)
+	}
+
+	records, total, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("QueryTaskLogs failed: %v", err)
+	}
+	if total != 3 {
+		t.Fatalf("expected 3 records, got %d", total)
+	}
+
+	// 验证第一条：日志文件头注释
+	rec0 := records[0]
+	if rec0.Module != "COMMENT" || rec0.Brief != "LOGFILE_HEADER" {
+		t.Errorf("expected COMMENT/LOGFILE_HEADER, got %s/%s", rec0.Module, rec0.Brief)
+	}
+	if rec0.SlotInfo != "1" {
+		t.Errorf("expected SlotInfo '1', got %s", rec0.SlotInfo)
+	}
+	if rec0.Severity != 6 {
+		t.Errorf("expected Severity 6, got %d", rec0.Severity)
+	}
+
+	// 验证第二条：Digest校验
+	rec1 := records[1]
+	if rec1.Module != "COMMENT" || rec1.Brief != "LOGFILE_DIGEST" {
+		t.Errorf("expected COMMENT/LOGFILE_DIGEST, got %s/%s", rec1.Module, rec1.Brief)
+	}
+
+	// 验证多设备时序日志中的摘要富化
+	timelineEvents, _, err := svc.QueryMultiDeviceLogs(taskInfo.TaskID, model.MultiDeviceLogFilter{Page: 1, PageSize: 10})
+	if err != nil {
+		t.Fatalf("QueryMultiDeviceLogs failed: %v", err)
+	}
+	if len(timelineEvents) != 3 {
+		t.Fatalf("expected 3 timeline events, got %d", len(timelineEvents))
+	}
+	foundHeader := false
+	foundDigest := false
+	for _, ev := range timelineEvents {
+		if ev.Brief == "LOGFILE_HEADER" {
+			foundHeader = true
+			if !strings.Contains(ev.EventSummary, "文件头注释") {
+				t.Errorf("expected EventSummary to contain '文件头注释', got %s", ev.EventSummary)
+			}
+		}
+		if ev.Brief == "LOGFILE_DIGEST" {
+			foundDigest = true
+			if !strings.Contains(ev.EventSummary, "防篡改校验") {
+				t.Errorf("expected EventSummary to contain '防篡改校验', got %s", ev.EventSummary)
+			}
+		}
+	}
+	if !foundHeader || !foundDigest {
+		t.Errorf("missing timeline events: header=%v, digest=%v", foundHeader, foundDigest)
+	}
+}
+
+
 
 
 

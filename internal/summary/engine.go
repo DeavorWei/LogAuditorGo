@@ -1,6 +1,8 @@
 package summary
 
 import (
+	"strings"
+
 	"logauditorgo/internal/model"
 )
 
@@ -25,6 +27,11 @@ func NewEngine() *Engine {
 // 优先使用命中的官方知识库中文释义与模板自适应生成；
 // 若未关联官方知识库，自动走通用语义自适应提取，全流程无需任何特定协议规则！
 func (e *Engine) GenerateSummary(module, brief string, severity int, rawMsg string, params map[string]string, kb *model.Knowledge) string {
+	// 0. 注释性日志：由 # 开头的日志行（文件头、Digest校验、关闭记录等）统一由专用逻辑生成友好提示
+	if strings.ToUpper(strings.TrimSpace(module)) == "COMMENT" {
+		return BuildCommentSummary(brief, params, rawMsg)
+	}
+
 	// 1. 构建参数规范化索引
 	normParams := BuildNormalizedMap(params)
 

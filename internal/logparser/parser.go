@@ -24,6 +24,7 @@ var (
 
 func init() {
 	parserList.Store([]LogParser{})
+	RegisterParser(&CommentParser{})
 	RegisterParser(&USGSecurityParser{})
 	RegisterParser(&VRPParser{})
 }

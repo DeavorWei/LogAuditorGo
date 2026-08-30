@@ -232,10 +232,10 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	brief := strings.TrimSpace(norm.Brief)
 	upperBrief := strings.ToUpper(brief)
 
-	// PARSE-02: 解析失败的兜底行（调用方统一置为 UNKNOWN / UNPARSED）不参与匹配，
+	// PARSE-02: 解析失败的兜底行（调用方统一置为 UNKNOWN / UNPARSED）或注释行（COMMENT）不参与匹配，
 	// 也不写入任何缓存。否则它们会共享同一条缓存项，一旦被 Bleve 偶然召回，
 	// 全部异常行会被批量挂到同一条知识上，产生大面积误判。
-	if module == "UNKNOWN" || upperBrief == "UNPARSED" {
+	if module == "UNKNOWN" || upperBrief == "UNPARSED" || module == "COMMENT" {
 		return nil, TierUnmatch, 0.0
 	}
 
