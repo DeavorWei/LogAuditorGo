@@ -1129,35 +1129,38 @@ func (s *Service) GetKnowledgeMapByIDs(ids []uint) (map[uint]*model.Knowledge, e
 // 一旦任一步失败就会出现"索引已删、DB 仍在"或"DB 已删、索引仍在"的反向不一致，
 // 用户表现为"搜到一条点进去 404"。这里全部纳入错误判定：
 // 先删索引、后删 DB；任一步失败都向上返回并提示可重建索引自愈。
-func (s *Service) DeleteDocument(docID uint) error {
+// DeleteDocuments 批量删除指定的多个文档及其版本映射，并级联清理孤儿知识条目与 Bleve 索引
+func (s *Service) DeleteDocuments(docIDs []uint) (int, error) {
 	if s.db == nil {
-		return fmt.Errorf("knowledge db is not initialized")
+		return 0, fmt.Errorf("knowledge db is not initialized")
+	}
+	if len(docIDs) == 0 {
+		return 0, nil
 	}
 
 	var kIDs []uint
-	// 1. 查找此文档关联的所有 knowledge_id（必须校验 Error 并去重）
+	// 1. 查找此批文档关联的所有 knowledge_id（去重）
 	if err := s.db.Model(&model.KnowledgeVersionMapping{}).
-		Where("document_id = ?", docID).
+		Where("document_id IN ?", docIDs).
 		Distinct("knowledge_id").
 		Pluck("knowledge_id", &kIDs).Error; err != nil {
-		return fmt.Errorf("query knowledge ids of document %d failed: %w", docID, err)
+		return 0, fmt.Errorf("query knowledge ids of documents failed: %w", err)
 	}
 
+	deletedCount := 0
 	// 2. 先删映射与文档记录（DB 侧）
 	if err := s.db.Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("document_id = ?", docID).Delete(&model.KnowledgeVersionMapping{}).Error; err != nil {
+		if err := tx.Where("document_id IN ?", docIDs).Delete(&model.KnowledgeVersionMapping{}).Error; err != nil {
 			return fmt.Errorf("delete version mappings failed: %w", err)
 		}
-		res := tx.Delete(&model.Document{}, docID)
+		res := tx.Where("id IN ?", docIDs).Delete(&model.Document{})
 		if res.Error != nil {
-			return fmt.Errorf("delete document failed: %w", res.Error)
+			return fmt.Errorf("delete documents failed: %w", res.Error)
 		}
-		if res.RowsAffected == 0 {
-			return fmt.Errorf("document %d not found", docID)
-		}
+		deletedCount = int(res.RowsAffected)
 		return nil
 	}); err != nil {
-		return err
+		return 0, err
 	}
 
 	// 3. 清理不再被任何文档引用的孤儿 Knowledge 记录与 Bleve 索引 (M-01, M-11)
@@ -1167,7 +1170,7 @@ func (s *Service) DeleteDocument(docID uint) error {
 			Where("knowledge_id IN ?", kIDs).
 			Distinct("knowledge_id").
 			Pluck("knowledge_id", &activeKIDs).Error; err != nil {
-			return fmt.Errorf("query active knowledge ids failed: %w", err)
+			return deletedCount, fmt.Errorf("query active knowledge ids failed: %w", err)
 		}
 		activeSet := make(map[uint]struct{}, len(activeKIDs))
 		for _, id := range activeKIDs {
@@ -1190,11 +1193,11 @@ func (s *Service) DeleteDocument(docID uint) error {
 				if err := s.indexer.DeleteBatch(orphanIDs); err != nil {
 					logger.Log.Errorf("[Knowledge Service] delete orphan knowledge from bleve failed: %v", err)
 					// 索引删除失败不阻断 DB 清理，但必须明确告知需要重建
-					return fmt.Errorf("delete orphan knowledge from index failed: %w (please run a full reindex)", err)
+					return deletedCount, fmt.Errorf("delete orphan knowledge from index failed: %w (please run a full reindex)", err)
 				}
 			}
 			if err := s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error; err != nil {
-				return fmt.Errorf("delete orphan knowledge failed: %w", err)
+				return deletedCount, fmt.Errorf("delete orphan knowledge failed: %w", err)
 			}
 		}
 	}
@@ -1204,6 +1207,18 @@ func (s *Service) DeleteDocument(docID uint) error {
 		s.matchEngine.Reload()
 	}
 
+	return deletedCount, nil
+}
+
+// DeleteDocument 删除指定单篇文档
+func (s *Service) DeleteDocument(docID uint) error {
+	deleted, err := s.DeleteDocuments([]uint{docID})
+	if err != nil {
+		return err
+	}
+	if deleted == 0 {
+		return fmt.Errorf("document %d not found", docID)
+	}
 	return nil
 }
 

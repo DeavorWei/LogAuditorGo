@@ -139,6 +139,9 @@ export default {
   deleteDocument(id) {
     return request.delete(`/documents/${id}`)
   },
+  batchDeleteDocuments(ids) {
+    return request.post('/documents/batch-delete', { ids })
+  },
 
   // 知识库
   searchKnowledge(params, options = {}) {

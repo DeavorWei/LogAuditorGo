@@ -189,3 +189,28 @@ func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
 
 	SuccessResponse(c, nil, "Document deleted successfully")
 }
+
+// BatchDeleteDocuments 批量删除指定的多个文档
+func (h *DocumentHandler) BatchDeleteDocuments(c *gin.Context) {
+	var req struct {
+		IDs []uint `json:"ids"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request: "+err.Error())
+		return
+	}
+	if len(req.IDs) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "ids cannot be empty")
+		return
+	}
+
+	deleted, err := h.knowledgeSvc.DeleteDocuments(req.IDs)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Batch delete failed: "+err.Error())
+		return
+	}
+
+	SuccessResponse(c, gin.H{
+		"deleted_count": deleted,
+	}, fmt.Sprintf("Successfully deleted %d documents", deleted))
+}

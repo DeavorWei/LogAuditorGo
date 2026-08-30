@@ -680,6 +680,11 @@ const route = useRoute()
 // WEB-14: 原文件声明了 `const router = useRouter()` 却从未使用（全文件无 router. 调用），
 // 属于死代码，已移除。需要跳转时请重新引入 useRouter。
 
+const filterStore = useFilterStore()
+const filter = computed(() => filterStore.filters)
+const taskStore = useTaskStore()
+const rcaEvents = computed(() => taskStore.rcaEvents)
+
 const taskList = ref([])
 const currentTaskId = ref('')
 const currentTask = ref(null)
@@ -759,25 +764,6 @@ const selectedLog = ref(null)
 const activeTab = ref('knowledge')
 
 const taskDevices = ref([])
-
-/**
- * WEB-05: 筛选条件上收至 Pinia store。
- * 原先是组件内的局部 ref，切换视图即丢失，刷新页面也要重新勾选。
- * 这里直接复用 store 中的响应式对象（读写都走同一份状态，不做二次拷贝）。
- */
-const filterStore = useFilterStore()
-const filter = computed(() => filterStore.filters)
-
-/**
- * WEB-05 / WEB-13: RCA 事件与其倒排索引上收至 task store。
- *
- * 原先 `rcaEvents` 是本地 ref，且 `matchedRCA` 在模板里对每条日志
- * 都要遍历全部 RCA 事件并 `JSON.parse(correlated_log_ids)`——
- * 日志列表一翻页就成百上千次重复解析。
- * 改为由 store 在拉取时预建 `Map<logId, rcaEvent>`，查询降为 O(1)。
- */
-const taskStore = useTaskStore()
-const rcaEvents = computed(() => taskStore.rcaEvents)
 
 // 新建任务相关
 const showNewTaskDialog = ref(false)

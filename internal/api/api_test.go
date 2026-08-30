@@ -554,6 +554,114 @@ func TestFolderWithMultipleHDXImport(t *testing.T) {
 	}
 }
 
+func TestBatchDeleteDocuments(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "batch_del_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	_ = storage.CloseKnowledgeDB()
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+	defer storage.CloseKnowledgeDB()
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. 创建两条测试文档及映射
+	doc1 := &model.Document{
+		LibID:          "LIB_DEL_001",
+		LibName:        "Test Document 1",
+		ProductType:    "CE16800",
+		ProductVersion: "V200R020C00",
+	}
+	doc2 := &model.Document{
+		LibID:          "LIB_DEL_002",
+		LibName:        "Test Document 2",
+		ProductType:    "CE16800",
+		ProductVersion: "V200R021C00",
+	}
+	globalDB.Create(doc1)
+	globalDB.Create(doc2)
+
+	globalDB.Create(&model.KnowledgeVersionMapping{
+		KnowledgeID:    1001,
+		DocumentID:     doc1.ID,
+		ProductType:    doc1.ProductType,
+		ProductVersion: doc1.ProductVersion,
+	})
+	globalDB.Create(&model.KnowledgeVersionMapping{
+		KnowledgeID:    1002,
+		DocumentID:     doc2.ID,
+		ProductType:    doc2.ProductType,
+		ProductVersion: doc2.ProductVersion,
+	})
+
+	// 2. 调用 POST /api/v1/documents/batch-delete
+	payload, _ := json.Marshal(map[string]interface{}{
+		"ids": []uint{doc1.ID, doc2.ID},
+	})
+	req, _ := http.NewRequest("POST", "/api/v1/documents/batch-delete", bytes.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for batch delete, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var res struct {
+		Code int `json:"code"`
+		Data struct {
+			DeletedCount int `json:"deleted_count"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("unmarshal batch delete response failed: %v", err)
+	}
+	if res.Code != 0 || res.Data.DeletedCount != 2 {
+		t.Fatalf("expected 2 deleted documents, got %+v", res)
+	}
+
+	// 3. 验证数据库记录已被删除
+	var docCount int64
+	globalDB.Model(&model.Document{}).Where("id IN ?", []uint{doc1.ID, doc2.ID}).Count(&docCount)
+	if docCount != 0 {
+		t.Errorf("expected 0 documents remaining, got %d", docCount)
+	}
+
+	var mapCount int64
+	globalDB.Model(&model.KnowledgeVersionMapping{}).Where("document_id IN ?", []uint{doc1.ID, doc2.ID}).Count(&mapCount)
+	if mapCount != 0 {
+		t.Errorf("expected 0 mappings remaining, got %d", mapCount)
+	}
+}
+
 func TestStaticFrontendAndSPARouting(t *testing.T) {
 	logger.Init("debug", "console")
 

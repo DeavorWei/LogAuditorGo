@@ -55,9 +55,50 @@
       </el-card>
     </div>
 
-    <!-- 文档表格 (已有数据时展示) -->
+    <!-- 文档表格与批量操作区 (已有数据时展示) -->
     <el-card v-else shadow="never" class="table-card">
-      <el-table :data="filteredDocList" v-loading="loading" style="width: 100%;" border>
+      <!-- 批量操作控制栏 -->
+      <div class="batch-action-bar">
+        <div class="batch-left">
+          <el-button size="small" @click="handleToggleSelectAllDocs">
+            {{ isAllDocsSelected ? '取消全选所有' : '全选所有文档 (' + docList.length + ')' }}
+          </el-button>
+          <span v-if="selectedDocIds.length > 0" class="batch-count-tip">
+            已选择 <strong>{{ selectedDocIds.length }}</strong> / {{ docList.length }} 个文档包
+          </span>
+          <el-button
+            v-if="selectedDocIds.length > 0"
+            size="small"
+            link
+            type="primary"
+            @click="clearDocSelection"
+          >
+            清空勾选
+          </el-button>
+        </div>
+        <div class="batch-right">
+          <el-button
+            v-if="selectedDocIds.length > 0"
+            type="danger"
+            size="small"
+            icon="Delete"
+            :loading="deletingBatch"
+            @click="handleBatchDelete"
+          >
+            批量删除 (已选 {{ selectedDocIds.length }} 项)
+          </el-button>
+        </div>
+      </div>
+
+      <el-table
+        ref="docTableRef"
+        :data="filteredDocList"
+        v-loading="loading"
+        style="width: 100%;"
+        border
+        @selection-change="handleDocSelectionChange"
+      >
+        <el-table-column type="selection" width="45" align="center" />
         <el-table-column prop="lib_id" label="LibID" width="120">
           <template #default="{ row }">
             <el-tag size="small" effect="plain">{{ row.lib_id }}</el-tag>
@@ -106,11 +147,12 @@
       </el-table>
     </el-card>
 
-    <!-- 导入 HDX 文档弹窗（统一单页面：选择文件夹自动扫描并导入） -->
+    <!-- 导入 HDX 文档弹窗（统一宽体单页面：选择文件夹自动扫描并导入） -->
     <el-dialog
       v-model="showImportDialog"
       title="导入华为官方 HDX 产品文档知识库"
-      width="780px"
+      width="1000px"
+      top="6vh"
       destroy-on-close
     >
       <div class="import-dialog-content">
@@ -151,34 +193,37 @@
         <div class="scan-result-container">
           <!-- 正在扫描 -->
           <div v-if="scanning" class="scan-state-box scanning-box">
-            <el-icon class="is-loading" size="32" color="#0284c7"><Loading /></el-icon>
+            <el-icon class="is-loading" size="36" color="#0284c7"><Loading /></el-icon>
             <div class="state-title">正在递归扫描文件夹...</div>
             <div class="state-desc">正在解析目录结构与 HDX 压缩包内的 profile.xml 索引，请稍候</div>
           </div>
 
           <!-- 尚未选择或扫描 -->
           <div v-else-if="!scannedDone" class="scan-state-box unscanned-box">
-            <el-icon size="42" color="#94a3b8"><FolderOpened /></el-icon>
+            <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
             <div class="state-title">请选择包含 HDX 文档的文件夹</div>
-            <div class="state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档</div>
+            <div class="state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档并默认全选</div>
           </div>
 
           <!-- 扫描完成但未发现文档 -->
           <div v-else-if="scannedItems.length === 0" class="scan-state-box empty-box">
-            <el-empty description="该文件夹下未检测到包含 profile.xml 的文档目录或 .hdx 压缩包" :image-size="70">
+            <el-empty description="该文件夹下未检测到包含 profile.xml 的文档目录或 .hdx 压缩包" :image-size="80">
               <el-button size="small" @click="openServerFolderPicker">重新选择文件夹</el-button>
             </el-empty>
           </div>
 
           <!-- 扫描完成并发现文档列表 -->
           <div v-else class="scanned-items-view">
-            <!-- 统计摘要与筛选 -->
+            <!-- 统计摘要与全选控制 -->
             <div class="scan-summary-bar">
               <div class="summary-left">
-                <span>共发现 <strong>{{ scannedItems.length }}</strong> 个文档包</span>
+                <span>共扫描发现 <strong>{{ scannedItems.length }}</strong> 个文档包</span>
                 <span class="count-badge archive-badge">{{ archiveCount }} 个压缩包</span>
                 <span class="count-badge dir-badge">{{ dirCount }} 个解压目录</span>
-                <span class="selected-tip">（已勾选 <strong>{{ selectedItems.length }}</strong> 项）</span>
+                <span class="selected-tip">（已勾选 <strong>{{ selectedItems.length }}</strong> / {{ scannedItems.length }} 项）</span>
+                <el-button size="small" type="primary" link @click="toggleSelectAllScanned">
+                  {{ isAllScannedSelected ? '取消全选' : '全选所有' }}
+                </el-button>
               </div>
               <div class="summary-right" v-if="scannedItems.length > 5">
                 <el-input
@@ -187,7 +232,7 @@
                   placeholder="过滤文档名/型号/LibID..."
                   prefix-icon="Search"
                   clearable
-                  style="width: 180px;"
+                  style="width: 200px;"
                 />
               </div>
             </div>
@@ -198,19 +243,19 @@
               :data="filteredScannedItems"
               size="small"
               border
-              max-height="300px"
+              max-height="440px"
               @selection-change="handleScanSelectionChange"
               class="scan-table"
             >
-              <el-table-column type="selection" width="44" align="center" />
-              <el-table-column label="类型" width="105" align="center">
+              <el-table-column type="selection" width="45" align="center" />
+              <el-table-column label="类型" width="115" align="center">
                 <template #default="{ row }">
                   <el-tag :type="row.type === 'archive' ? 'primary' : 'success'" size="small">
                     {{ row.type === 'archive' ? 'HDX 压缩包' : '解压目录' }}
                   </el-tag>
                 </template>
               </el-table-column>
-              <el-table-column label="文档信息" min-width="210" show-overflow-tooltip>
+              <el-table-column label="文档信息" min-width="260" show-overflow-tooltip>
                 <template #default="{ row }">
                   <div class="doc-title-cell">
                     <span class="doc-name-text">{{ row.lib_name || row.name }}</span>
@@ -222,17 +267,17 @@
                   </div>
                 </template>
               </el-table-column>
-              <el-table-column prop="path" label="路径 / 文件名" min-width="170" show-overflow-tooltip>
+              <el-table-column prop="path" label="路径 / 文件名" min-width="220" show-overflow-tooltip>
                 <template #default="{ row }">
                   <span class="path-cell-text" :title="row.path">{{ pathBaseName(row.path) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="大小" width="85" align="right">
+              <el-table-column label="大小" width="95" align="right">
                 <template #default="{ row }">
                   <span style="color: #64748b; font-size: 11px;">{{ formatSize(row.size) }}</span>
                 </template>
               </el-table-column>
-              <el-table-column label="状态" width="110" align="center">
+              <el-table-column label="状态" width="120" align="center">
                 <template #default="{ row }">
                   <el-tag v-if="row.exists_in_kb" type="warning" size="small" effect="plain">已入库同名/版本</el-tag>
                   <el-tag v-else type="success" size="small" effect="plain">全新文档</el-tag>
@@ -304,7 +349,7 @@
 
 <script setup>
 import { ref, computed, nextTick, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   FolderOpened,
   FolderAdd,
@@ -313,7 +358,8 @@ import {
   Refresh,
   Upload,
   InfoFilled,
-  Loading
+  Loading,
+  Delete
 } from '@element-plus/icons-vue'
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
@@ -323,6 +369,11 @@ import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '
 const loading = ref(false)
 const docList = ref([])
 const searchKeyword = ref('')
+const docTableRef = ref(null)
+
+// 主列表多选与批量删除
+const selectedDocIds = ref([])
+const deletingBatch = ref(false)
 
 // 统一导入弹窗相关状态
 const showImportDialog = ref(false)
@@ -363,6 +414,14 @@ const dirCount = computed(() => {
   return scannedItems.value.filter(i => i.type === 'directory').length
 })
 
+const isAllScannedSelected = computed(() => {
+  return scannedItems.value.length > 0 && selectedItems.value.length === scannedItems.value.length
+})
+
+const isAllDocsSelected = computed(() => {
+  return docList.value.length > 0 && selectedDocIds.value.length === docList.value.length
+})
+
 const filteredScannedItems = computed(() => {
   if (!scanKeyword.value.trim()) return scannedItems.value
   const kw = scanKeyword.value.trim().toLowerCase()
@@ -391,9 +450,67 @@ const fetchDocs = async () => {
     const res = await api.getDocuments()
     if (res.code === 0) {
       docList.value = res.data || []
+      // 校验现有选中集合，移除已不存在的 ID
+      const validIds = new Set(docList.value.map(d => d.id))
+      selectedDocIds.value = selectedDocIds.value.filter(id => validIds.has(id))
     }
   } finally {
     loading.value = false
+  }
+}
+
+// 主文档表格勾选变化
+const handleDocSelectionChange = selection => {
+  selectedDocIds.value = selection.map(d => d.id)
+}
+
+// 全选/取消全选所有文档（全局跨所有数据）
+const handleToggleSelectAllDocs = () => {
+  if (isAllDocsSelected.value) {
+    selectedDocIds.value = []
+    docTableRef.value?.clearSelection()
+  } else {
+    selectedDocIds.value = docList.value.map(d => d.id)
+    filteredDocList.value.forEach(row => {
+      docTableRef.value?.toggleRowSelection(row, true)
+    })
+  }
+}
+
+const clearDocSelection = () => {
+  selectedDocIds.value = []
+  docTableRef.value?.clearSelection()
+}
+
+// 批量删除文档
+const handleBatchDelete = async () => {
+  if (selectedDocIds.value.length === 0) return
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要批量删除选中的 ${selectedDocIds.value.length} 个华为官方产品文档及其关联的所有版本映射吗？此操作不可逆！`,
+      '批量删除文档确认',
+      {
+        confirmButtonText: '确定删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+
+  deletingBatch.value = true
+  try {
+    const res = await api.batchDeleteDocuments(selectedDocIds.value)
+    if (res.code === 0) {
+      ElMessage.success(`已成功批量删除 ${res.data?.deleted_count || selectedDocIds.value.length} 个产品文档`)
+      clearDocSelection()
+      await fetchDocs()
+    }
+  } finally {
+    deletingBatch.value = false
   }
 }
 
@@ -421,7 +538,7 @@ const onPathPickerConfirm = paths => {
   }
 }
 
-// 触发扫描
+// 触发扫描：扫描完成后自动全选所有有效文档条目
 const handleScan = async () => {
   const folder = selectedFolder.value.trim()
   if (!folder) {
@@ -442,7 +559,9 @@ const handleScan = async () => {
       scannedItems.value = items
       scannedDone.value = true
 
-      // 默认全选扫描到的有效条目
+      // 关键：扫描完成后默认全选所有条目
+      selectedItems.value = [...items]
+
       nextTick(() => {
         if (scanTableRef.value) {
           items.forEach(row => {
@@ -460,7 +579,20 @@ const handleScan = async () => {
   }
 }
 
-// 表格多选变动回调
+// 全选/取消全选扫描结果
+const toggleSelectAllScanned = () => {
+  if (isAllScannedSelected.value) {
+    selectedItems.value = []
+    scanTableRef.value?.clearSelection()
+  } else {
+    selectedItems.value = [...scannedItems.value]
+    scannedItems.value.forEach(row => {
+      scanTableRef.value?.toggleRowSelection(row, true)
+    })
+  }
+}
+
+// 扫描表格多选变动回调
 const handleScanSelectionChange = selection => {
   selectedItems.value = selection
 }
@@ -622,6 +754,33 @@ onMounted(() => {
   border-radius: 8px;
 }
 
+/* 批量操作控制栏 */
+.batch-action-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+
+.batch-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.batch-count-tip {
+  font-size: 13px;
+  color: #475569;
+}
+
+.batch-count-tip strong {
+  color: #0284c7;
+}
+
 /* 空知识库引导卡片 */
 .empty-doc-guide {
   padding: 10px 0;
@@ -689,17 +848,17 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-/* 统一导入弹窗样式 */
+/* 统一导入弹窗样式 (1000px 宽体大弹窗) */
 .import-dialog-content {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
 }
 
 .folder-select-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .folder-select-row .el-input {
@@ -709,20 +868,20 @@ onMounted(() => {
 .folder-select-tip {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: #64748b;
+  gap: 8px;
+  font-size: 13px;
+  color: #475569;
   background: #f0f9ff;
   border: 1px solid #bae6fd;
   border-radius: 6px;
-  padding: 6px 12px;
+  padding: 8px 14px;
 }
 
 .scan-result-container {
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #f8fafc;
-  min-height: 240px;
+  min-height: 380px;
   display: flex;
   flex-direction: column;
 }
@@ -732,30 +891,30 @@ onMounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 40px 20px;
+  padding: 60px 20px;
   text-align: center;
   flex: 1;
 }
 
 .state-title {
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 600;
   color: #1e293b;
-  margin-top: 12px;
+  margin-top: 14px;
 }
 
 .state-desc {
-  font-size: 12px;
+  font-size: 13px;
   color: #64748b;
-  margin-top: 4px;
-  max-width: 420px;
-  line-height: 1.5;
+  margin-top: 6px;
+  max-width: 480px;
+  line-height: 1.6;
 }
 
 .scanned-items-view {
   display: flex;
   flex-direction: column;
-  padding: 10px;
+  padding: 12px;
   gap: 10px;
 }
 
@@ -765,18 +924,18 @@ onMounted(() => {
   align-items: center;
   font-size: 13px;
   color: #334155;
-  padding: 4px 4px;
+  padding: 2px 4px;
 }
 
 .summary-left {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .count-badge {
   font-size: 11px;
-  padding: 1px 6px;
+  padding: 2px 8px;
   border-radius: 4px;
   font-weight: 500;
 }
@@ -792,8 +951,8 @@ onMounted(() => {
 }
 
 .selected-tip {
-  font-size: 12px;
-  color: #64748b;
+  font-size: 13px;
+  color: #475569;
 }
 
 .scan-table {
@@ -805,28 +964,28 @@ onMounted(() => {
 .doc-title-cell {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 4px;
 }
 
 .doc-name-text {
   font-weight: 600;
   color: #0284c7;
-  line-height: 1.3;
+  line-height: 1.4;
 }
 
 .doc-meta-sub {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex-wrap: wrap;
 }
 
 .meta-tag {
-  font-size: 10px;
+  font-size: 11px;
   font-family: monospace;
   background: #f1f5f9;
   color: #475569;
-  padding: 1px 4px;
+  padding: 1px 5px;
   border-radius: 3px;
 }
 

@@ -137,6 +137,7 @@ func SetupRouter(
 		v1.POST("/documents/import-dir", docHandler.ImportDir)
 		v1.GET("/documents", docHandler.ListDocuments)
 		v1.DELETE("/documents/:id", docHandler.DeleteDocument)
+		v1.POST("/documents/batch-delete", docHandler.BatchDeleteDocuments)
 
 		// 知识库
 		v1.GET("/knowledge/search", knowHandler.SearchKnowledge)
