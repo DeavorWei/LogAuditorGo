@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"encoding/xml"
 	"fmt"
-	"os"
-	"path/filepath"
+	"net/url"
+	"path"
 	"strconv"
 	"strings"
 
@@ -57,23 +57,45 @@ type naviStats struct {
 	maxDepthSeen   int
 }
 
-// ParseNaviXML 解析 navi.xml 并递归提取叶子日志和告警节点
+// ParseNaviXML 解析 navi.xml 并递归提取叶子日志和告警节点（目录形态，兼容传统导入链路）
 func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviItem, err error) {
+	return ParseNaviXMLFrom(NewDirSource(docRootDir), naviRelPath)
+}
+
+// normalizeNaviPath 清洗 profile.xml 中 <navi> 字段声明的相对路径。
+// 与 item.URL 共用同一套清洗规则：反斜杠转正斜杠、URL 解码、剥离非法片段。
+func normalizeNaviPath(raw string) string {
+	p := strings.TrimSpace(raw)
+	if p == "" {
+		return "resources/navi.xml"
+	}
+	p = strings.ReplaceAll(p, `\`, "/")
+	if strings.Contains(p, "%") {
+		if unescaped, err := url.PathUnescape(p); err == nil && unescaped != "" {
+			p = unescaped
+		}
+	}
+	if clean, err := normalizeRelPath(p); err == nil {
+		return clean
+	}
+	logger.Log.Warnf("[HDX Navigator] illegal navi path %q, fallback to resources/navi.xml", raw)
+	return "resources/navi.xml"
+}
+
+// ParseNaviXMLFrom 从任意 DocSource 解析 navi.xml 并递归提取叶子日志和告警节点
+func ParseNaviXMLFrom(src DocSource, naviRelPath string) (leafItems []LeafNaviItem, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic in ParseNaviXML: %v", r)
 		}
 	}()
-	naviFullPath := filepath.Join(docRootDir, naviRelPath)
 
-	// KB-11: 读取前先校验体积，避免超大 navi.xml 一次性载入导致内存尖峰
-	if info, statErr := os.Stat(naviFullPath); statErr == nil && info.Size() > maxNaviFileBytes {
-		return nil, fmt.Errorf("navi.xml %s is too large: %d bytes (limit %d)", naviFullPath, info.Size(), maxNaviFileBytes)
-	}
+	rel := normalizeNaviPath(naviRelPath)
 
-	data, err := os.ReadFile(naviFullPath)
+	// KB-11: 体积上限由 readSourceFile 的 LimitReader 强制，避免超大 navi.xml 造成内存尖峰
+	data, err := readSourceFile(src, rel, maxNaviFileBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read navi.xml (%s) failed: %w", naviFullPath, err)
+		return nil, fmt.Errorf("read navi.xml (%s) failed: %w", rel, err)
 	}
 
 	var root RawTopicsRoot
@@ -91,14 +113,15 @@ func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviIt
 		}
 	}
 
-	naviDir := filepath.Dir(naviRelPath)
+	// 包内路径恒为正斜杠语义，统一用 path.Dir（而非 filepath.Dir）保证跨平台一致
+	naviDir := path.Dir(rel)
 	stats := &naviStats{}
 	for _, t := range root.Topics {
 		traverseTopic(t, []string{}, naviDir, 1, stats, &leafItems)
 	}
 	if stats.depthTruncated {
 		logger.Log.Warnf("[HDX Navigator] navi.xml %s exceeds max depth %d (seen %d), deeper topics were skipped",
-			naviFullPath, maxNaviDepth, stats.maxDepthSeen)
+			src.Label(), maxNaviDepth, stats.maxDepthSeen)
 	}
 
 	logCount := 0
@@ -111,7 +134,7 @@ func ParseNaviXML(docRootDir string, naviRelPath string) (leafItems []LeafNaviIt
 		}
 	}
 	logger.Log.Debugf("[HDX Navigator] Extracted %d leaf knowledge items from %s (Logs: %d, Alarms: %d)",
-		len(leafItems), naviFullPath, logCount, alarmCount)
+		len(leafItems), src.Label(), logCount, alarmCount)
 
 	return leafItems, nil
 }

@@ -26,10 +26,21 @@ type ProfileXML struct {
 	Navi           string   `xml:"navi"`
 }
 
-// ParseProfileXML 从指定根目录解析 profile.xml
+// maxProfileFileBytes profile.xml 的体积上限 (8MB)。
+// 正常 HDX 的 profile.xml 只有几 KB，设限只为防御畸形包导致的一次性大内存分配。
+const maxProfileFileBytes = 8 << 20
+
+// ParseProfileXML 从指定根目录解析 profile.xml（目录形态，兼容传统导入链路）
 func ParseProfileXML(docRootDir string) (*model.Document, string, error) {
-	profilePath := filepath.Join(docRootDir, "profile.xml")
-	data, err := os.ReadFile(profilePath)
+	return ParseProfileXMLFrom(NewDirSource(docRootDir))
+}
+
+// ParseProfileXMLFrom 从任意 DocSource 解析 profile.xml。
+//
+// doc.FilePath 记录来源（已解压目录为目录绝对路径，压缩包为原始 .hdx 绝对路径），
+// 不再指向随导入结束即失效的临时解压目录。
+func ParseProfileXMLFrom(src DocSource) (*model.Document, string, error) {
+	data, err := readSourceFile(src, "profile.xml", maxProfileFileBytes)
 	if err != nil {
 		return nil, "", fmt.Errorf("read profile.xml failed: %w", err)
 	}
@@ -55,12 +66,12 @@ func ParseProfileXML(docRootDir string) (*model.Document, string, error) {
 		IssueDate:      strings.TrimSpace(p.IssueDate),
 		Language:       strings.TrimSpace(p.Language),
 		TopicNumber:    p.TopicNumber,
-		FilePath:       docRootDir,
+		FilePath:       src.Origin(),
 		ImportedAt:     time.Now(),
 	}
 
-	logger.Log.Debugf("[HDX Extractor] Successfully parsed profile.xml: LibID=%s, Version=%s, Product=%s %s, Topics=%d, Navi=%s",
-		doc.LibID, doc.LibVersion, doc.ProductType, doc.ProductVersion, doc.TopicNumber, naviRelPath)
+	logger.Log.Debugf("[HDX Extractor] Successfully parsed profile.xml [%s]: LibID=%s, Version=%s, Product=%s %s, Topics=%d, Navi=%s",
+		src.Label(), doc.LibID, doc.LibVersion, doc.ProductType, doc.ProductVersion, doc.TopicNumber, naviRelPath)
 
 	return doc, naviRelPath, nil
 }

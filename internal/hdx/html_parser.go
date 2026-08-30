@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
-	"path/filepath"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -69,71 +68,73 @@ func ExtractBlockText(sel *goquery.Selection) string {
 // 32 并发 × 大 HTML 会造成内存尖峰，这里给出硬上限并明确报错。
 const maxHTMLFileBytes = 10 << 20 // 10MB
 
-// resolveHTMLPath 解析并校验 HTML 文件路径，防御目录穿越与编码问题 (KB-12)。
+// ResolveItemRelPath 把 navi.xml 中的 item.URL 清洗为"文档根内"的相对路径 (KB-12)。
 //
-// 原实现只做了"去掉 # 锚点"，navi.xml 里的 `../` 或 `%20` 编码 URL
-// 会导致越界读取或文件不存在（静默丢条目）。
-func resolveHTMLPath(docRootDir string, item LeafNaviItem) (string, error) {
-	cleanURL := strings.TrimSpace(item.URL)
-	if idx := strings.Index(cleanURL, "#"); idx != -1 {
-		cleanURL = cleanURL[:idx]
+// 华为 HDX 的 item.URL 形式多样，必须走完整清洗管线后再查表，否则会静默丢条目：
+//
+//	rawURL -> 剥离 ? 与 # -> url.PathUnescape -> 反斜杠转 / -> path.Join(naviDir) -> 穿越检查
+//
+// 原实现只做了"去掉 # 锚点"，`../` 会越界读取、`%20` 与混用反斜杠会找不到文件。
+func ResolveItemRelPath(naviDir string, rawURL string) (string, error) {
+	u := strings.TrimSpace(rawURL)
+
+	// 1. 剥离锚点与查询串：alarm_xxx.html#anchor1 / doc.html?lang=zh
+	if idx := strings.IndexAny(u, "?#"); idx != -1 {
+		u = u[:idx]
 	}
-	if cleanURL == "" {
+	if u == "" {
 		return "", fmt.Errorf("empty html URL")
 	}
 
-	// 1. URL 解码兜底：HDX 文档中的文件名可能带 %20 之类的百分号编码
-	if strings.Contains(cleanURL, "%") {
-		if unescaped, err := url.PathUnescape(cleanURL); err == nil && unescaped != "" {
-			cleanURL = unescaped
+	// 2. URL 解码兜底：BGP%20Fail.html
+	if strings.Contains(u, "%") {
+		if unescaped, err := url.PathUnescape(u); err == nil && unescaped != "" {
+			u = unescaped
 		}
 	}
-	// Windows 下路径分隔符可能是 '/'
-	cleanURL = strings.ReplaceAll(cleanURL, "/", string(filepath.Separator))
 
-	root := filepath.Clean(docRootDir)
-	full := filepath.Clean(filepath.Join(root, item.NaviDir, cleanURL))
-
-	// 2. 目录穿越校验：解析后的绝对路径必须仍在文档根目录内
-	rel, err := filepath.Rel(root, full)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-		return "", fmt.Errorf("html path %q escapes the document root %q", item.URL, root)
+	// 3. 分隔符归一化：sub\alarm.html
+	u = strings.ReplaceAll(u, `\`, "/")
+	if u == "" {
+		return "", fmt.Errorf("empty html URL")
 	}
-	return full, nil
+
+	rel := path.Clean(path.Join(naviDir, u))
+	if rel == "." || rel == "/" {
+		return "", fmt.Errorf("empty html URL after clean: %s", rawURL)
+	}
+
+	// 4. 目录穿越校验：解析结果必须仍在文档根内
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("html path %q escapes the document root", rawURL)
+	}
+	return rel, nil
 }
 
-// readHTMLFile 读取并校验 HTML 文件内容 (KB-12)
-func readHTMLFile(path string) ([]byte, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("html path %q is a directory", path)
-	}
-	if info.Size() > maxHTMLFileBytes {
-		return nil, fmt.Errorf("html file %q is too large: %d bytes (limit %d)", path, info.Size(), maxHTMLFileBytes)
-	}
-	return os.ReadFile(path)
-}
-
-// ParseHTMLKnowledge 解析单个 HTML 文件提取知识
+// ParseHTMLKnowledge 解析单个 HTML 文件提取知识（目录形态，兼容传统导入链路）
 func ParseHTMLKnowledge(docRootDir string, item LeafNaviItem) (k *model.Knowledge, err error) {
+	return ParseHTMLKnowledgeFrom(NewDirSource(docRootDir), item)
+}
+
+// ParseHTMLKnowledgeFrom 从任意 DocSource 解析单个 HTML 页面提取知识。
+//
+// 压缩包形态下，HTML 字节流直接从 ZIP 条目流向 goquery，全程不落盘。
+func ParseHTMLKnowledgeFrom(src DocSource, item LeafNaviItem) (k *model.Knowledge, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("panic in ParseHTMLKnowledge: %v", r)
 		}
 	}()
-	
-	// KB-12: 统一走路径解析 + 目录穿越校验 + 大小上限保护
-	htmlPath, err := resolveHTMLPath(docRootDir, item)
+
+	// KB-12: 统一走路径清洗 + 目录穿越校验 + 大小上限保护
+	rel, err := ResolveItemRelPath(item.NaviDir, item.URL)
 	if err != nil {
 		return nil, err
 	}
 
-	rawBytes, err := readHTMLFile(htmlPath)
+	rawBytes, err := readSourceFile(src, rel, maxHTMLFileBytes)
 	if err != nil {
-		return nil, fmt.Errorf("read html (%s) failed: %w", htmlPath, err)
+		return nil, fmt.Errorf("read html (%s) in %s failed: %w", rel, src.Label(), err)
 	}
 
 	utf8Bytes, err := DecodeGBKBytes(rawBytes)

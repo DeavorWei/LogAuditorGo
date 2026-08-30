@@ -11,6 +11,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -25,7 +26,9 @@ import (
 
 // HDXImportStages HDX 产品文档知识库导入全流程预设阶段
 var HDXImportStages = []progress.StageDef{
-	{Key: "UPLOAD", Name: "文件扫描与解压"},
+	// 实际运行时会按输入类型改写名称：压缩包 -> "读取压缩包索引（流式读取，无需解压）"，
+	// 已解压目录 -> "文件扫描（无需解压）"
+	{Key: "UPLOAD", Name: "文件扫描与索引构建"},
 	{Key: "SCAN", Name: "扫描文档结构"},
 	{Key: "META", Name: "解析导航与元数据"},
 	{Key: "HTML_PARSE", Name: "并发解析知识条目"},
@@ -81,7 +84,10 @@ func (s *Service) SetMatchEngine(engine ReloadableEngine) {
 	s.matchEngine = engine
 }
 
-// SetExtractDir 设置导入 HDX 压缩包时的解压工作目录（未设置时回退到系统临时目录）
+// SetExtractDir 设置导入 HDX 压缩包时的解压工作目录（未设置时回退到系统临时目录）。
+//
+// KB-16: 压缩包现已默认走"读中央目录 + 内存索引"的流式读取，不再落盘，
+// 该目录仅在流式读取不可用（加密包、损坏包等）回退为全量解压时才会被使用。
 func (s *Service) SetExtractDir(dir string) {
 	s.extractDir = dir
 }
@@ -171,12 +177,20 @@ func isArchiveFile(path string) bool {
 	return ext == ".hdx" || ext == ".zip"
 }
 
-// prepareImportPaths 在实际导入前完成路径预处理：
-//   - 全部为已解压目录时：把首个阶段名改写为"文件扫描（无需解压）"，直接返回原路径
-//   - 含 .hdx / .zip 压缩包时：先并发解压到工作目录，再返回解压后的目录参与扫描
+// prepareImportTargets 在实际导入前完成来源预处理：
+//   - 全部为已解压目录时：把首个阶段名改写为"文件扫描（无需解压）"，直接返回目录来源
+//   - 含 .hdx / .zip 压缩包时：仅读取中央目录建立内存索引，返回包内文档根来源。
+//     全程不解压、不落盘；仅当压缩包无法流式读取（加密、损坏等）时才回退为全量解压。
 //
-// 返回的 cleanup 必须由调用方在导入结束后执行，用于清理解压产生的临时目录。
-func (s *Service) prepareImportPaths(paths []string, tr *progress.JobTracker) ([]string, func()) {
+// 返回值依次为：待导入的文档来源列表、预处理阶段的失败描述、清理函数。
+//
+// cleanup 必须由调用方通过 defer 执行，它负责：
+//   - 关闭全部 ArchiveSource 句柄。Windows 下不显式 Close 会持有只读文件句柄，
+//     导致导入完成后用户无法移动或重命名原始 .hdx；
+//   - 清理回退解压产生的临时目录。
+//
+// defer 保证正常完成、报错、panic 三条路径都能第一时间释放句柄。
+func (s *Service) prepareImportTargets(paths []string, tr *progress.JobTracker) ([]hdx.DocSource, []string, func()) {
 	noop := func() {}
 
 	// 解压相关接口要求非空的 tracker，此处兜底一个独立实例避免空指针
@@ -207,58 +221,119 @@ func (s *Service) prepareImportPaths(paths []string, tr *progress.JobTracker) ([
 		tr.AddLog("warning", "不支持的文件类型（仅支持 .hdx / .zip 压缩包或文档目录），已跳过: %s", filepath.Base(clean))
 	}
 
+	scanFailures := make([]string, 0)
+
+	// expandDirs 把已解压目录展开为文档根来源（沿用传统目录扫描逻辑）
+	expandDirs := func(list []string) []hdx.DocSource {
+		out := make([]hdx.DocSource, 0, len(list))
+		for _, d := range list {
+			docDirs, err := hdx.FindHDXDocDirs(d)
+			if err != nil {
+				logger.Log.Warnf("[Knowledge Service] Scan path %s failed: %v", d, err)
+				scanFailures = append(scanFailures, fmt.Sprintf("%s: %v", filepath.Base(d), err))
+				tr.AddLog("warning", "路径 %s 扫描失败: %v", filepath.Base(d), err)
+				continue
+			}
+			tr.AddLog("info", "路径 %s 中发现 %d 个 HDX 文档包", filepath.Base(d), len(docDirs))
+			for _, dd := range docDirs {
+				out = append(out, hdx.NewDirSource(dd))
+			}
+		}
+		return out
+	}
+
 	// 场景一：全部为已解压目录，跳过解压环节
 	if len(archives) == 0 {
 		tr.SetStageName("UPLOAD", "文件扫描（无需解压）")
 		tr.AddLog("info", "检测到 %d 个已解压的 HDX 文档目录，无需解压，直接进入扫描", len(dirs))
-		return dirs, noop
+		return expandDirs(dirs), scanFailures, noop
 	}
 
-	// 场景二：存在压缩包，先解压到工作目录
-	tr.SetStageName("UPLOAD", "文件扫描与解压")
-	tr.AddLog("info", "发现 %d 个 HDX 压缩包，正在解压到工作目录...", len(archives))
+	// 场景二：存在压缩包 —— 零磁盘流式读取
+	tr.SetStageName("UPLOAD", "读取压缩包索引（流式读取，无需解压）")
+	tr.AddLog("info", "发现 %d 个 HDX 压缩包，正在读取中央目录并建立内存索引（不解压、不落盘）...", len(archives))
 
-	base := s.getExtractDir()
-	if err := os.MkdirAll(fsx.LongPathSafe(base), 0755); err != nil {
-		tr.AddLog("error", "创建解压工作目录失败: %v，将跳过全部压缩包", err)
-		return dirs, noop
+	var opened []*hdx.ArchiveSource
+	var tmpDirs []string
+	cleanup := func() {
+		for _, a := range opened {
+			_ = a.Close()
+		}
+		for _, d := range tmpDirs {
+			_ = os.RemoveAll(d)
+		}
 	}
 
-	batchDir, err := os.MkdirTemp(base, "hdx_extract_")
-	if err != nil {
-		tr.AddLog("error", "创建解压临时目录失败: %v，将跳过全部压缩包", err)
-		return dirs, noop
-	}
+	targets := expandDirs(dirs)
 
-	extracted := 0
-	for _, arc := range archives {
-		tr.AddLog("info", "正在解压压缩包: %s", filepath.Base(arc))
-		// KB-13: 原实现用 filepath.Base(arc) 作为解压目标目录名，
-		// 不同目录下的同名 V800R021C00.hdx 会解压到同一处，文件互相覆盖、统计错乱。
-		// 改为系统唯一临时目录，彻底消除碰撞。
+	// fallbackExtract 流式读取不可用时的兜底：退回传统全量解压导入
+	fallbackExtract := func(arc string) []hdx.DocSource {
+		base := s.getExtractDir()
+		if err := os.MkdirAll(fsx.LongPathSafe(base), 0755); err != nil {
+			tr.AddLog("error", "创建解压工作目录失败: %v，跳过压缩包 %s", err, filepath.Base(arc))
+			return nil
+		}
+		batchDir, err := os.MkdirTemp(base, "hdx_extract_")
+		if err != nil {
+			tr.AddLog("error", "创建解压临时目录失败: %v，跳过压缩包 %s", err, filepath.Base(arc))
+			return nil
+		}
+		tmpDirs = append(tmpDirs, batchDir)
+
+		// KB-13: 用系统唯一临时目录作为解压目标，避免同名压缩包互相覆盖
 		dest, err := os.MkdirTemp(batchDir, "arc_")
 		if err != nil {
 			tr.AddLog("error", "创建解压目标目录失败: %v，跳过压缩包 %s", err, filepath.Base(arc))
-			continue
+			return nil
 		}
 		if err := hdx.UnzipConcurrent(arc, dest, tr); err != nil {
 			tr.AddLog("error", "解压 %s 失败: %v", filepath.Base(arc), err)
-			continue
+			return nil
 		}
 		// 解压后的目录内可能仍嵌套压缩包，递归解压
 		if err := hdx.ExtractAllArchivesWithTracker(dest, tr); err != nil {
 			tr.AddLog("warning", "解压包内嵌套压缩包时出现告警: %v", err)
 		}
-		dirs = append(dirs, dest)
-		extracted++
+
+		docDirs, err := hdx.FindHDXDocDirs(dest)
+		if err != nil {
+			tr.AddLog("warning", "解压后的目录 %s 中未发现 HDX 文档包: %v", filepath.Base(arc), err)
+			return nil
+		}
+		out := make([]hdx.DocSource, 0, len(docDirs))
+		for _, dd := range docDirs {
+			out = append(out, hdx.NewDirSource(dd))
+		}
+		tr.AddLog("info", "已通过全量解压兜底导入: %s", filepath.Base(arc))
+		return out
 	}
 
-	tr.AddLog("info", "解压完成，成功解压 %d/%d 个压缩包", extracted, len(archives))
+	for _, arc := range archives {
+		a, err := hdx.OpenArchive(arc)
+		if err != nil {
+			logger.Log.Warnf("[Knowledge Service] Stream open archive %s failed, fallback to full extract: %v", arc, err)
+			tr.AddLog("warning", "压缩包 %s 无法流式读取 (%v)，已回退为全量解压导入", filepath.Base(arc), err)
+			targets = append(targets, fallbackExtract(arc)...)
+			continue
+		}
 
-	cleanup := func() {
-		_ = os.RemoveAll(batchDir)
+		opened = append(opened, a)
+		roots := a.DocRoots(tr)
+		if len(roots) == 0 {
+			tr.AddLog("warning", "压缩包 %s 内未发现任何 HDX 文档包（缺少 profile.xml），已跳过", filepath.Base(arc))
+			continue
+		}
+		targets = append(targets, roots...)
+		tr.AddLog("info", "压缩包索引构建完成（流式读取，零磁盘占用）: %s，包内条目 %d，文档包 %d",
+			filepath.Base(arc), a.EntryCount(), len(roots))
 	}
-	return dirs, cleanup
+
+	// 读取中央目录通常在毫秒级完成，这里直接把 UPLOAD 阶段推至 100%，
+	// 用户视觉重心将平滑过渡到并发解析条目的 HTML_PARSE 阶段。
+	tr.UpdateProgress(int64(len(archives)), int64(len(archives)),
+		fmt.Sprintf("压缩包索引构建完成（流式读取，零磁盘占用），共定位 %d 个文档包", len(targets)))
+
+	return targets, scanFailures, cleanup
 }
 
 // ImportDocumentsFromPaths 批量导入多个路径（目录或压缩包）下的 HDX 文档，
@@ -274,10 +349,13 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	if tr != nil {
 		tr.SetStage("UPLOAD", "正在分析导入路径...")
 	}
-	scanPaths, cleanupExtracted := s.prepareImportPaths(paths, tr)
-	defer cleanupExtracted()
+	// 来源预处理：压缩包走"读中央目录 + 内存索引"的流式读取（零磁盘占用），
+	// 目录走传统目录扫描。cleanup 负责关闭全部压缩包句柄并清理回退解压的临时目录。
+	targets, scanFailures, cleanupSources := s.prepareImportTargets(paths, tr)
+	// 句柄释放必须兜底：正常完成、报错、panic 三条路径都要第一时间归还文件句柄
+	defer cleanupSources()
 
-	if len(scanPaths) == 0 {
+	if len(targets) == 0 {
 		err := fmt.Errorf("no valid import paths found")
 		if tr != nil {
 			tr.Fail(err, "没有找到可导入的有效路径")
@@ -285,49 +363,16 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 		return nil, err
 	}
 
-	// 2. 先汇总所有路径下的文档包，才能以"第 N/M 个文档包"驱动整体进度
+	// 2. 先汇总所有文档包，才能以"第 N/M 个文档包"驱动整体进度
 	if tr != nil {
 		tr.EnableForwardOnlyStages()
-		tr.SetStage("SCAN", "正在递归扫描发现 HDX 知识库文档目录...")
-	}
-
-	scanFailures := make([]string, 0)
-	var allDocDirs []string
-	for i, p := range scanPaths {
-		if tr != nil {
-			tr.AddLog("info", "正在扫描第 %d/%d 个路径: %s", i+1, len(scanPaths), p)
-		}
-
-		docDirs, err := hdx.FindHDXDocDirs(p)
-		if err != nil {
-			logger.Log.Warnf("[Knowledge Service] Scan path %s failed: %v", p, err)
-			scanFailures = append(scanFailures, fmt.Sprintf("%s: %v", filepath.Base(p), err))
-			if tr != nil {
-				tr.AddLog("warning", "路径 %s 扫描失败: %v", filepath.Base(p), err)
-			}
-			continue
-		}
-		if tr != nil {
-			tr.AddLog("info", "路径 %s 中发现 %d 个 HDX 文档包", filepath.Base(p), len(docDirs))
-		}
-		allDocDirs = append(allDocDirs, docDirs...)
-	}
-
-	if len(allDocDirs) == 0 {
-		err := fmt.Errorf("no HDX document packages found in the given paths")
-		if tr != nil {
-			tr.Fail(err, "未在指定路径中发现任何 HDX 文档包")
-		}
-		return nil, err
-	}
-
-	if tr != nil {
-		tr.AddLog("info", "共发现 %d 个 HDX 文档包，开始逐个导入", len(allDocDirs))
+		tr.SetStage("SCAN", fmt.Sprintf("已定位 %d 个 HDX 文档包，准备逐个导入...", len(targets)))
+		tr.AddLog("info", "共定位 %d 个 HDX 文档包，开始逐个导入", len(targets))
 	}
 
 	agg := &ImportStats{
-		TotalDocuments: len(allDocDirs),
-		ImportedDocs:   make([]string, 0, len(allDocDirs)),
+		TotalDocuments: len(targets),
+		ImportedDocs:   make([]string, 0, len(targets)),
 		SkippedDocs:    make([]string, 0),
 		FailedDocs:     make([]string, 0),
 	}
@@ -335,22 +380,22 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 
 	var lastErr error
 	successCount := 0
-	for docIdx, docDir := range allDocDirs {
+	for docIdx, src := range targets {
 		if tr != nil {
 			tr.SetOverallProgress(
-				float64(docIdx)/float64(len(allDocDirs))*95,
-				fmt.Sprintf("第 %d/%d 个文档包", docIdx+1, len(allDocDirs)),
+				float64(docIdx)/float64(len(targets))*95,
+				fmt.Sprintf("第 %d/%d 个文档包", docIdx+1, len(targets)),
 			)
-			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(allDocDirs), filepath.Base(docDir))
+			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(targets), src.Label())
 		}
 
-		st, err := s.importSingleDocUnlocked(docDir, conflictMode, tr)
+		st, err := s.importSingleDocUnlocked(src, conflictMode, tr)
 		if err != nil {
-			logger.Log.Errorf("[Knowledge Service] Failed to import document at %s: %v", docDir, err)
-			agg.FailedDocs = append(agg.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(docDir), err))
+			logger.Log.Errorf("[Knowledge Service] Failed to import document %s: %v", src.Origin(), err)
+			agg.FailedDocs = append(agg.FailedDocs, fmt.Sprintf("%s: %v", src.Label(), err))
 			lastErr = err
 			if tr != nil {
-				tr.AddLog("error", "文档包 %s 解析失败: %v", filepath.Base(docDir), err)
+				tr.AddLog("error", "文档包 %s 解析失败: %v", src.Label(), err)
 			}
 			continue
 		}
@@ -407,7 +452,7 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	// KB-14: 全部文档都被 skip（例如重复导入同一批包）时，
 	// 原实现既不 Fail 也不 Complete，前端进度弹窗会永远卡在最后一个阶段。
 	if imported == 0 && tr != nil {
-		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(allDocDirs)))
+		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(targets)))
 		tr.SetStage("COMPLETE", "全部文档包均已存在，无需重复导入")
 		tr.Complete(agg, fmt.Sprintf("未导入新文档：%d 个文档包均已存在于知识库中，如需重建请使用「重建索引」", len(agg.SkippedDocs)))
 	}
@@ -418,11 +463,11 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	}
 
 	logger.Log.Infof("Completed multi-path import of %d/%d documents (%d skipped, %d failed) across %d paths in %v",
-		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(scanPaths), agg.Duration)
+		imported, agg.TotalDocuments, len(agg.SkippedDocs), len(agg.FailedDocs), len(paths), agg.Duration)
 
 	// 注：imported == 0 的终态已在上面的 KB-14 分支中 Complete，此处避免重复触发终态
 	if tr != nil && imported > 0 {
-		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(allDocDirs)))
+		tr.SetOverallProgress(100, fmt.Sprintf("共 %d 个文档包处理完毕", len(targets)))
 		tr.SetStage("COMPLETE", "HDX 官方产品文档导入已全部完成")
 		tr.Complete(agg, fmt.Sprintf("导入完成！已成功入库 %d 个文档包，提取叶子日志 %d 条，告警 %d 条，新增知识 %d 条",
 			imported, agg.LeafLogCount, agg.LeafAlarmCount, agg.UniqueKnowledgeAdded))
@@ -431,51 +476,58 @@ func (s *Service) ImportDocumentsFromPaths(paths []string, conflictMode string, 
 	return agg, nil
 }
 
-// importFromDir 导入单个目录下的 HDX 文档。
+// importFromDir 导入单个路径（目录或压缩包）下的 HDX 文档。
 // finalize 为 false 时不结束进度追踪，以便批量导入由调用方统一聚合与收尾。
 func (s *Service) importFromDir(dirPath string, mode string, tr *progress.JobTracker, finalize bool) (*ImportStats, error) {
 	startTime := time.Now()
 
 	if tr != nil {
-		tr.SetStage("SCAN", "正在递归扫描发现 HDX 知识库文档目录...")
+		tr.SetStage("UPLOAD", "正在分析导入路径...")
 	}
 
-	docDirs, err := hdx.FindHDXDocDirs(dirPath)
-	if err != nil {
+	// 与批量导入共用同一套来源预处理：目录走扫描，压缩包走流式读取
+	targets, scanFailures, cleanupSources := s.prepareImportTargets([]string{dirPath}, tr)
+	// 句柄释放必须兜底：正常完成、报错、panic 三条路径都要第一时间归还文件句柄
+	defer cleanupSources()
+
+	if len(targets) == 0 {
+		err := fmt.Errorf("no HDX document packages found in: %s", dirPath)
 		if tr != nil {
-			tr.Fail(err, fmt.Sprintf("扫描 HDX 文档目录失败: %v", err))
+			tr.Fail(err, fmt.Sprintf("未在 %s 中发现任何 HDX 文档包", filepath.Base(dirPath)))
 		}
 		return nil, err
 	}
 
 	if tr != nil {
-		tr.AddLog("info", "发现 %d 个 HDX 官方文档目录", len(docDirs))
+		tr.SetStage("SCAN", fmt.Sprintf("已定位 %d 个 HDX 文档包，准备逐个导入...", len(targets)))
+		tr.AddLog("info", "发现 %d 个 HDX 官方文档包", len(targets))
 	}
 
 	totalStats := &ImportStats{
-		TotalDocuments: len(docDirs),
-		ImportedDocs:   make([]string, 0, len(docDirs)),
+		TotalDocuments: len(targets),
+		ImportedDocs:   make([]string, 0, len(targets)),
 		SkippedDocs:    make([]string, 0),
 		FailedDocs:     make([]string, 0),
 	}
+	totalStats.FailedDocs = append(totalStats.FailedDocs, scanFailures...)
 
 	var firstDocID uint
 	var firstLibID, firstProductType, firstProductVersion string
 	var lastErr error
 	successCount := 0
 
-	for docIdx, docDir := range docDirs {
+	for docIdx, src := range targets {
 		if tr != nil {
-			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(docDirs), filepath.Base(docDir))
+			tr.AddLog("info", "开始处理第 %d/%d 个文档包: %s", docIdx+1, len(targets), src.Label())
 		}
 
-		st, err := s.importSingleDocUnlocked(docDir, mode, tr)
+		st, err := s.importSingleDocUnlocked(src, mode, tr)
 		if err != nil {
-			logger.Log.Errorf("[Knowledge Service] Failed to import document at %s: %v", docDir, err)
-			totalStats.FailedDocs = append(totalStats.FailedDocs, fmt.Sprintf("%s: %v", filepath.Base(docDir), err))
+			logger.Log.Errorf("[Knowledge Service] Failed to import document %s: %v", src.Origin(), err)
+			totalStats.FailedDocs = append(totalStats.FailedDocs, fmt.Sprintf("%s: %v", src.Label(), err))
 			lastErr = err
 			if tr != nil {
-				tr.AddLog("error", "文档包 %s 解析失败: %v", filepath.Base(docDir), err)
+				tr.AddLog("error", "文档包 %s 解析失败: %v", src.Label(), err)
 			}
 			continue
 		}
@@ -526,7 +578,7 @@ func (s *Service) importFromDir(dirPath string, mode string, tr *progress.JobTra
 
 	totalStats.Duration = time.Since(startTime)
 	logger.Log.Infof("Completed batch import of %d/%d documents (%d skipped) from %s in %v: %d leaf logs, %d leaf alarms, %d unique knowledge added, %d mappings",
-		successCount, len(docDirs), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
+		successCount, len(targets), len(totalStats.SkippedDocs), dirPath, totalStats.Duration, totalStats.LeafLogCount, totalStats.LeafAlarmCount, totalStats.UniqueKnowledgeAdded, totalStats.VersionMappingsAdded)
 
 	if successCount > 0 && s.matchEngine != nil && finalize {
 		s.matchEngine.Reload()
@@ -542,17 +594,37 @@ func (s *Service) importFromDir(dirPath string, mode string, tr *progress.JobTra
 	return totalStats, nil
 }
 
+// maxDocumentFilePathLen model.Document.FilePath 的列宽上限（gorm size:512）
+const maxDocumentFilePathLen = 512
+
+// truncateFilePath 确保来源路径不超过列宽。
+// 超长时保留尾部（压缩包名与文档根比磁盘前缀更有溯源价值），并从 UTF-8 字符边界开始，避免切出乱码。
+func truncateFilePath(p string) string {
+	if len(p) <= maxDocumentFilePathLen {
+		return p
+	}
+	start := len(p) - (maxDocumentFilePathLen - len("..."))
+	for start < len(p) && !utf8.RuneStart(p[start]) {
+		start++
+	}
+	return "..." + p[start:]
+}
+
 // readDocumentMetadata 阶段 1：解析 HDX 文档的 profile.xml 与 navi.xml 元数据，并处理 skip 冲突跳过逻辑
-func (s *Service) readDocumentMetadata(docRootDir string, conflictMode string, tr *progress.JobTracker) (*model.Document, []hdx.LeafNaviItem, *ImportStats, bool, error) {
+func (s *Service) readDocumentMetadata(src hdx.DocSource, conflictMode string, tr *progress.JobTracker) (*model.Document, []hdx.LeafNaviItem, *ImportStats, bool, error) {
 	if tr != nil {
-		tr.SetStage("META", fmt.Sprintf("正在解析 %s 的 profile.xml 与 navi.xml 元数据...", filepath.Base(docRootDir)))
+		tr.SetStage("META", fmt.Sprintf("正在解析 %s 的 profile.xml 与 navi.xml 元数据...", src.Label()))
 	}
 
 	// 1. 解析 profile.xml
-	doc, naviRelPath, parseErr := hdx.ParseProfileXML(docRootDir)
+	doc, naviRelPath, parseErr := hdx.ParseProfileXMLFrom(src)
 	if parseErr != nil {
 		return nil, nil, nil, false, fmt.Errorf("parse profile.xml failed: %w", parseErr)
 	}
+
+	// KB-16: FilePath 记录用户原始来源（目录绝对路径或原始 .hdx 绝对路径），
+	// 不再指向导入结束即被删除的临时解压目录，保证知识条目可溯源。
+	doc.FilePath = truncateFilePath(src.Origin())
 
 	if tr != nil {
 		tr.AddLog("info", "已识别文档: LibID=%s, 产品=%s, 版本=%s, 主题数=%d", doc.LibID, doc.ProductType, doc.ProductVersion, doc.TopicNumber)
@@ -575,7 +647,7 @@ func (s *Service) readDocumentMetadata(docRootDir string, conflictMode string, t
 	}
 
 	// 2. 解析 navi.xml 提取所有叶子节点
-	leafItems, naviErr := hdx.ParseNaviXML(docRootDir, naviRelPath)
+	leafItems, naviErr := hdx.ParseNaviXMLFrom(src, naviRelPath)
 	if naviErr != nil {
 		return nil, nil, nil, false, fmt.Errorf("parse navi.xml failed: %w", naviErr)
 	}
@@ -605,7 +677,7 @@ func (s *Service) readDocumentMetadata(docRootDir string, conflictMode string, t
 }
 
 // parseHTMLKnowledgeItems 阶段 2：启动并发协程池提取所有 HTML 页面的知识条目并计算 ContentHash
-func (s *Service) parseHTMLKnowledgeItems(docRootDir string, leafItems []hdx.LeafNaviItem, tr *progress.JobTracker) ([]parsedResult, []string) {
+func (s *Service) parseHTMLKnowledgeItems(src hdx.DocSource, leafItems []hdx.LeafNaviItem, tr *progress.JobTracker) ([]parsedResult, []string) {
 	if tr != nil {
 		tr.SetStage("HTML_PARSE", fmt.Sprintf("正在并发解析 %d 个 HTML 知识页面...", len(leafItems)))
 		tr.UpdateProgress(0, int64(len(leafItems)), fmt.Sprintf("已解析 0 / %d 个知识页面", len(leafItems)))
@@ -647,7 +719,7 @@ func (s *Service) parseHTMLKnowledgeItems(docRootDir string, leafItems []hdx.Lea
 						}
 					}()
 
-					k, parseErr := hdx.ParseHTMLKnowledge(docRootDir, it)
+					k, parseErr := hdx.ParseHTMLKnowledgeFrom(src, it)
 					results <- parsedResult{knowledge: k, item: it, err: parseErr}
 
 					if tr != nil {
@@ -908,16 +980,18 @@ func (s *Service) clearDocumentIndexDirty(doc *model.Document) {
 	doc.IndexDirty = false
 }
 
-// importSingleDocUnlocked 执行单个 HDX 文档目录的解析与入库（内部调用，自动获取文档级细粒度锁）
-func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string, tr *progress.JobTracker) (stats *ImportStats, err error) {
-	docMu := s.getDocLock(filepath.Clean(docRootDir))
+// importSingleDocUnlocked 执行单个 HDX 文档包（目录或压缩包内文档根）的解析与入库
+// 内部调用，自动获取文档级细粒度锁
+func (s *Service) importSingleDocUnlocked(src hdx.DocSource, conflictMode string, tr *progress.JobTracker) (stats *ImportStats, err error) {
+	// 锁 key 用来源唯一 ID：压缩包场景为 "绝对路径::包内文档根"，目录场景为绝对路径
+	docMu := s.getDocLock(src.ID())
 	docMu.Lock()
 	defer docMu.Unlock()
 
 	startTime := time.Now()
 
 	// Stage 1: 解析文档元数据与导航树 (支持 skip 模式快速返回)
-	doc, leafItems, stats, skipped, err := s.readDocumentMetadata(docRootDir, conflictMode, tr)
+	doc, leafItems, stats, skipped, err := s.readDocumentMetadata(src, conflictMode, tr)
 	if err != nil {
 		return nil, err
 	}
@@ -926,7 +1000,7 @@ func (s *Service) importSingleDocUnlocked(docRootDir string, conflictMode string
 	}
 
 	// Stage 2: 并发解析 HTML 知识页面与内容哈希提取
-	resList, uniqueHashes := s.parseHTMLKnowledgeItems(docRootDir, leafItems, tr)
+	resList, uniqueHashes := s.parseHTMLKnowledgeItems(src, leafItems, tr)
 
 	if tr != nil {
 		tr.SetStage("PERSIST", fmt.Sprintf("正在对 %d 个条目进行全局去重与数据库事务持久化...", len(resList)))

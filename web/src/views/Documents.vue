@@ -135,7 +135,8 @@
             <el-icon size="40" color="#0284c7"><Files /></el-icon>
             <div class="pane-title">选择一个或多个 .hdx 压缩包</div>
             <p class="pane-desc">
-              同样由服务端直接读取并解压，适合官方文档包尚未解压、或需要保留原始压缩包的场景。
+              由服务端流式读取包内的日志与告警页面，全程不解压、不占用临时磁盘空间，
+              导入更快，且原始压缩包保持原样。
             </p>
             <el-button type="primary" size="small" @click="openPicker('file')">选择 HDX 压缩包 (.hdx)</el-button>
           </div>
