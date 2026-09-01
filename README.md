@@ -416,6 +416,7 @@ LogAuditorGo/
 │   ├── package.json
 │   └── vite.config.js                  # 分包策略、相对路径 base、体积告警阈值
 ├── docs/                               # 架构与审计文档
+│   ├── 架构与模块说明书.md              # 全量模块与数据流说明书（权威参考）
 │   ├── 代码审计报告.md
 │   └── 审计问题修复方案.md
 ├── build/                              # 编译输出目录
