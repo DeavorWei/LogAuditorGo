@@ -70,18 +70,26 @@ func TestAnalyzeWithContext_Timeout(t *testing.T) {
 func TestAnalyzeWithContext_ScanWatermarkCorrectness(t *testing.T) {
 	base := time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local)
 
+	// 构造生成 3 个重叠簇的完整级联故障链：
 	// Cluster 1 (0s ~ 300s):
-	// IFNET/IF_DOWN 发生在 280s
-	//
+	//   Log 100: 0s  (时间锚点)
+	//   Log 1:   280s IFNET/IF_DOWN (位于簇 1 末尾，此时下游在 300s 外尚未出现，propagate 返回 false，记录水位 2)
 	// Cluster 2 (240s ~ 540s，带 60s 重叠):
-	// 下游衍生 BFD_SESS_DOWN 发生在 310s (落入第二个簇)
-	//
-	// 在旧单簇无重叠时可能漏报；在扫描水位动态剪枝下，
-	// 第一次扫描IFNET日志时可能尚未看到310s的下游（若仅在簇1范围），
-	// 但在重叠簇2中，由于 hi > upTo，会重新扫描并成功串联。
+	//   Log 1:   280s IFNET/IF_DOWN (hi=6 > upTo=2，水位机制允许再次扫描)
+	//   Log 2:   310s BFD_SESS_DOWN (下游 1)
+	//   Log 3:   320s OSPF NBR_CHG  (下游 2)
+	//   Log 4:   330s BGP PEER_DOWN (下游 3)
+	//   Log 5:   340s RM ROUTE_DEL  (下游 4)
+	// Cluster 3 (480s ~ 780s):
+	//   Log 101: 650s (时间锚点)
 	logs := []*model.NormalizedLog{
+		rcaLog(100, "SW-01", "DEVM", "DEV_NORMAL", base),
 		rcaLog(1, "SW-01", "IFNET", "IF_DOWN", base.Add(280*time.Second)),
 		rcaLog(2, "SW-01", "BFD", "BFD_SESS_DOWN", base.Add(310*time.Second)),
+		rcaLog(3, "SW-01", "OSPF", "NBR_CHG", base.Add(320*time.Second)),
+		rcaLog(4, "SW-01", "BGP", "PEER_DOWN", base.Add(330*time.Second)),
+		rcaLog(5, "SW-01", "RM", "ROUTE_DELETE", base.Add(340*time.Second)),
+		rcaLog(101, "SW-01", "DEVM", "DEV_NORMAL", base.Add(650*time.Second)),
 	}
 
 	eng := rootcause.NewEngine()
@@ -97,8 +105,82 @@ func TestAnalyzeWithContext_ScanWatermarkCorrectness(t *testing.T) {
 		t.Fatalf("expected root log ID 1, got %d", res.Events[0].RootLogID)
 	}
 	cnt := correlatedCount(t, res.Events[0].CorrelatedLogIDs)
-	if cnt != 1 {
-		t.Fatalf("expected 1 correlated log, got %d", cnt)
+	if cnt != 4 {
+		t.Fatalf("expected 4 correlated logs across windows, got %d", cnt)
+	}
+}
+
+type stepCancelContext struct {
+	doneCh    chan struct{}
+	callCount int
+	threshold int
+	err       error
+}
+
+func (c *stepCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *stepCancelContext) Done() <-chan struct{} {
+	c.callCount++
+	if c.callCount >= c.threshold {
+		select {
+		case <-c.doneCh:
+		default:
+			close(c.doneCh)
+			c.err = context.DeadlineExceeded
+		}
+	}
+	return c.doneCh
+}
+func (c *stepCancelContext) Err() error { return c.err }
+func (c *stepCancelContext) Value(key any) any { return nil }
+
+// TestAnalyzeWithContext_MidwayTimeout 验证在分析遍历中途超时熔断时，
+// 引擎返回部分已计算事件，Truncated=true，且 AnalyzedUntil 精确落在熔断处的日志时间
+func TestAnalyzeWithContext_MidwayTimeout(t *testing.T) {
+	base := time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local)
+	var logs []*model.NormalizedLog
+
+	// 构造 50 批次独立事件，每批次相隔 5 秒
+	for i := 0; i < 50; i++ {
+		tRoot := base.Add(time.Duration(i*5) * time.Second)
+		host := fmt.Sprintf("SW-%03d", i)
+		logs = append(logs,
+			rcaLog(uint(i*2+1), host, "IFNET", "IF_DOWN", tRoot),
+			rcaLog(uint(i*2+2), host, "BFD", "BFD_SESS_DOWN", tRoot.Add(1*time.Second)),
+		)
+	}
+
+	eng := rootcause.NewEngine()
+
+	// 注入中途超时 Context：在检查点调用达到第 15 次时精确触发超时
+	ctx := &stepCancelContext{
+		doneCh:    make(chan struct{}),
+		threshold: 15,
+	}
+
+	res := eng.AnalyzeWithContext(ctx, logs, 300)
+
+	if !res.Truncated {
+		t.Fatalf("expected res.Truncated to be true for midway timeout")
+	}
+	if res.Err != context.DeadlineExceeded {
+		t.Fatalf("expected DeadlineExceeded, got %v", res.Err)
+	}
+	if len(res.Events) == 0 {
+		t.Fatalf("expected at least 1 partial event generated before timeout, got 0")
+	}
+	if len(res.Events) >= 50 {
+		t.Fatalf("expected strictly fewer than 50 events due to midway timeout, got %d", len(res.Events))
+	}
+	if res.AnalyzedUntil.IsZero() {
+		t.Fatalf("expected non-zero AnalyzedUntil")
+	}
+	firstLogTime := logs[0].Timestamp
+	lastLogTime := logs[len(logs)-1].Timestamp
+	if !res.AnalyzedUntil.After(firstLogTime) {
+		t.Fatalf("expected AnalyzedUntil (%v) to be after first log (%v)", res.AnalyzedUntil, firstLogTime)
+	}
+	if !res.AnalyzedUntil.Before(lastLogTime) {
+		t.Fatalf("expected AnalyzedUntil (%v) to be strictly before last log (%v)", res.AnalyzedUntil, lastLogTime)
 	}
 }
 

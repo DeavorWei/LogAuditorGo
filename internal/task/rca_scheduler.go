@@ -30,13 +30,16 @@ type rcaInstance struct {
 type RCAScheduler struct {
 	mu        sync.Mutex
 	semaphore chan struct{}
-	instances sync.Map // taskID (string) -> *rcaInstance
+	instances map[string]*rcaInstance              // taskID -> 当前最新主控实例
+	active    map[string]map[*rcaInstance]struct{} // taskID -> 所有活跃实例（包含等待退出的前代 worker）
 	genSeq    uint64
 }
 
 // GlobalRCAScheduler 全局单例调度器
 var GlobalRCAScheduler = &RCAScheduler{
 	semaphore: make(chan struct{}, 2), // 默认全局最多允许 2 个任务同时执行密集 RCA
+	instances: make(map[string]*rcaInstance),
+	active:    make(map[string]map[*rcaInstance]struct{}),
 }
 
 // InitRCAScheduler 根据配置初始化调度器并发槽位
@@ -47,6 +50,8 @@ func InitRCAScheduler(concurrency int) {
 	GlobalRCAScheduler.mu.Lock()
 	defer GlobalRCAScheduler.mu.Unlock()
 	GlobalRCAScheduler.semaphore = make(chan struct{}, concurrency)
+	GlobalRCAScheduler.instances = make(map[string]*rcaInstance)
+	GlobalRCAScheduler.active = make(map[string]map[*rcaInstance]struct{})
 }
 
 func (sch *RCAScheduler) getSemaphore() chan struct{} {
@@ -59,8 +64,9 @@ func (sch *RCAScheduler) isCurrentInstance(taskID string, inst *rcaInstance) boo
 	if inst == nil {
 		return false
 	}
-	val, ok := sch.instances.Load(taskID)
-	return ok && val.(*rcaInstance) == inst
+	sch.mu.Lock()
+	defer sch.mu.Unlock()
+	return sch.instances[taskID] == inst
 }
 
 // updateTaskRCAState 增量更新任务的 RCA 独立状态字段到全局库和任务库
@@ -114,11 +120,23 @@ func (s *Service) updateTaskRCAState(taskID string, status model.RCAStatus, errM
 	}
 }
 
-// CancelTaskRCA 取消指定任务正在排队或执行的 RCA 分析任务
+// CancelTaskRCA 取消指定任务正在排队或执行的 RCA 分析任务，并等待所有活跃 worker 完全退出
 func (s *Service) CancelTaskRCA(taskID string) {
-	if val, ok := GlobalRCAScheduler.instances.Load(taskID); ok {
-		if inst, ok := val.(*rcaInstance); ok {
+	GlobalRCAScheduler.mu.Lock()
+	var toWait []chan struct{}
+	if set, ok := GlobalRCAScheduler.active[taskID]; ok {
+		for inst := range set {
 			inst.cancel()
+			toWait = append(toWait, inst.done)
+		}
+	}
+	GlobalRCAScheduler.mu.Unlock()
+
+	for _, doneCh := range toWait {
+		select {
+		case <-doneCh:
+		case <-time.After(2 * time.Second):
+			logger.Log.Warnf("[Task Service] CancelTaskRCA wait for worker exit timed out for task %s", taskID)
 		}
 	}
 }
@@ -131,17 +149,16 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 
 	// 1. 单飞控制前置：在此处立即检查并登记实例，排队与计算均纳入视野
 	GlobalRCAScheduler.mu.Lock()
-	existingVal, hasExisting := GlobalRCAScheduler.instances.Load(taskID)
-	if hasExisting {
+	currentInst, hasCurrent := GlobalRCAScheduler.instances[taskID]
+	if hasCurrent {
 		if !forceReanalyze {
 			GlobalRCAScheduler.mu.Unlock()
 			logger.Log.Infof("[Task Service] Task %s RCA already queued/running, skipping duplicate trigger", taskID)
 			return
 		}
 		// 强制重新分析：取消旧 worker 实例
-		oldInst := existingVal.(*rcaInstance)
-		logger.Log.Infof("[Task Service] Force reanalyzing task %s, canceling prior worker gen=%d", taskID, oldInst.gen)
-		oldInst.cancel()
+		logger.Log.Infof("[Task Service] Force reanalyzing task %s, canceling prior worker gen=%d", taskID, currentInst.gen)
+		currentInst.cancel()
 	}
 
 	GlobalRCAScheduler.genSeq++
@@ -152,15 +169,37 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 	ctx, cancel := context.WithCancel(context.Background())
 	inst.cancel = cancel
 
-	GlobalRCAScheduler.instances.Store(taskID, inst)
+	GlobalRCAScheduler.instances[taskID] = inst
+	if GlobalRCAScheduler.active[taskID] == nil {
+		GlobalRCAScheduler.active[taskID] = make(map[*rcaInstance]struct{})
+	}
+	GlobalRCAScheduler.active[taskID][inst] = struct{}{}
 	GlobalRCAScheduler.mu.Unlock()
 
 	go func() {
 		defer func() {
 			close(inst.done)
-			// 仅当实例仍为自身时，才从 map 移除；若已被新实例替换则不删除 (CAS 清理，杜绝误删新实例)
-			GlobalRCAScheduler.instances.CompareAndDelete(taskID, inst)
+			GlobalRCAScheduler.mu.Lock()
+			if GlobalRCAScheduler.instances[taskID] == inst {
+				delete(GlobalRCAScheduler.instances, taskID)
+			}
+			if set, ok := GlobalRCAScheduler.active[taskID]; ok {
+				delete(set, inst)
+				if len(set) == 0 {
+					delete(GlobalRCAScheduler.active, taskID)
+				}
+			}
+			GlobalRCAScheduler.mu.Unlock()
 		}()
+
+		// 若存在被取代的前代实例，等待其完全退出后再执行后续步骤，杜绝两代 worker 并发
+		if currentInst != nil {
+			select {
+			case <-currentInst.done:
+			case <-ctx.Done():
+				return
+			}
+		}
 
 		// 检查是否在启动前已被新实例取消
 		if ctx.Err() == context.Canceled || !GlobalRCAScheduler.isCurrentInstance(taskID, inst) {
@@ -432,17 +471,16 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 
 // WaitForTaskRCA 等待指定任务的 RCA 计算结束（供测试或单步调用使用）
 func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
-	val, ok := GlobalRCAScheduler.instances.Load(taskID)
+	GlobalRCAScheduler.mu.Lock()
+	inst, ok := GlobalRCAScheduler.instances[taskID]
+	GlobalRCAScheduler.mu.Unlock()
+
 	if !ok {
 		// 检查数据库状态，若为 QUEUED 或 RUNNING，说明有任务正在瞬态排队，不能直接返回假成功
 		taskInfo, err := s.GetTaskByID(taskID)
 		if err == nil && (taskInfo.RCAStatus == model.RCAStatusQueued || taskInfo.RCAStatus == model.RCAStatusRunning) {
 			return false
 		}
-		return true
-	}
-	inst, ok := val.(*rcaInstance)
-	if !ok {
 		return true
 	}
 	select {
@@ -455,9 +493,31 @@ func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
 
 // ExecuteRCAPipelineForTest 供单元与集成测试直接验证流水线在特定 Context 下的行为
 func (s *Service) ExecuteRCAPipelineForTest(ctx context.Context, taskID string) {
-	dummyInst := &rcaInstance{gen: 0}
-	GlobalRCAScheduler.instances.Store(taskID, dummyInst)
-	defer GlobalRCAScheduler.instances.CompareAndDelete(taskID, dummyInst)
+	dummyInst := &rcaInstance{gen: 0, done: make(chan struct{})}
+	defer close(dummyInst.done)
+
+	GlobalRCAScheduler.mu.Lock()
+	GlobalRCAScheduler.instances[taskID] = dummyInst
+	if GlobalRCAScheduler.active[taskID] == nil {
+		GlobalRCAScheduler.active[taskID] = make(map[*rcaInstance]struct{})
+	}
+	GlobalRCAScheduler.active[taskID][dummyInst] = struct{}{}
+	GlobalRCAScheduler.mu.Unlock()
+
+	defer func() {
+		GlobalRCAScheduler.mu.Lock()
+		if GlobalRCAScheduler.instances[taskID] == dummyInst {
+			delete(GlobalRCAScheduler.instances, taskID)
+		}
+		if set, ok := GlobalRCAScheduler.active[taskID]; ok {
+			delete(set, dummyInst)
+			if len(set) == 0 {
+				delete(GlobalRCAScheduler.active, taskID)
+			}
+		}
+		GlobalRCAScheduler.mu.Unlock()
+	}()
+
 	s.executeRCAPipeline(ctx, taskID, dummyInst)
 }
 

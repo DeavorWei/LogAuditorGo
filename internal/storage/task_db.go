@@ -161,10 +161,12 @@ func (p *TaskDBPool) ReleaseTaskDB(taskID string) {
 	if entry.elem != nil {
 		p.order.MoveToFront(entry.elem)
 	}
-	if atomic.AddInt32(&entry.refCount, -1) < 0 {
+	curRef := atomic.AddInt32(&entry.refCount, -1)
+	if curRef < 0 {
 		atomic.StoreInt32(&entry.refCount, 0)
+		curRef = 0
 	}
-	if entry.closing && atomic.LoadInt32(&entry.refCount) <= 0 {
+	if entry.closing && curRef <= 0 {
 		p.removeLocked(taskID, entry)
 		p.closeEntry(entry)
 	}
@@ -173,8 +175,8 @@ func (p *TaskDBPool) ReleaseTaskDB(taskID string) {
 // EvictTaskDB 强制驱逐并从磁盘删除任务库文件。
 //
 // DEV-04 / TASK-11: Windows 上只要还有句柄占用，os.Remove 一定失败，
-// 因此必须先关闭底层 sql.DB 再删文件。这里先把条目移出池并标记 closing，
-// 等引用归零（最多 5s）后关闭；超时则强制关闭，宁可让在途查询失败，
+// 因此必须先关闭底层 sql.DB 再删文件。这里先把条目标记 closing，
+// 等引用归零（最多 5s）后由 ReleaseTaskDB 或本方法关闭；超时则强制关闭，宁可让在途查询失败，
 // 也不能让删除任务永久残留孤儿库文件。
 func (p *TaskDBPool) EvictTaskDB(taskID string) error {
 	if !isValidTaskID(taskID) {
@@ -183,32 +185,38 @@ func (p *TaskDBPool) EvictTaskDB(taskID string) error {
 
 	p.mu.Lock()
 	entry, ok := p.entries[taskID]
-	if ok {
-		entry.closing = true
-		if atomic.LoadInt32(&entry.refCount) <= 0 {
-			p.removeLocked(taskID, entry)
-			p.mu.Unlock()
-			p.closeEntry(entry)
-			return nil
-		}
-		p.removeLocked(taskID, entry)
-	}
-	p.mu.Unlock()
-
 	if !ok {
+		p.mu.Unlock()
 		return nil
 	}
 
-	// 等待在途引用归零
+	entry.closing = true
+	if atomic.LoadInt32(&entry.refCount) <= 0 {
+		p.removeLocked(taskID, entry)
+		p.mu.Unlock()
+		p.closeEntry(entry)
+		return nil
+	}
+	p.mu.Unlock()
+
+	// 等待在途引用归零（ReleaseTaskDB 会在归零时关闭，或超时兜底强制关闭）
 	deadline := time.Now().Add(evictWaitTimeout)
 	for atomic.LoadInt32(&entry.refCount) > 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	if atomic.LoadInt32(&entry.refCount) > 0 {
-		logger.Log.Warnf("[TaskDBPool] force closing task db %s with %d in-flight reference(s)",
-			taskID, atomic.LoadInt32(&entry.refCount))
+
+	p.mu.Lock()
+	if _, stillInPool := p.entries[taskID]; stillInPool {
+		p.removeLocked(taskID, entry)
+		p.mu.Unlock()
+		if atomic.LoadInt32(&entry.refCount) > 0 {
+			logger.Log.Warnf("[TaskDBPool] force closing task db %s with %d in-flight reference(s)",
+				taskID, atomic.LoadInt32(&entry.refCount))
+		}
+		p.closeEntry(entry)
+	} else {
+		p.mu.Unlock()
 	}
-	p.closeEntry(entry)
 	return nil
 }
 
@@ -423,10 +431,16 @@ func DeleteTaskDBFiles(taskDir string, taskID string) error {
 	dbPath := TaskDBPath(taskDir, taskID)
 	_ = os.Remove(dbPath + "-wal")
 	_ = os.Remove(dbPath + "-shm")
-	if err := os.Remove(dbPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove task db file (%s) failed: %w", dbPath, err)
+
+	var lastErr error
+	for i := 0; i < 10; i++ {
+		lastErr = os.Remove(dbPath)
+		if lastErr == nil || os.IsNotExist(lastErr) {
+			return nil
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
-	return nil
+	return fmt.Errorf("remove task db file (%s) failed: %w", dbPath, lastErr)
 }
 
 // DeleteTaskDB 强制驱逐连接并删除任务数据库物理文件

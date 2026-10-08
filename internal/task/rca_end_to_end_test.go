@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -20,6 +21,29 @@ import (
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
 )
+
+type stepCancelContext struct {
+	doneCh    chan struct{}
+	callCount int
+	threshold int
+	err       error
+}
+
+func (c *stepCancelContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *stepCancelContext) Done() <-chan struct{} {
+	c.callCount++
+	if c.callCount >= c.threshold {
+		select {
+		case <-c.doneCh:
+		default:
+			close(c.doneCh)
+			c.err = context.DeadlineExceeded
+		}
+	}
+	return c.doneCh
+}
+func (c *stepCancelContext) Err() error { return c.err }
+func (c *stepCancelContext) Value(key any) any { return nil }
 
 func setupE2ETaskService(t *testing.T) (*task.Service, *gorm.DB, string, func()) {
 	t.Helper()
@@ -47,6 +71,7 @@ func setupE2ETaskService(t *testing.T) (*task.Service, *gorm.DB, string, func())
 	rcaEngine := rootcause.NewEngine(nil)
 	taskDir := filepath.Join(tmpDir, "tasks")
 
+	oldConfig := config.GlobalConfig
 	cfg := &config.Config{
 		RCA: config.RCAConfig{
 			Timeout:     300,
@@ -58,6 +83,8 @@ func setupE2ETaskService(t *testing.T) (*task.Service, *gorm.DB, string, func())
 	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
 
 	cleanup := func() {
+		config.GlobalConfig = oldConfig
+		task.InitRCAScheduler(2)
 		_ = indexer.Close()
 		_ = storage.CloseKnowledgeDB()
 		_ = os.RemoveAll(tmpDir)
@@ -78,21 +105,23 @@ func TestE2E_RCA_CrossWindowChainIntegrity(t *testing.T) {
 		t.Fatalf("create empty task failed: %v", err)
 	}
 
-	// 构造时序跨度跨越第 300 秒边界 (10:05:00) 的级联故障日志集：
-	// T+0s:   SSH/LOGIN (启动时间锚点，使 Cluster 1 覆盖 10:00:00 ~ 10:05:00)
-	// T+280s: IFNET/4/IF_DOWN (Root 根因，位于 Cluster 1 尾部 10:04:40)
-	// T+290s: BFD/2/BFD_SESS_DOWN (下游 1，位于 Cluster 1 10:04:50)
+	// 构造时序跨度跨越第 300 秒边界 (10:05:00) 且生成 ≥3 个重叠簇的级联故障日志集：
+	// T+0s:   DEVM/4/DEV_NORMAL (启动时间锚点，使 Cluster 1 严格覆盖 10:00:00 ~ 10:05:00，此时 IFNET 处于尾部且下游尚未出现)
+	// T+280s: IFNET/4/IF_DOWN (Root 根因，位于 Cluster 1 尾部 10:04:40，在 Cluster 1 内尚无下游，触发水位记录)
 	// --- 第 300 秒边界 (10:05:00) 跨越线 ---
-	// T+310s: OSPF/4/NBR_CHG (下游 2，位于 Cluster 2 10:05:10，超出 Cluster 1 边界)
-	// T+320s: BGP/2/PEER_DOWN (下游 3，位于 Cluster 2 10:05:20)
+	// T+310s: BFD/2/BFD_SESS_DOWN (下游 1，位于 Cluster 2 10:05:10，超出 Cluster 1 边界)
+	// T+320s: OSPF/4/NBR_CHG (下游 2，位于 Cluster 2 10:05:20)
+	// T+330s: BGP/2/PEER_DOWN (下游 3，位于 Cluster 2 10:05:30)
 	// T+340s: RM/4/ROUTE_DELETE (下游 4，位于 Cluster 2 10:05:40)
+	// T+600s: DEVM/4/DEV_NORMAL (结束时间锚点，强制生成 Cluster 3 覆盖 10:10:00)
 	logLines := `
-Apr 15 2026 10:00:00 CORE-SW-01 %%01SSH/6/SSH_LOGIN(l)[1]: User admin logged in.
+Apr 15 2026 10:00:00 CORE-SW-01 %%01DEVM/4/DEV_NORMAL(l)[1]: Device normal status.
 Apr 15 2026 10:04:40 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[2]: Interface 100GE1/0/1 state turned to DOWN. (InterfaceName=100GE1/0/1)
-Apr 15 2026 10:04:50 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[3]: BFD session state changed to DOWN. (SessionID=10)
-Apr 15 2026 10:05:10 CORE-SW-01 %%01OSPF/4/NBR_CHG(l)[4]: OSPF Neighbor status changed. (Neighbor=192.168.1.2)
-Apr 15 2026 10:05:20 CORE-SW-01 %%01BGP/2/PEER_DOWN(l)[5]: The BGP peer went Down. (PeerIP=192.168.1.2)
+Apr 15 2026 10:05:10 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[3]: BFD session state changed to DOWN. (SessionID=10)
+Apr 15 2026 10:05:20 CORE-SW-01 %%01OSPF/4/NBR_CHG(l)[4]: OSPF Neighbor status changed. (Neighbor=192.168.1.2)
+Apr 15 2026 10:05:30 CORE-SW-01 %%01BGP/2/PEER_DOWN(l)[5]: The BGP peer went Down. (PeerIP=192.168.1.2)
 Apr 15 2026 10:05:40 CORE-SW-01 %%01RM/4/ROUTE_DELETE(l)[6]: Routing table entry deleted. (Prefix=10.0.0.0/8)
+Apr 15 2026 10:10:00 CORE-SW-01 %%01DEVM/4/DEV_NORMAL(l)[7]: Device normal status.
 `
 
 	item := task.FileUploadItem{
@@ -204,10 +233,11 @@ func TestE2E_RCA_TimeoutCircuitBreakerAndTruncation(t *testing.T) {
 	svc.WaitForTaskRCA(taskInfo.TaskID, 5*time.Second)
 
 	// 模拟执行超时熔断场景：
-	// 创建一个已超时的 Context 并直接调用 ExecuteRCAPipelineForTest
-	calcCtx, calcCancel := context.WithTimeout(context.Background(), 1*time.Nanosecond)
-	defer calcCancel()
-	time.Sleep(1 * time.Millisecond) // 保证 deadline exceeded
+	// 使用 stepCancelContext，在引擎检查点调用达到第 15 次时精确触发超时熔断
+	calcCtx := &stepCancelContext{
+		doneCh:    make(chan struct{}),
+		threshold: 15,
+	}
 
 	svc.ExecuteRCAPipelineForTest(calcCtx, taskInfo.TaskID)
 
@@ -228,6 +258,9 @@ func TestE2E_RCA_TimeoutCircuitBreakerAndTruncation(t *testing.T) {
 	// 断言结束时间与截断时间戳正常写入
 	if updated.RCAFinishTime == nil {
 		t.Errorf("expected non-nil RCAFinishTime")
+	}
+	if updated.RCAAnalyzedUntil == nil || updated.RCAAnalyzedUntil.IsZero() {
+		t.Errorf("expected non-zero RCAAnalyzedUntil for midway timeout")
 	}
 
 	// 验证 taskDB 数据一致性
@@ -329,10 +362,14 @@ func TestE2E_RCA_DatabaseConnectionIsolation(t *testing.T) {
 		t.Fatalf("create task failed: %v", err)
 	}
 
-	logContent := `
-Apr 15 2026 10:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down.
-Apr 15 2026 10:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: Session down.
-`
+	var sb strings.Builder
+	for i := 0; i < 50; i++ {
+		sec := i * 5
+		sb.WriteString(fmt.Sprintf("Apr 15 2026 10:%02d:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", sec/60, sec%60, i*2+1))
+		sb.WriteString(fmt.Sprintf("Apr 15 2026 10:%02d:%02d CORE-SW-01 %%%%01BFD/2/BFD_SESS_DOWN(l)[%d]: Session down.\n", sec/60, (sec%60)+1, i*2+2))
+	}
+	logContent := sb.String()
+
 	item := task.FileUploadItem{
 		FileName: "iso.log",
 		FileSize: int64(len(logContent)),
@@ -358,7 +395,7 @@ Apr 15 2026 10:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: Session down.
 				errCh <- fmt.Errorf("concurrent QueryLogs iteration %d failed: %w", iter, qErr)
 				return
 			}
-			if total < 2 || len(logs) < 2 {
+			if total < 100 || len(logs) < 10 {
 				errCh <- fmt.Errorf("unexpected query result: total=%d, logs=%d", total, len(logs))
 			}
 		}(i)
@@ -454,4 +491,96 @@ Apr 15 2026 10:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: Session down.
 		t.Fatalf("expected RcaCount 1, got %d", reanalyzedInfo.RcaCount)
 	}
 	_ = taskDir
+}
+
+// 验收指标 6: 边界防线验证 - rcaEngine 为 nil 时安全兜底完成
+func TestE2E_RCA_NilEngineSafe(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "rca_nil_engine_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+	defer storage.CloseKnowledgeDB()
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	// 显式传入 nil 作为 rcaEngine
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	taskInfo, err := svc.CreateEmptyTask("Nil-Engine-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	logContent := "Apr 15 2026 10:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down.\n"
+	item := task.FileUploadItem{
+		FileName: "test.log",
+		FileSize: int64(len(logContent)),
+		Content:  logContent,
+	}
+	_, err = svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item}, "overwrite")
+	if err != nil {
+		t.Fatalf("import logs failed: %v", err)
+	}
+
+	ok := svc.WaitForTaskRCA(taskInfo.TaskID, 5*time.Second)
+	if !ok {
+		t.Fatalf("wait for RCA timed out")
+	}
+
+	info, err := svc.GetTaskByID(taskInfo.TaskID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if info.RCAStatus != model.RCAStatusCompleted {
+		t.Errorf("expected RCAStatus to be COMPLETED even with nil rcaEngine, got %s", info.RCAStatus)
+	}
+	if info.RcaCount != 0 {
+		t.Errorf("expected RcaCount 0, got %d", info.RcaCount)
+	}
+}
+
+// 验收指标 7: 并发删除任务安全性验证 - worker 执行中途任务被删不复活物理文件
+func TestE2E_RCA_DeleteTaskDuringExecution(t *testing.T) {
+	svc, _, taskDir, cleanup := setupE2ETaskService(t)
+	defer cleanup()
+
+	taskInfo, err := svc.CreateEmptyTask("Delete-Concurrent-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	logContent := `
+Apr 15 2026 10:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down.
+Apr 15 2026 10:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: Session down.
+`
+	item := task.FileUploadItem{
+		FileName: "test.log",
+		FileSize: int64(len(logContent)),
+		Content:  logContent,
+	}
+	_, err = svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item}, "overwrite")
+	if err != nil {
+		t.Fatalf("import logs failed: %v", err)
+	}
+
+	// 触发 RCA 后立即执行删除任务
+	svc.TriggerTaskRCA(taskInfo.TaskID, true)
+	if err := svc.DeleteTask(taskInfo.TaskID); err != nil {
+		t.Fatalf("delete task failed: %v", err)
+	}
+
+	// 等待一段时间让可能残留的 worker 执行完毕
+	time.Sleep(100 * time.Millisecond)
+
+	// 断言任务库物理文件已被彻底清理且未被 worker 复活
+	dbPath := filepath.Join(taskDir, fmt.Sprintf("task_%s.db", taskInfo.TaskID))
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Errorf("expected task db file to not exist after delete, but stat err is %v", err)
+	}
 }

@@ -199,12 +199,26 @@ func TestTriggerTaskRCA_ForceReanalyze(t *testing.T) {
 		t.Fatalf("create task failed: %v", err)
 	}
 
-	// 第一次触发
+	logContent := `
+Apr 15 2026 10:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface down.
+Apr 15 2026 10:00:02 CORE-SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[2]: Session down.
+`
+	item := task.FileUploadItem{
+		FileName: "test.log",
+		FileSize: int64(len(logContent)),
+		Content:  logContent,
+	}
+	_, err = svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item}, "overwrite")
+	if err != nil {
+		t.Fatalf("import logs failed: %v", err)
+	}
+
+	// 密集并发触发：初始触发与多次 forceReanalyze 并发交织
 	svc.TriggerTaskRCA(taskInfo.TaskID, false)
-	// 第二次强制重新触发
+	svc.TriggerTaskRCA(taskInfo.TaskID, true)
 	svc.TriggerTaskRCA(taskInfo.TaskID, true)
 
-	// 等待完成
+	// 等待最终实例完成
 	ok := svc.WaitForTaskRCA(taskInfo.TaskID, 5*time.Second)
 	if !ok {
 		t.Fatalf("wait for RCA timeout")
@@ -216,6 +230,17 @@ func TestTriggerTaskRCA_ForceReanalyze(t *testing.T) {
 	}
 	if finalInfo.RCAStatus != model.RCAStatusCompleted {
 		t.Errorf("expected RCAStatus to be COMPLETED, got %s", finalInfo.RCAStatus)
+	}
+	if finalInfo.RcaCount != 1 {
+		t.Errorf("expected exactly 1 RCA event, got %d", finalInfo.RcaCount)
+	}
+
+	events, err := svc.GetEnrichedRCAEvents(taskInfo.TaskID)
+	if err != nil {
+		t.Fatalf("get events failed: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected exactly 1 RCA event in DB, got %d", len(events))
 	}
 }
 
