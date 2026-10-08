@@ -179,12 +179,14 @@ type Service struct {
 }
 
 func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEngine, rcaEngine *rootcause.Engine) *Service {
-	return &Service{
+	s := &Service{
 		globalDB:    globalDB,
 		taskDir:     taskDir,
 		matchEngine: matchEngine,
 		rcaEngine:   rcaEngine,
 	}
+	_ = s.RecoverDanglingRCATasks()
+	return s
 }
 
 func (s *Service) getTaskLock(taskID string) *sync.Mutex {
@@ -288,7 +290,15 @@ func (s *Service) CreateAndRunTask(taskName string, deviceType string, logConten
 		Content:  logContent,
 	}
 
-	return s.ImportLogs(taskInfo.TaskID, []FileUploadItem{item}, "overwrite")
+	info, err := s.ImportLogs(taskInfo.TaskID, []FileUploadItem{item}, "overwrite")
+	if err != nil {
+		return nil, err
+	}
+	s.WaitForTaskRCA(taskInfo.TaskID, 5*time.Second)
+	if updated, getErr := s.GetTaskByID(taskInfo.TaskID); getErr == nil {
+		return updated, nil
+	}
+	return info, nil
 }
 
 // GetTaskFiles 获取任务中已上传的文件列表
@@ -480,22 +490,6 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		}
 	}
 
-	// ---------- 阶段 RCA_ANALYSIS ----------
-	if tr != nil {
-		tr.SetStage("RCA_ANALYSIS", "正在基于时序关联与故障传播模型执行 RCA 根因拓扑分析...")
-		tr.AddLog("info", "开始 RCA 根因分析计算...")
-	}
-	rcaEvents, totalLogCount, matchedCount, rcaErr := s.runRCAPipeline(taskDB)
-	if rcaErr != nil {
-		// RCA 失败不阻断任务（日志已完整入库），但必须显式记录，
-		// 绝不能像旧实现那样"打一行日志就当没发生"
-		logger.Log.Errorf("[Task Service] Rebuild RCA events failed: %v", rcaErr)
-		if tr != nil {
-			tr.AddLog("error", "RCA 根因事件重建失败: %v", rcaErr)
-		}
-		totalLogCount, matchedCount = recountTaskLogs(taskDB)
-	}
-
 	// ---------- 设备归属与统计刷新 ----------
 	if _, assignErr := s.AutoAssignDevices(taskID); assignErr != nil {
 		logger.Log.Errorf("[Task Service] Auto assign devices failed: %v", assignErr)
@@ -508,26 +502,30 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	}
 	s.syncTaskDeviceCount(taskID, taskDB)
 
-	// ---------- 阶段 COMPLETE ----------
+	totalLogCount, matchedCount := recountTaskLogs(taskDB)
+
+	// ---------- 阶段 COMPLETE (主流程极速就绪) ----------
 	errSummary := ""
 	if len(failedFiles) > 0 {
 		errSummary = fmt.Sprintf("部分文件导入失败: %s", strings.Join(failedFiles, "; "))
 	}
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), len(rcaEvents),
+	s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), taskInfo.RcaCount,
 		model.TaskStatusCompleted, errSummary)
 
-	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched, %d rca events",
-		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
+	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched",
+		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount)
 
 	if tr != nil {
-		tr.AddLog("info", "RCA 拓扑分析就绪: 发现 %d 个根因故障事件", len(rcaEvents))
 		if len(failedFiles) > 0 {
 			tr.AddLog("warning", "本次导入有 %d 个文件处理失败，详见上方错误日志", len(failedFiles))
 		}
-		tr.SetStage("COMPLETE", "日志审计分析已全部完成")
-		tr.Complete(&taskInfo, fmt.Sprintf("分析就绪！共处理 %d 行日志，命中知识库 %d 条，识别出 %d 个 RCA 根因事件",
-			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount))
+		tr.SetStage("COMPLETE", "日志入库与知识匹配已完成，工作台已就绪")
+		tr.Complete(&taskInfo, fmt.Sprintf("分析就绪！共处理 %d 行日志，命中知识库 %d 条，RCA 根因拓扑后台推导中",
+			taskInfo.LogCount, taskInfo.MatchedCount))
 	}
+
+	// ---------- 异步派发 RCA Worker ----------
+	s.TriggerTaskRCA(taskID, false)
 
 	return &taskInfo, nil
 }
@@ -2083,33 +2081,24 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 	}
 	s.syncTaskDeviceCount(taskID, taskDB)
 
-	// ---------- 阶段三：RCA 根因拓扑重建 ----------
-	if tr != nil {
-		tr.SetStage("RCA_ANALYSIS", "正在基于全量重新解析后的时序日志执行 RCA 根因拓扑分析...")
-		tr.AddLog("info", "重新计算拓扑与传播链并整体替换历史 RCA 事件...")
-	}
-	rcaEvents, finalLogCount, finalMatched, rcaErr := s.runRCAPipeline(taskDB)
-	if rcaErr != nil {
-		logger.Log.Errorf("[Task Service] Rebuild RCA events failed: %v", rcaErr)
-		if tr != nil {
-			tr.AddLog("error", "RCA 根因事件重建失败: %v", rcaErr)
-		}
-		finalLogCount, finalMatched = recountTaskLogs(taskDB)
-	}
+	finalLogCount, finalMatched := recountTaskLogs(taskDB)
 
-	// ---------- 阶段四：收尾 ----------
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), len(rcaEvents), model.TaskStatusCompleted, "")
+	// ---------- 阶段三：收尾 (主流程极速就绪) ----------
+	s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), taskInfo.RcaCount, model.TaskStatusCompleted, "")
 
-	logger.Log.Infof("[Task Service] Reanalyze completed for task %s: %d total logs, %d matched, %d rca events",
-		taskID, taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
+	logger.Log.Infof("[Task Service] Reanalyze completed for task %s: %d total logs, %d matched",
+		taskID, taskInfo.LogCount, taskInfo.MatchedCount)
 
 	if tr != nil {
-		tr.AddLog("info", "全流程重新分析完成: 共 %d 行日志，最新命中知识库 %d 条，识别出 %d 个 RCA 根因事件",
-			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount)
-		tr.SetStage("COMPLETE", "日志全流程重新解析与审计分析已完成")
-		tr.Complete(&taskInfo, fmt.Sprintf("全流程重新分析就绪！共重新解析 %d 行日志，命中知识库 %d 条，发现 %d 个 RCA 根因事件",
-			taskInfo.LogCount, taskInfo.MatchedCount, taskInfo.RcaCount))
+		tr.AddLog("info", "全流程重新分析完成: 共 %d 行日志，最新命中知识库 %d 条，已派发后台进行 RCA 根因拓扑分析",
+			taskInfo.LogCount, taskInfo.MatchedCount)
+		tr.SetStage("COMPLETE", "日志全流程重新解析已完成，工作台已就绪")
+		tr.Complete(&taskInfo, fmt.Sprintf("重新分析就绪！共重新解析 %d 行日志，命中知识库 %d 条，RCA 拓扑后台推导中",
+			taskInfo.LogCount, taskInfo.MatchedCount))
 	}
+
+	// ---------- 异步派发 RCA Worker (强制重新分析) ----------
+	s.TriggerTaskRCA(taskID, true)
 
 	return &taskInfo, nil
 }

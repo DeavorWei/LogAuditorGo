@@ -15,6 +15,12 @@ type Config struct {
 	Server  ServerConfig  `mapstructure:"server" json:"server" yaml:"server"`
 	Storage StorageConfig `mapstructure:"storage" json:"storage" yaml:"storage"`
 	Log     LogConfig     `mapstructure:"log" json:"log" yaml:"log"`
+	RCA     RCAConfig     `mapstructure:"rca" json:"rca" yaml:"rca"`
+}
+
+type RCAConfig struct {
+	Timeout     int `mapstructure:"timeout" json:"timeout" yaml:"timeout"`
+	Concurrency int `mapstructure:"concurrency" json:"concurrency" yaml:"concurrency"`
 }
 
 type ServerConfig struct {
@@ -88,6 +94,10 @@ log:
   dir: "LogAuditorGoData/log" # 日志存放目录
   max_size_mb: 1024          # 日志最大保留总大小(MB), 默认 1024 (1GB)
   max_days: 180              # 日志最大保留天数(天), 默认 180
+
+rca:
+  timeout: 300              # 根因分析单任务执行超时时间(秒), 默认 300
+  concurrency: 2            # 全局最大并行分析任务数, 默认 2
 `
 
 func Load(configPath string) (*Config, error) {
@@ -109,6 +119,8 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("log.dir", filepath.Join(DefaultDataDir, "log"))
 	v.SetDefault("log.max_size_mb", 1024)
 	v.SetDefault("log.max_days", 180)
+	v.SetDefault("rca.timeout", 300)
+	v.SetDefault("rca.concurrency", 2)
 
 	targetConfigFile := configPath
 	if targetConfigFile == "" {

@@ -1,7 +1,6 @@
 package task
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -259,94 +258,7 @@ func (s *Service) prepareBundles(
 	return bundles, totalLines, failedFiles
 }
 
-// runRCAPipeline 统一的 RCA 重建流水线 (9.1)。
-//
-// ImportLogsWithDevice 与 ReanalyzeTask 原本各有一份"采样回灌 → Analyze → 先算后换事务落库"，
-// 约 40 行重复代码；抽取后两条链路共用同一实现，行为不可能再漂移。
-func (s *Service) runRCAPipeline(taskDB *gorm.DB) (events []model.RCAEvent, totalLogCount, matchedCount int64, err error) {
-	if err = taskDB.Model(&model.LogRecord{}).Count(&totalLogCount).Error; err != nil {
-		return nil, 0, 0, fmt.Errorf("count log records failed: %w", err)
-	}
-	if err = taskDB.Model(&model.LogRecord{}).Where("knowledge_id > 0").Count(&matchedCount).Error; err != nil {
-		return nil, 0, 0, fmt.Errorf("count matched log records failed: %w", err)
-	}
 
-	var normLogs []*model.NormalizedLog
-	truncated := false
-
-	rows, rowsErr := taskDB.Model(&model.LogRecord{}).
-		Where("knowledge_id > 0 OR severity <= ?", rcaSeverityThreshold).
-		Order("timestamp asc, id asc").Rows()
-	if rowsErr != nil {
-		return nil, totalLogCount, matchedCount, fmt.Errorf("query log records for RCA failed: %w", rowsErr)
-	}
-	defer rows.Close()
-
-	skippedScan := 0
-	for rows.Next() {
-		var rec model.LogRecord
-		if scanErr := taskDB.ScanRows(rows, &rec); scanErr != nil {
-			// REANA-08: 旧实现 `continue` 后静默丢弃该行，且不计数，
-			// 报告数字与明细对不上却没有任何线索。这里累计并在返回后上报。
-			skippedScan++
-			logger.Log.Warnf("[Task Service] Scan row for RCA failed: %v", scanErr)
-			continue
-		}
-		if len(normLogs) >= maxRCALogs {
-			truncated = true
-			break
-		}
-		var params map[string]string
-		if rec.ParametersJSON != "" {
-			_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
-		}
-		normLogs = append(normLogs, &model.NormalizedLog{
-			ID:              rec.ID,
-			RawLog:          rec.RawLog,
-			Timestamp:       rec.Timestamp,
-			Hostname:        rec.Hostname,
-			Module:          rec.Module,
-			Severity:        rec.Severity,
-			Brief:           rec.Brief,
-			SlotInfo:        rec.SlotInfo,
-			SourceFile:      rec.SourceFile,
-			MessageBody:     rec.MessageBody,
-			Parameters:      params,
-			DeviceID:        rec.DeviceID,
-			KnowledgeID:     rec.KnowledgeID,
-			MatchTier:       rec.MatchTier,
-			MatchConfidence: rec.MatchConfidence,
-		})
-	}
-	if rowsErr := rows.Err(); rowsErr != nil {
-		logger.Log.Errorf("[Task Service] Iterate log rows for RCA failed: %v", rowsErr)
-	}
-	if skippedScan > 0 {
-		logger.Log.Warnf("[Task Service] RCA skipped %d unscannable log rows", skippedScan)
-	}
-
-	if len(normLogs) > 0 && s.rcaEngine != nil {
-		events = s.rcaEngine.Analyze(normLogs, 300)
-	}
-
-	// REANA-03 / TASK-12: 先算后换，纳入同一事务，失败时旧根因完好无损
-	if err = taskDB.Transaction(func(tx *gorm.DB) error {
-		if delErr := tx.Where("id > 0").Delete(&model.RCAEvent{}).Error; delErr != nil {
-			return fmt.Errorf("delete old RCA events failed: %w", delErr)
-		}
-		if len(events) > 0 {
-			if createErr := tx.Create(&events).Error; createErr != nil {
-				return fmt.Errorf("create RCA events failed: %w", createErr)
-			}
-		}
-		return nil
-	}); err != nil {
-		return nil, totalLogCount, matchedCount, err
-	}
-
-	_ = truncated
-	return events, totalLogCount, matchedCount, nil
-}
 
 // recountTaskLogs 重新统计任务的日志总量与匹配量（RCA 流水线失败后的兜底路径）
 func recountTaskLogs(taskDB *gorm.DB) (total, matched int64) {

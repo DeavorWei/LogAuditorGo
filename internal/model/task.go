@@ -11,6 +11,18 @@ const (
 	TaskStatusFailed     TaskStatus = "FAILED"
 )
 
+// RCAStatus 根因分析独立状态枚举
+type RCAStatus string
+
+const (
+	RCAStatusPending   RCAStatus = "PENDING"   // 存量默认/待分析
+	RCAStatusQueued    RCAStatus = "QUEUED"    // 排队等待计算令牌
+	RCAStatusRunning   RCAStatus = "RUNNING"   // 正在拉取数据或执行推导
+	RCAStatusCompleted RCAStatus = "COMPLETED" // 分析完整完成
+	RCAStatusTimeout   RCAStatus = "TIMEOUT"   // 达到超时预算，已保存部分结果
+	RCAStatusFailed    RCAStatus = "FAILED"    // 分析异常终止
+)
+
 // TaskInfo 任务元信息（存储在全局库以及任务库中）
 type TaskInfo struct {
 	TaskID       string     `gorm:"primaryKey;size:64" json:"task_id"`
@@ -32,6 +44,13 @@ type TaskInfo struct {
 	ErrorMessage string     `gorm:"type:text" json:"error_message,omitempty"`
 	StartTime    time.Time  `json:"start_time"`
 	FinishTime   *time.Time `json:"finish_time,omitempty"`
+
+	// --- RCA 独立异步状态字段 (存量数据零值兜底为 PENDING) ---
+	RCAStatus        RCAStatus  `gorm:"size:32;default:'PENDING'" json:"rca_status"`
+	RCAErrorMessage  string     `gorm:"type:text" json:"rca_error_message,omitempty"`
+	RCAFinishTime    *time.Time `json:"rca_finish_time,omitempty"`
+	// RCAAnalyzedUntil 记录超时截断时已分析到的时序边界，供前端渲染提示
+	RCAAnalyzedUntil *time.Time `json:"rca_analyzed_until,omitempty"`
 }
 
 func (TaskInfo) TableName() string {
