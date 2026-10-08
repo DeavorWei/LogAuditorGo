@@ -2,6 +2,7 @@ package rootcause_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -100,3 +101,62 @@ func TestAnalyzeWithContext_ScanWatermarkCorrectness(t *testing.T) {
 		t.Fatalf("expected 1 correlated log, got %d", cnt)
 	}
 }
+
+// TestAnalyzeWithContext_EventCapReached 验证当分析产生的根因事件达到 2000 个上限时，
+// 引擎正确标记 Truncated=true，并且 AnalyzedUntil 保持为实际处理到的位置而非全量末尾
+func TestAnalyzeWithContext_EventCapReached(t *testing.T) {
+	base := time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local)
+	var logs []*model.NormalizedLog
+
+	// 构造 2050 个独立的根因+衍生事件对，不同主机名避免跨对聚合
+	for i := 0; i < 2050; i++ {
+		tRoot := base.Add(time.Duration(i*10) * time.Second)
+		host := fmt.Sprintf("SW-%d", i)
+		logs = append(logs,
+			rcaLog(uint(i*2+1), host, "IFNET", "IF_DOWN", tRoot),
+			rcaLog(uint(i*2+2), host, "BFD", "BFD_SESS_DOWN", tRoot.Add(1*time.Second)),
+		)
+	}
+
+	eng := rootcause.NewEngine()
+	res := eng.AnalyzeWithContext(context.Background(), logs, 300)
+
+	if !res.Truncated {
+		t.Fatalf("expected res.Truncated to be true when reaching event cap")
+	}
+	if len(res.Events) != 2000 {
+		t.Fatalf("expected exactly 2000 events (event cap), got %d", len(res.Events))
+	}
+	lastLogTime := logs[len(logs)-1].Timestamp
+	if res.AnalyzedUntil.Equal(lastLogTime) {
+		t.Fatalf("res.AnalyzedUntil should not be the timestamp of the last log (%v), but the cap cutoff point (%v)", lastLogTime, res.AnalyzedUntil)
+	}
+	if res.AnalyzedUntil.IsZero() {
+		t.Fatalf("res.AnalyzedUntil should not be zero")
+	}
+}
+
+// TestAnalyzeWithContext_PropagateCancellation 验证在 Context 取消时能安全退出并标记 Truncated
+func TestAnalyzeWithContext_PropagateCancellation(t *testing.T) {
+	base := time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local)
+	var logs []*model.NormalizedLog
+
+	logs = append(logs, rcaLog(1, "SW-01", "IFNET", "IF_DOWN", base))
+	for i := 2; i <= 300; i++ {
+		logs = append(logs, rcaLog(uint(i), "SW-01", "BFD", "BFD_SESS_DOWN", base.Add(time.Duration(i)*time.Millisecond)))
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel or cancel during execution
+
+	eng := rootcause.NewEngine()
+	res := eng.AnalyzeWithContext(ctx, logs, 300)
+
+	if !res.Truncated {
+		t.Fatalf("expected res.Truncated to be true for canceled context")
+	}
+	if res.Err == nil {
+		t.Fatalf("expected non-nil res.Err")
+	}
+}
+

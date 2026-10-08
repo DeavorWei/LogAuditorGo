@@ -634,9 +634,19 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 		len(sortedLogs), windowSeconds, DefaultOverlapSeconds)
 
 	// RCA-02: 倒排索引在全量日志上预建，避免每个簇内重复构建
+	select {
+	case <-ctx.Done():
+		return RCAResult{Truncated: true, Err: ctx.Err()}
+	default:
+	}
 	ix := newInvertedIndex(sortedLogs)
 
 	// RCA-01: 重叠滑动窗口聚类，作为 BFS 前置降噪
+	select {
+	case <-ctx.Done():
+		return RCAResult{Truncated: true, Err: ctx.Err()}
+	default:
+	}
 	clusters := ClusterByOverlappingWindow(sortedLogs, windowSeconds, DefaultOverlapSeconds)
 
 	// RCA-08: 全局已认领日志表（logID → 根因 logID）。
@@ -648,10 +658,12 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 
 	events := make([]model.RCAEvent, 0, 16)
 	var lastProcessedTime time.Time
+	eventCapReached := false
 
 	for _, cluster := range clusters {
 		if len(events) >= maxRCAEventsPerAnalyze {
 			logger.Log.Warnf("[RCA Engine] RCA event limit (%d) reached, stopping analysis", maxRCAEventsPerAnalyze)
+			eventCapReached = true
 			break
 		}
 		lo, hi := cluster.StartIdx, cluster.EndIdx
@@ -681,6 +693,7 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 			}
 
 			if len(events) >= maxRCAEventsPerAnalyze {
+				eventCapReached = true
 				break
 			}
 			log := sortedLogs[i]
@@ -708,7 +721,7 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 				continue
 			}
 
-			event, ok := e.propagate(sortedLogs, ix, lo, hi, log, matchedRule, windowSeconds, claimed)
+			event, ok := e.propagate(ctx, sortedLogs, ix, lo, hi, log, matchedRule, windowSeconds, claimed)
 			if !ok {
 				// 水位推进：记录在当前 hi 范围内确认无衍生，而非全局永久拉黑
 				scannedWatermark[log.ID] = hi
@@ -718,13 +731,13 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 		}
 	}
 
-	if len(sortedLogs) > 0 {
+	if !eventCapReached && len(sortedLogs) > 0 {
 		lastProcessedTime = sortedLogs[len(sortedLogs)-1].Timestamp
 	}
 
 	return RCAResult{
 		Events:        events,
-		Truncated:     false,
+		Truncated:     eventCapReached,
 		AnalyzedUntil: lastProcessedTime,
 		Err:           nil,
 	}
@@ -738,6 +751,7 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 
 // propagate 从根因日志出发，在给定窗口内做倒排索引 BFS 传播，产出一个 RCA 事件。
 func (e *Engine) propagate(
+	ctx context.Context,
 	sortedLogs []*model.NormalizedLog,
 	ix *invertedIndex,
 	lo, hi int,
@@ -763,6 +777,12 @@ func (e *Engine) propagate(
 	firstDelay := time.Duration(-1)
 
 	for len(queue) > 0 && len(correlatedIDs) < maxCorrelatedPerEvent {
+		select {
+		case <-ctx.Done():
+			return model.RCAEvent{}, false
+		default:
+		}
+
 		curr := queue[0]
 		queue = queue[1:]
 
@@ -782,6 +802,14 @@ func (e *Engine) propagate(
 					key := ix.keyOf(mod, brf)
 					start, end := ix.rangeOf(key, lo, hi, curr.Timestamp, endTime)
 					for m := start; m < end; m++ {
+						if m%50 == 0 {
+							select {
+							case <-ctx.Done():
+								return model.RCAEvent{}, false
+							default:
+							}
+						}
+
 						idx := ix.byKey[key][m]
 						otherLog := sortedLogs[idx]
 						if otherLog == nil || otherLog.ID == curr.ID || visitedInDAG[otherLog.ID] {

@@ -202,23 +202,26 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 }
 
 // fetchNormLogsForRCA 游标读取待分析日志并在计算前显式 Close，严格遵循 MaxOpenConns=1 约束
-func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.NormalizedLog, error) {
+func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.NormalizedLog, bool, error) {
 	rows, err := taskDB.WithContext(ctx).Model(&model.LogRecord{}).
 		Where("knowledge_id > 0 OR severity <= ?", rcaSeverityThreshold).
 		Order("timestamp asc, id asc").Rows()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 
 	var list []*model.NormalizedLog
+	truncated := false
 	for rows.Next() {
 		select {
 		case <-ctx.Done():
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		default:
 		}
 		if len(list) >= maxRCALogs {
+			truncated = true
+			logger.Log.Warnf("[Task Service] RCA sample size exceeded max limit (%d), truncating subsequent records", maxRCALogs)
 			break
 		}
 		var rec model.LogRecord
@@ -248,7 +251,7 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 			MatchConfidence: rec.MatchConfidence,
 		})
 	}
-	return list, rows.Err()
+	return list, truncated, rows.Err()
 }
 
 // executeRCAPipeline 执行 RCA 分析核心流水线与短事务落库
@@ -261,7 +264,7 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 		return
 	}
 
-	normLogs, fetchErr := fetchNormLogsForRCA(ctx, taskDB)
+	normLogs, fetchTruncated, fetchErr := fetchNormLogsForRCA(ctx, taskDB)
 	storage.ReleaseTaskDB(taskID) // 立即归还连接句柄，杜绝计算密集期阻塞前台
 
 	// 检查点：是否已被新触发实例取代或取消
@@ -341,13 +344,15 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 		analyzedUntil = &res.AnalyzedUntil
 	}
 
-	if res.Truncated {
+	if res.Truncated || fetchTruncated {
 		errMsg := "分析达到超时上限，已保存部分结果"
-		if res.Err != nil && !errors.Is(res.Err, context.DeadlineExceeded) && !errors.Is(res.Err, context.Canceled) {
+		if fetchTruncated {
+			errMsg = fmt.Sprintf("分析样本达到硬上限(%d行)，已保存前%d行分析结果", maxRCALogs, maxRCALogs)
+		} else if res.Err != nil && !errors.Is(res.Err, context.DeadlineExceeded) && !errors.Is(res.Err, context.Canceled) {
 			errMsg = fmt.Sprintf("分析超时中断: %v", res.Err)
 		}
 		s.updateTaskRCAState(taskID, model.RCAStatusTimeout, errMsg, analyzedUntil, len(res.Events))
-		logger.Log.Warnf("[Task Service] RCA finished with TIMEOUT for task %s: %d events saved", taskID, len(res.Events))
+		logger.Log.Warnf("[Task Service] RCA finished with TIMEOUT for task %s: %d events saved (fetchTruncated=%v)", taskID, len(res.Events), fetchTruncated)
 	} else if res.Err != nil {
 		s.updateTaskRCAState(taskID, model.RCAStatusFailed, res.Err.Error(), analyzedUntil, len(res.Events))
 		logger.Log.Errorf("[Task Service] RCA failed for task %s: %v", taskID, res.Err)
