@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,11 +18,19 @@ import (
 	"logauditorgo/pkg/logger"
 )
 
+// rcaInstance 记录单个正在排队或执行的 RCA 分析任务实例
+type rcaInstance struct {
+	gen    uint64
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 // RCAScheduler 统一调度管理 RCA 异步分析的并发槽位与生命周期
 type RCAScheduler struct {
+	mu        sync.Mutex
 	semaphore chan struct{}
-	running   sync.Map // taskID -> context.CancelFunc
-	done      sync.Map // taskID -> chan struct{}
+	instances sync.Map // taskID (string) -> *rcaInstance
+	genSeq    uint64
 }
 
 // GlobalRCAScheduler 全局单例调度器
@@ -33,7 +43,23 @@ func InitRCAScheduler(concurrency int) {
 	if concurrency <= 0 {
 		concurrency = 2
 	}
+	GlobalRCAScheduler.mu.Lock()
+	defer GlobalRCAScheduler.mu.Unlock()
 	GlobalRCAScheduler.semaphore = make(chan struct{}, concurrency)
+}
+
+func (sch *RCAScheduler) getSemaphore() chan struct{} {
+	sch.mu.Lock()
+	defer sch.mu.Unlock()
+	return sch.semaphore
+}
+
+func (sch *RCAScheduler) isCurrentInstance(taskID string, inst *rcaInstance) bool {
+	if inst == nil {
+		return false
+	}
+	val, ok := sch.instances.Load(taskID)
+	return ok && val.(*rcaInstance) == inst
 }
 
 // updateTaskRCAState 增量更新任务的 RCA 独立状态字段到全局库和任务库
@@ -43,9 +69,16 @@ func (s *Service) updateTaskRCAState(taskID string, status model.RCAStatus, errM
 		"rca_status":        status,
 		"rca_error_message": errMsg,
 	}
-	if status == model.RCAStatusCompleted || status == model.RCAStatusTimeout || status == model.RCAStatusFailed {
+
+	if status == model.RCAStatusQueued {
+		// 重新排队分析时，重置旧指标与时间戳 (体验与状态一致性)
+		updates["rca_finish_time"] = nil
+		updates["rca_analyzed_until"] = nil
+		updates["rca_count"] = 0
+	} else if status == model.RCAStatusCompleted || status == model.RCAStatusTimeout || status == model.RCAStatusFailed {
 		updates["rca_finish_time"] = &now
 	}
+
 	if analyzedUntil != nil && !analyzedUntil.IsZero() {
 		updates["rca_analyzed_until"] = analyzedUntil
 	}
@@ -70,35 +103,61 @@ func (s *Service) updateTaskRCAState(taskID string, status model.RCAStatus, errM
 	}
 }
 
+// CancelTaskRCA 取消指定任务正在排队或执行的 RCA 分析任务
+func (s *Service) CancelTaskRCA(taskID string) {
+	if val, ok := GlobalRCAScheduler.instances.Load(taskID); ok {
+		if inst, ok := val.(*rcaInstance); ok {
+			inst.cancel()
+		}
+	}
+}
+
 // TriggerTaskRCA 触发后台异步 RCA 分析任务
 func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 	if !isValidTaskID(taskID) {
 		return
 	}
 
-	// 1. 若已有正在计算的任务，视策略忽略或取消重建
-	if cancelVal, exists := GlobalRCAScheduler.running.Load(taskID); exists {
+	// 1. 单飞控制前置：在此处立即检查并登记实例，排队与计算均纳入视野
+	GlobalRCAScheduler.mu.Lock()
+	existingVal, hasExisting := GlobalRCAScheduler.instances.Load(taskID)
+	if hasExisting {
 		if !forceReanalyze {
-			logger.Log.Infof("[Task Service] Task %s RCA already in progress, skipping", taskID)
+			GlobalRCAScheduler.mu.Unlock()
+			logger.Log.Infof("[Task Service] Task %s RCA already queued/running, skipping duplicate trigger", taskID)
 			return
 		}
-		if cancelFn, ok := cancelVal.(context.CancelFunc); ok {
-			logger.Log.Infof("[Task Service] Force reanalyzing task %s, canceling active RCA worker", taskID)
-			cancelFn()
-		}
+		// 强制重新分析：取消旧 worker 实例
+		oldInst := existingVal.(*rcaInstance)
+		logger.Log.Infof("[Task Service] Force reanalyzing task %s, canceling prior worker gen=%d", taskID, oldInst.gen)
+		oldInst.cancel()
 	}
 
-	doneCh := make(chan struct{})
-	GlobalRCAScheduler.done.Store(taskID, doneCh)
+	GlobalRCAScheduler.genSeq++
+	inst := &rcaInstance{
+		gen:  GlobalRCAScheduler.genSeq,
+		done: make(chan struct{}),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	inst.cancel = cancel
 
-	// 2. 状态立即置为 QUEUED
-	s.updateTaskRCAState(taskID, model.RCAStatusQueued, "", nil)
+	GlobalRCAScheduler.instances.Store(taskID, inst)
+	GlobalRCAScheduler.mu.Unlock()
 
 	go func() {
 		defer func() {
-			GlobalRCAScheduler.done.Delete(taskID)
-			close(doneCh)
+			close(inst.done)
+			// 仅当实例仍为自身时，才从 map 移除；若已被新实例替换则不删除 (CAS 清理，杜绝误删新实例)
+			GlobalRCAScheduler.instances.CompareAndDelete(taskID, inst)
 		}()
+
+		// 检查是否在启动前已被新实例取消
+		if ctx.Err() == context.Canceled || !GlobalRCAScheduler.isCurrentInstance(taskID, inst) {
+			return
+		}
+
+		// 顺序置状态为 QUEUED
+		s.updateTaskRCAState(taskID, model.RCAStatusQueued, "", nil)
 
 		totalTimeout := 10 * time.Minute
 		calcTimeout := 5 * time.Minute
@@ -107,28 +166,38 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 			totalTimeout = calcTimeout + 5*time.Minute
 		}
 
-		queueCtx, queueCancel := context.WithTimeout(context.Background(), totalTimeout)
+		queueCtx, queueCancel := context.WithTimeout(ctx, totalTimeout)
 		defer queueCancel()
+
+		// 获取当前信号量通道引用，保证释放时与获取时 channel 严格一致
+		sem := GlobalRCAScheduler.getSemaphore()
 
 		// 排队等待令牌
 		select {
 		case <-queueCtx.Done():
+			if ctx.Err() == context.Canceled || !GlobalRCAScheduler.isCurrentInstance(taskID, inst) {
+				logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled during queueing", taskID, inst.gen)
+				return
+			}
 			s.updateTaskRCAState(taskID, model.RCAStatusTimeout, "排队超时未获取到计算资源", nil)
 			return
-		case GlobalRCAScheduler.semaphore <- struct{}{}:
-			defer func() { <-GlobalRCAScheduler.semaphore }()
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
 		}
 
-		// 登记单飞取消函数
-		calcCtx, calcCancel := context.WithTimeout(context.Background(), calcTimeout)
+		// 检查是否已被新实例取代
+		if ctx.Err() == context.Canceled || !GlobalRCAScheduler.isCurrentInstance(taskID, inst) {
+			logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled before starting calculation", taskID, inst.gen)
+			return
+		}
+
+		calcCtx, calcCancel := context.WithTimeout(ctx, calcTimeout)
 		defer calcCancel()
-		GlobalRCAScheduler.running.Store(taskID, calcCancel)
-		defer GlobalRCAScheduler.running.Delete(taskID)
 
 		// 状态变更为 RUNNING
 		s.updateTaskRCAState(taskID, model.RCAStatusRunning, "", nil)
 
-		s.executeRCAPipeline(calcCtx, taskID)
+		s.executeRCAPipeline(calcCtx, taskID, inst)
 	}()
 }
 
@@ -183,7 +252,7 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 }
 
 // executeRCAPipeline 执行 RCA 分析核心流水线与短事务落库
-func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
+func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *rcaInstance) {
 	// 阶段 1: 游标拉取待分析数据，提取完毕后立即关闭游标并释放连接引用
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
@@ -194,6 +263,12 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
 
 	normLogs, fetchErr := fetchNormLogsForRCA(ctx, taskDB)
 	storage.ReleaseTaskDB(taskID) // 立即归还连接句柄，杜绝计算密集期阻塞前台
+
+	// 检查点：是否已被新触发实例取代或取消
+	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
+		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded after fetch", taskID, inst.gen)
+		return
+	}
 
 	if fetchErr != nil {
 		if errors.Is(fetchErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
@@ -216,9 +291,9 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
 	// 阶段 2: 密集拓扑计算 (纯内存计算，不占数据库连接)
 	res := s.rcaEngine.AnalyzeWithContext(ctx, normLogs, 300)
 
-	// 若被新触发实例 forceReanalyze 取消，直接退出不覆盖新状态
-	if ctx.Err() == context.Canceled {
-		logger.Log.Infof("[Task Service] RCA computation canceled for task %s", taskID)
+	// 检查点：是否已被新触发实例取代或取消
+	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
+		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded after analysis", taskID, inst.gen)
 		return
 	}
 
@@ -230,6 +305,12 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
 		return
 	}
 	defer storage.ReleaseTaskDB(taskID)
+
+	// 检查点：写入事务前二次确认代数有效性
+	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
+		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded before DB transaction", taskID, inst.gen)
+		return
+	}
 
 	txErr := writeDB.Transaction(func(tx *gorm.DB) error {
 		if delErr := tx.Where("id > 0").Delete(&model.RCAEvent{}).Error; delErr != nil {
@@ -246,6 +327,12 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
 	if txErr != nil {
 		logger.Log.Errorf("[Task Service] Save RCA events failed for task %s: %v", taskID, txErr)
 		s.updateTaskRCAState(taskID, model.RCAStatusFailed, fmt.Sprintf("保存分析结果失败: %v", txErr), nil)
+		return
+	}
+
+	// 检查点：状态更新前确认代数有效性
+	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
+		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded before status update", taskID, inst.gen)
 		return
 	}
 
@@ -272,16 +359,21 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string) {
 
 // WaitForTaskRCA 等待指定任务的 RCA 计算结束（供测试或单步调用使用）
 func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
-	val, ok := GlobalRCAScheduler.done.Load(taskID)
+	val, ok := GlobalRCAScheduler.instances.Load(taskID)
 	if !ok {
+		// 检查数据库状态，若为 QUEUED 或 RUNNING，说明有任务正在瞬态排队，不能直接返回假成功
+		taskInfo, err := s.GetTaskByID(taskID)
+		if err == nil && (taskInfo.RCAStatus == model.RCAStatusQueued || taskInfo.RCAStatus == model.RCAStatusRunning) {
+			return false
+		}
 		return true
 	}
-	ch, ok := val.(chan struct{})
+	inst, ok := val.(*rcaInstance)
 	if !ok {
 		return true
 	}
 	select {
-	case <-ch:
+	case <-inst.done:
 		return true
 	case <-time.After(timeout):
 		return false
@@ -290,7 +382,10 @@ func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
 
 // ExecuteRCAPipelineForTest 供单元与集成测试直接验证流水线在特定 Context 下的行为
 func (s *Service) ExecuteRCAPipelineForTest(ctx context.Context, taskID string) {
-	s.executeRCAPipeline(ctx, taskID)
+	dummyInst := &rcaInstance{gen: 0}
+	GlobalRCAScheduler.instances.Store(taskID, dummyInst)
+	defer GlobalRCAScheduler.instances.CompareAndDelete(taskID, dummyInst)
+	s.executeRCAPipeline(ctx, taskID, dummyInst)
 }
 
 // RecoverDanglingRCATasks 启动自愈：扫描全局库中处于 QUEUED 或 RUNNING 的任务，
@@ -317,14 +412,18 @@ func (s *Service) RecoverDanglingRCATasks() error {
 			"rca_finish_time":   &now,
 		}).Error
 
-		taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, t.TaskID)
-		if err == nil {
-			_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", t.TaskID).Updates(map[string]interface{}{
-				"rca_status":        model.RCAStatusFailed,
-				"rca_error_message": errMsg,
-				"rca_finish_time":   &now,
-			}).Error
-			storage.ReleaseTaskDB(t.TaskID)
+		// 开库前先检查物理文件是否存在，避免对已删除任务反向创建空库
+		dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", t.TaskID))
+		if _, statErr := os.Stat(dbPath); statErr == nil {
+			taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, t.TaskID)
+			if err == nil {
+				_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", t.TaskID).Updates(map[string]interface{}{
+					"rca_status":        model.RCAStatusFailed,
+					"rca_error_message": errMsg,
+					"rca_finish_time":   &now,
+				}).Error
+				storage.ReleaseTaskDB(t.TaskID)
+			}
 		}
 	}
 	return nil

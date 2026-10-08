@@ -38,21 +38,41 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 	return nil, cause
 }
 
-// persistTaskInfo 把任务元信息双写回全局库与任务库。
-// 12.1 / REANA-07: 旧实现大量 `_ = s.globalDB.Save(...)`，
-// 双写失败时两库字段漂移，用户看到的状态与实际数据不一致。
+// persistTaskInfo 把任务基础元信息双写回全局库与任务库。
+// 采用字段白名单 Updates，严禁使用整行 Save，杜绝覆盖后台 RCA 异步写入的状态、计数与时序字段 (Lost Update 防范)。
 func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
 	if taskInfo == nil {
 		return
 	}
-	if err := s.globalDB.Save(taskInfo).Error; err != nil {
+	updates := map[string]interface{}{
+		"task_name":      taskInfo.TaskName,
+		"device_type":    taskInfo.DeviceType,
+		"device_version": taskInfo.DeviceVersion,
+		"file_count":     taskInfo.FileCount,
+		"device_count":   taskInfo.DeviceCount,
+		"log_count":      taskInfo.LogCount,
+		"matched_count":  taskInfo.MatchedCount,
+		"status":         taskInfo.Status,
+		"error_message":  taskInfo.ErrorMessage,
+		"db_path":        taskInfo.DBPath,
+	}
+	if taskInfo.FinishTime != nil {
+		updates["finish_time"] = taskInfo.FinishTime
+	}
+
+	if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
 		logger.Log.Errorf("[Task Service] save task info to global db failed: %v", err)
 	}
 	if taskDB != nil {
-		if err := taskDB.Save(taskInfo).Error; err != nil {
+		if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
 			logger.Log.Errorf("[Task Service] save task info to task db failed: %v", err)
 		}
 	}
+}
+
+// PersistTaskInfoForTest 供单元测试验证任务元信息更新策略
+func (s *Service) PersistTaskInfoForTest(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
+	s.persistTaskInfo(taskDB, taskInfo)
 }
 
 // prepareBundles 逐个文件完成"计数/采样 → 设备识别 → 命名冲突消解 → 旧数据清理"，

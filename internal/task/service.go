@@ -399,12 +399,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	}
 
 	taskInfo.Status = model.TaskStatusProcessing
-	if err := s.globalDB.Save(&taskInfo).Error; err != nil {
-		logger.Log.Errorf("save task info to global db failed: %v", err)
-	}
-	if err := taskDB.Save(&taskInfo).Error; err != nil {
-		logger.Log.Errorf("save task info to task db failed: %v", err)
-	}
+	s.persistTaskInfo(taskDB, &taskInfo)
 
 	// TASK-01: panic 时除了把任务置为 FAILED，还必须给命名返回值 err 赋值，
 	// 否则调用方会收到 (nil, nil) 并误判为成功。
@@ -414,12 +409,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 			logger.Log.Errorf("[Task Service] %s", errStr)
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = errStr
-			if saveErr := s.globalDB.Save(&taskInfo).Error; saveErr != nil {
-				logger.Log.Errorf("save task info to global db failed: %v", saveErr)
-			}
-			if saveErr := taskDB.Save(&taskInfo).Error; saveErr != nil {
-				logger.Log.Errorf("save task info to task db failed: %v", saveErr)
-			}
+			s.persistTaskInfo(taskDB, &taskInfo)
 			if tr != nil {
 				tr.Fail(fmt.Errorf("%s", errStr), "日志处理异常中断")
 			}
@@ -1068,6 +1058,9 @@ func (s *Service) DeleteTask(taskID string) error {
 		return fmt.Errorf("task %s is busy: another job is running, please retry later", taskID)
 	}
 	defer taskLock.Unlock()
+
+	// 0. 优先取消正在排队或执行的后台 RCA 任务，杜绝已删库文件被后台 worker 复活
+	s.CancelTaskRCA(taskID)
 
 	// 1. 先从连接池强制驱逐并关闭底层句柄（等待在途引用归零，超时强制关闭）
 	if err := storage.GlobalPool.EvictTaskDB(taskID); err != nil {
@@ -1984,8 +1977,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 
 	taskInfo.Status = model.TaskStatusProcessing
 	taskInfo.ErrorMessage = ""
-	_ = s.globalDB.Save(&taskInfo)
-	_ = taskDB.Save(&taskInfo)
+	s.persistTaskInfo(taskDB, &taskInfo)
 
 	// REANA-02: panic 时置 FAILED 并回填 err，绝不静默返回 (nil, nil)
 	defer func() {
@@ -1994,12 +1986,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 			logger.Log.Errorf("[Task Service] %s", errStr)
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = errStr
-			if saveErr := s.globalDB.Save(&taskInfo).Error; saveErr != nil {
-				logger.Log.Errorf("save task info to global db failed: %v", saveErr)
-			}
-			if saveErr := taskDB.Save(&taskInfo).Error; saveErr != nil {
-				logger.Log.Errorf("save task info to task db failed: %v", saveErr)
-			}
+			s.persistTaskInfo(taskDB, &taskInfo)
 			if tr != nil {
 				tr.Fail(fmt.Errorf("%s", errStr), "重新分析异常中断")
 			}

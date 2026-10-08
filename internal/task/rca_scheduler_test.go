@@ -218,3 +218,55 @@ func TestTriggerTaskRCA_ForceReanalyze(t *testing.T) {
 		t.Errorf("expected RCAStatus to be COMPLETED, got %s", finalInfo.RCAStatus)
 	}
 }
+
+// TestPersistTaskInfo_PreservesRCAFields 验证 persistTaskInfo 使用字段白名单，绝不覆盖后台 RCA 字段
+func TestPersistTaskInfo_PreservesRCAFields(t *testing.T) {
+	svc, globalDB, taskDir, cleanup := setupTestTaskService(t)
+	defer cleanup()
+
+	taskInfo, err := svc.CreateEmptyTask("LostUpdate-Test", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	// 模拟后台 RCA worker 已经把状态写为 COMPLETED，RcaCount=5
+	_ = globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(map[string]interface{}{
+		"rca_status": model.RCAStatusCompleted,
+		"rca_count":  5,
+	}).Error
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(taskDir, taskInfo.TaskID)
+	if err != nil {
+		t.Fatalf("open taskDB failed: %v", err)
+	}
+	_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(map[string]interface{}{
+		"rca_status": model.RCAStatusCompleted,
+		"rca_count":  5,
+	}).Error
+	storage.ReleaseTaskDB(taskInfo.TaskID)
+
+	// 模拟主流程使用开始时读取的旧快照（此时快照里 rca_status 是 PENDING, rca_count 是 0）执行收尾持久化
+	staleSnapshot := *taskInfo
+	staleSnapshot.LogCount = 100
+	staleSnapshot.MatchedCount = 20
+	staleSnapshot.Status = model.TaskStatusCompleted
+
+	taskDB2, _, _ := storage.GetOrCreateTaskDB(taskDir, taskInfo.TaskID)
+	svc.PersistTaskInfoForTest(taskDB2, &staleSnapshot)
+	storage.ReleaseTaskDB(taskInfo.TaskID)
+
+	// 验证全局库与任务库中，RCA 字段完好无损，未被 staleSnapshot 的旧值覆盖！
+	reloaded, err := svc.GetTaskByID(taskInfo.TaskID)
+	if err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	if reloaded.RCAStatus != model.RCAStatusCompleted {
+		t.Errorf("expected RCAStatus to remain COMPLETED, got %s", reloaded.RCAStatus)
+	}
+	if reloaded.RcaCount != 5 {
+		t.Errorf("expected RcaCount to remain 5, got %d", reloaded.RcaCount)
+	}
+	if reloaded.LogCount != 100 {
+		t.Errorf("expected LogCount to be updated to 100, got %d", reloaded.LogCount)
+	}
+}
