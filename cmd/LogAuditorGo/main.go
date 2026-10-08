@@ -108,6 +108,9 @@ func main() {
 	knowledgeSvc.SetMatchEngine(matchEngine)
 	rcaEngine := rootcause.NewEngine()
 	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+	if err := taskSvc.RecoverDanglingRCATasks(); err != nil {
+		log.Warnf("Failed to recover dangling RCA tasks on startup: %v", err)
+	}
 
 	// 6. 初始化并启动 HTTP 服务
 	r := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)

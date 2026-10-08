@@ -59,12 +59,31 @@
 {{ if .RCAs }}
   <div class="section">
     <h2>🎯 根因分析（RCA）排查建议</h2>
+{{ if eq .Task.RCAStatus "TIMEOUT" }}
+    <div style="margin-bottom: 12px; padding: 10px 14px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px;">
+      ⚠️ <strong>分析达到超时或样本上限：</strong>本次根因分析已安全中止并保存部分结果。以下为已识别的根因链路{{ if .Task.RCAAnalyzedUntil }}（时序截断至 {{ formatTime .Task.RCAAnalyzedUntil }}）{{ end }}。
+    </div>
+{{ end }}
 {{ range .RCAs }}    <div class="rca-card">
       <div class="rca-title">💥 根因事件 [{{ .RootModule }}/{{ .RootBrief }}] - {{ .RootTimestamp }} (置信度: {{ formatConfidence .Confidence }}, 影响等级: {{ .ImpactLevel }})</div>
       <div>{{ .RootCauseSummary }}</div>
       <div class="rca-action"><strong>官方建议排查方案：</strong>{{ .RecommendedAction }}</div>
     </div>
 {{ end }}  </div>
+{{ else if eq .Task.RCAStatus "TIMEOUT" }}
+  <div class="section">
+    <h2>🎯 根因分析（RCA）排查建议</h2>
+    <div style="padding: 12px 16px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px;">
+      ⚠️ 分析达到超时或样本上限，未识别出有效根因事件{{ if .Task.RCAErrorMessage }}: {{ .Task.RCAErrorMessage }}{{ end }}。
+    </div>
+  </div>
+{{ else if eq .Task.RCAStatus "FAILED" }}
+  <div class="section">
+    <h2>🎯 根因分析（RCA）排查建议</h2>
+    <div style="padding: 12px 16px; border-left: 4px solid #ef4444; background: #fef2f2; color: #991b1b; font-size: 13px;">
+      ❌ RCA 根因推导异常中断{{ if .Task.RCAErrorMessage }}: {{ .Task.RCAErrorMessage }}{{ end }}。可在工作台重试计算。
+    </div>
+  </div>
 {{ else if or (eq .Task.RCAStatus "QUEUED") (eq .Task.RCAStatus "RUNNING") }}
   <div class="section">
     <h2>🎯 根因分析（RCA）排查建议</h2>

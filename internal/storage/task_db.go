@@ -342,8 +342,8 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		}
 	}
 
-	sqlDB.SetMaxOpenConns(1) // SQLite 并发写入控制
-	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetMaxOpenConns(4) // WAL 模式下多读单写安全，前后台并发隔离杜绝排队
+	sqlDB.SetMaxIdleConns(4)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	// 自动迁移任务专属表

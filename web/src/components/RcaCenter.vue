@@ -85,8 +85,26 @@
       </template>
     </el-alert>
 
-    <!-- 正在计算中的骨架屏 -->
-    <el-card v-if="isRcaRunning" shadow="never" class="running-card">
+    <!-- 重新计算中的顶部轻量浮层警示条 (已有历史事件) -->
+    <el-alert
+      v-if="isRcaRunning && rcaList.length > 0"
+      type="info"
+      show-icon
+      :closable="false"
+      class="timeout-alert-bar"
+    >
+      <template #title>
+        <span style="font-weight: 600;">⏳ RCA 根因拓扑正在后台重新推导中...</span>
+      </template>
+      <template #default>
+        <span>
+          当前展示为上一轮分析结果。系统正在后台重新推导因果拓扑，计算完成后将自动刷新展示最新结果。
+        </span>
+      </template>
+    </el-alert>
+
+    <!-- 首次计算中的骨架屏 (无历史事件) -->
+    <el-card v-if="isRcaRunning && rcaList.length === 0" shadow="never" class="running-card">
       <div class="running-header">
         <el-icon class="is-loading" size="44" color="#0284c7"><Loading /></el-icon>
         <h3 style="margin: 12px 0 6px 0; color: #0f172a;">根因拓扑正在后台推导中...</h3>
@@ -101,7 +119,7 @@
     </el-card>
 
     <!-- 无联动事件空状态 -->
-    <el-card v-else-if="!loading && rcaList.length === 0" shadow="never" class="empty-card">
+    <el-card v-else-if="!loading && !isRcaRunning && rcaList.length === 0" shadow="never" class="empty-card">
       <el-empty description="当前任务尚未检测到协议级故障联动事件">
         <template #extra>
           <p class="empty-tip">
@@ -112,7 +130,7 @@
     </el-card>
 
     <!-- 核心两栏联动分析工作台 -->
-    <div v-else class="rca-workbench-body">
+    <div v-else-if="rcaList.length > 0" class="rca-workbench-body">
       <!-- 左栏：联动事件列表 (340px) -->
       <div class="col-event-list">
         <div class="list-header">
@@ -361,12 +379,14 @@ const filteredRcaList = computed(() => {
 const { run: runFetchRCA } = useRequest(api.getTaskRCA)
 
 let pollTimer = null
+let pollFailCount = 0
 
 const stopPolling = () => {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
   }
+  pollFailCount = 0
 }
 
 const startPolling = () => {
@@ -385,13 +405,18 @@ const loadTaskInfo = async () => {
   if (!reqTaskId) return
   try {
     const res = await api.getTask(reqTaskId)
+    pollFailCount = 0
     if (reqTaskId !== props.taskId) return
     if (res && res.code === 0) {
       taskInfo.value = res.data
       emit('task-updated', res.data)
     }
   } catch (e) {
-    // ignore
+    pollFailCount++
+    if (pollFailCount >= 5) {
+      stopPolling()
+      ElMessage.warning('轮询任务状态失败次数过多，已暂停自动轮询')
+    }
   }
 }
 

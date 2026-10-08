@@ -49,12 +49,22 @@ type MultiDeviceReportViewModel struct {
 // 时间线在报告中最多展示的条数
 const multiDeviceTimelineLimit = 500
 
-// formatTime 格式化时间戳，对于零值返回 "-"
-func formatTime(t time.Time) string {
-	if t.IsZero() {
+// formatTime 格式化时间戳，支持 time.Time 与 *time.Time，对于零值或 nil 返回 "-"
+func formatTime(v any) string {
+	switch t := v.(type) {
+	case time.Time:
+		if t.IsZero() {
+			return "-"
+		}
+		return t.Format("2006-01-02 15:04:05")
+	case *time.Time:
+		if t == nil || t.IsZero() {
+			return "-"
+		}
+		return t.Format("2006-01-02 15:04:05")
+	default:
 		return "-"
 	}
-	return t.Format("2006-01-02 15:04:05")
 }
 
 // coveragePercent 计算知识库覆盖率百分比字符串

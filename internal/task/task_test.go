@@ -1136,6 +1136,73 @@ func TestTaskImportCommentLogs(t *testing.T) {
 	}
 }
 
+// TestExportTaskHTML_TimeoutAndFailedStates 验证报告导出正确适配 TIMEOUT 截断与 FAILED 异常状态
+func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "export_states_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	// 1. 创建任务并设置为 TIMEOUT 状态
+	task1, err := svc.CreateEmptyTask("TimeoutTask", "CloudEngine", "")
+	if err != nil {
+		t.Fatalf("create task1 failed: %v", err)
+	}
+
+	analyzedUntil := time.Date(2026, 4, 15, 14, 30, 0, 0, time.Local)
+	err = globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", task1.TaskID).Updates(map[string]interface{}{
+		"rca_status":         model.RCAStatusTimeout,
+		"rca_analyzed_until": &analyzedUntil,
+		"rca_error_message":  "分析样本达到硬上限(100000行)，已保存前100000行分析结果",
+	}).Error
+	if err != nil {
+		t.Fatalf("update task1 state failed: %v", err)
+	}
+
+	html1, err := svc.ExportTaskHTML(task1.TaskID)
+	if err != nil {
+		t.Fatalf("export html for timeout task failed: %v", err)
+	}
+	if !strings.Contains(html1, "分析达到超时或样本上限") {
+		t.Errorf("expected html1 to contain '分析达到超时或样本上限'")
+	}
+
+	// 2. 创建任务并设置为 FAILED 状态
+	task2, err := svc.CreateEmptyTask("FailedTask", "CloudEngine", "")
+	if err != nil {
+		t.Fatalf("create task2 failed: %v", err)
+	}
+
+	err = globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", task2.TaskID).Updates(map[string]interface{}{
+		"rca_status":        model.RCAStatusFailed,
+		"rca_error_message": "计算拓扑发生不可恢复异常",
+	}).Error
+	if err != nil {
+		t.Fatalf("update task2 state failed: %v", err)
+	}
+
+	html2, err := svc.ExportTaskHTML(task2.TaskID)
+	if err != nil {
+		t.Fatalf("export html for failed task failed: %v", err)
+	}
+	if !strings.Contains(html2, "RCA 根因推导异常中断") || !strings.Contains(html2, "计算拓扑发生不可恢复异常") {
+		t.Errorf("expected html2 to contain failed error message")
+	}
+}
+
+
 
 
 

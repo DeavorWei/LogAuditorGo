@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,12 +89,22 @@ func (s *Service) updateTaskRCAState(taskID string, status model.RCAStatus, errM
 
 	// 1. 更新全局库
 	if s.globalDB != nil {
-		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; err != nil {
-			logger.Log.Errorf("[Task Service] update rca state in global db failed for %s: %v", taskID, err)
+		res := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates)
+		if res.Error != nil {
+			logger.Log.Errorf("[Task Service] update rca state in global db failed for %s: %v", taskID, res.Error)
+		}
+		if res.RowsAffected == 0 {
+			// 全局库已无该任务（已被删除），直接退出，绝不调用 GetOrCreateTaskDB 复活任务库物理文件
+			return
 		}
 	}
 
-	// 2. 更新任务库
+	// 2. 更新任务库（若磁盘物理文件不存在，绝不调用 GetOrCreateTaskDB 重建空库）
+	dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", taskID))
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		return
+	}
+
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err == nil {
 		if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; err != nil {
@@ -201,62 +212,105 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 	}()
 }
 
-// fetchNormLogsForRCA 游标读取待分析日志并在计算前显式 Close，严格遵循 MaxOpenConns=1 约束
+// fetchNormLogsForRCA 使用 keyset 分页（id > ? LIMIT batchSize）按批次拉取待分析日志，
+// 批次间自动释放连接，彻底消除长游标扫描对前台连接池的占用
 func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.NormalizedLog, bool, error) {
-	rows, err := taskDB.WithContext(ctx).Model(&model.LogRecord{}).
-		Where("knowledge_id > 0 OR severity <= ?", rcaSeverityThreshold).
-		Order("timestamp asc, id asc").Rows()
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-
+	const batchSize = 5000
 	var list []*model.NormalizedLog
+	var lastID uint = 0
 	truncated := false
-	for rows.Next() {
+
+	for {
 		select {
 		case <-ctx.Done():
 			return nil, false, ctx.Err()
 		default:
 		}
-		if len(list) >= maxRCALogs {
-			truncated = true
-			logger.Log.Warnf("[Task Service] RCA sample size exceeded max limit (%d), truncating subsequent records", maxRCALogs)
+
+		limit := batchSize
+		if len(list)+limit > maxRCALogs {
+			limit = maxRCALogs - len(list)
+		}
+
+		var records []model.LogRecord
+		err := taskDB.WithContext(ctx).Model(&model.LogRecord{}).
+			Where("(knowledge_id > 0 OR severity <= ?) AND id > ?", rcaSeverityThreshold, lastID).
+			Order("id asc").
+			Limit(limit).
+			Find(&records).Error
+		if err != nil {
+			return nil, false, err
+		}
+
+		if len(records) == 0 {
 			break
 		}
-		var rec model.LogRecord
-		if scanErr := taskDB.ScanRows(rows, &rec); scanErr != nil {
-			logger.Log.Warnf("[Task Service] Scan log row for RCA failed: %v", scanErr)
-			continue
+
+		for _, rec := range records {
+			if rec.ID > lastID {
+				lastID = rec.ID
+			}
+			var params map[string]string
+			if rec.ParametersJSON != "" {
+				_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
+			}
+			list = append(list, &model.NormalizedLog{
+				ID:              rec.ID,
+				RawLog:          rec.RawLog,
+				Timestamp:       rec.Timestamp,
+				Hostname:        rec.Hostname,
+				Module:          rec.Module,
+				Severity:        rec.Severity,
+				Brief:           rec.Brief,
+				SlotInfo:        rec.SlotInfo,
+				SourceFile:      rec.SourceFile,
+				MessageBody:     rec.MessageBody,
+				Parameters:      params,
+				DeviceID:        rec.DeviceID,
+				KnowledgeID:     rec.KnowledgeID,
+				MatchTier:       rec.MatchTier,
+				MatchConfidence: rec.MatchConfidence,
+			})
 		}
-		var params map[string]string
-		if rec.ParametersJSON != "" {
-			_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
+
+		if len(list) >= maxRCALogs {
+			var countMore int64
+			_ = taskDB.WithContext(ctx).Model(&model.LogRecord{}).
+				Where("(knowledge_id > 0 OR severity <= ?) AND id > ?", rcaSeverityThreshold, lastID).
+				Limit(1).
+				Count(&countMore).Error
+			if countMore > 0 {
+				truncated = true
+				logger.Log.Warnf("[Task Service] RCA sample size exceeded max limit (%d), truncating subsequent records", maxRCALogs)
+			}
+			break
 		}
-		list = append(list, &model.NormalizedLog{
-			ID:              rec.ID,
-			RawLog:          rec.RawLog,
-			Timestamp:       rec.Timestamp,
-			Hostname:        rec.Hostname,
-			Module:          rec.Module,
-			Severity:        rec.Severity,
-			Brief:           rec.Brief,
-			SlotInfo:        rec.SlotInfo,
-			SourceFile:      rec.SourceFile,
-			MessageBody:     rec.MessageBody,
-			Parameters:      params,
-			DeviceID:        rec.DeviceID,
-			KnowledgeID:     rec.KnowledgeID,
-			MatchTier:       rec.MatchTier,
-			MatchConfidence: rec.MatchConfidence,
-		})
+
+		if len(records) < limit {
+			break
+		}
 	}
-	return list, truncated, rows.Err()
+
+	return list, truncated, nil
 }
 
 // executeRCAPipeline 执行 RCA 分析核心流水线与短事务落库
 func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *rcaInstance) {
-	// 阶段 1: 游标拉取待分析数据，提取完毕后立即关闭游标并释放连接引用
+	// 阶段 1 前置检查：任务是否已在全局库中删除，或物理库已被移除
+	if s.globalDB != nil {
+		var exists int64
+		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Count(&exists).Error; err != nil || exists == 0 {
+			logger.Log.Infof("[Task Service] Task %s not found in global db, skipping RCA pipeline", taskID)
+			return
+		}
+	}
+	dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", taskID))
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		logger.Log.Infof("[Task Service] Task %s db file does not exist, skipping RCA pipeline", taskID)
+		return
+	}
+
+	// 阶段 1: keyset 分页拉取待分析数据，批次间自动释放连接，拉取完毕后立即释放连接句柄
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {
 		logger.Log.Errorf("[Task Service] Open task db for RCA failed: %v", err)
@@ -274,8 +328,9 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	}
 
 	if fetchErr != nil {
-		if errors.Is(fetchErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
-			logger.Log.Infof("[Task Service] RCA fetch canceled for task %s", taskID)
+		if errors.Is(fetchErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) ||
+			!GlobalRCAScheduler.isCurrentInstance(taskID, inst) || strings.Contains(fetchErr.Error(), "closed") {
+			logger.Log.Infof("[Task Service] RCA fetch canceled/aborted for task %s", taskID)
 			return
 		}
 		if errors.Is(fetchErr, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -297,6 +352,19 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	// 检查点：是否已被新触发实例取代或取消
 	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
 		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded after analysis", taskID, inst.gen)
+		return
+	}
+
+	// 阶段 3 前置检查：再次确认物理文件与全局任务未被并发删除
+	if s.globalDB != nil {
+		var exists int64
+		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Count(&exists).Error; err != nil || exists == 0 {
+			logger.Log.Infof("[Task Service] Task %s deleted during calculation, aborting writeback", taskID)
+			return
+		}
+	}
+	if _, statErr := os.Stat(dbPath); statErr != nil {
+		logger.Log.Infof("[Task Service] Task %s db file removed during calculation, aborting writeback", taskID)
 		return
 	}
 

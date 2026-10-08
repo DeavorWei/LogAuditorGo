@@ -189,7 +189,6 @@ func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEng
 	if config.GlobalConfig != nil && config.GlobalConfig.RCA.Concurrency > 0 {
 		InitRCAScheduler(config.GlobalConfig.RCA.Concurrency)
 	}
-	_ = s.RecoverDanglingRCATasks()
 	return s
 }
 

@@ -479,20 +479,18 @@ func (h *TaskHandler) GetRCA(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
-	taskInfo, err := h.taskSvc.GetTaskByID(taskID)
-	if err != nil {
+	if _, err := h.taskSvc.GetTaskByID(taskID); err != nil {
 		ErrorResponse(c, http.StatusNotFound, -1, "Task not found")
 		return
 	}
-	if taskInfo.RCAStatus == model.RCAStatusQueued || taskInfo.RCAStatus == model.RCAStatusRunning {
-		SuccessResponse(c, []model.EnrichedRCAEvent{})
-		return
-	}
-
+	// 即使处于 QUEUED/RUNNING，也返回任务库中已有的事件（若有），避免前端重跑或轮询时历史拓扑被抹白
 	events, err := h.taskSvc.GetEnrichedRCAEvents(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
+	}
+	if events == nil {
+		events = []model.EnrichedRCAEvent{}
 	}
 
 	SuccessResponse(c, events)

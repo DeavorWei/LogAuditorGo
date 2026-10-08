@@ -1235,12 +1235,14 @@ const fetchTasks = async () => {
 }
 
 let rcaPollTimer = null
+let rcaPollFailCount = 0
 
 const stopRcaPolling = () => {
   if (rcaPollTimer) {
     clearInterval(rcaPollTimer)
     rcaPollTimer = null
   }
+  rcaPollFailCount = 0
 }
 
 const checkAndPollRcaStatus = () => {
@@ -1251,14 +1253,22 @@ const checkAndPollRcaStatus = () => {
       if (!pollingId) return
       try {
         const res = await api.getTask(pollingId)
+        rcaPollFailCount = 0
         if (pollingId !== currentTaskId.value) return
         if (res && res.code === 0) {
           handleTaskMetadataUpdated(res.data)
           if (res.data.rca_status !== 'QUEUED' && res.data.rca_status !== 'RUNNING') {
             stopRcaPolling()
+            await fetchRCA()
           }
         }
-      } catch (e) {}
+      } catch (e) {
+        rcaPollFailCount++
+        if (rcaPollFailCount >= 5) {
+          stopRcaPolling()
+          ElMessage.warning('轮询任务状态失败次数过多，已暂停自动轮询')
+        }
+      }
     }, 3000)
   }
 }
@@ -1592,9 +1602,12 @@ const handleReanalyzeTask = () => {
 
 // 日志导入完成回调：自动刷新并无缝载入审计工作台
 const handleLogImportCompleted = async (result) => {
+  const rcaMsg = (result?.rca_status === 'COMPLETED' && result?.rca_count > 0)
+    ? `，识别出 ${result.rca_count} 个 RCA 根因事件`
+    : `。根因分析 (RCA) 已在后台启动推导，可在拓扑面板查看`
   ElMessage.success({
-    message: `🎉 日志审计分析完成！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条，识别出 ${result?.rca_count || 0} 个 RCA 根因事件`,
-    duration: 4000
+    message: `🎉 日志分析就绪！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条${rcaMsg}`,
+    duration: 5000
   })
   await fetchTasks()
   if (currentTaskId.value) {
