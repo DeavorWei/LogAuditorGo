@@ -28,8 +28,8 @@ var GlobalRCAScheduler = &RCAScheduler{
 	semaphore: make(chan struct{}, 2), // 默认全局最多允许 2 个任务同时执行密集 RCA
 }
 
-// initRCAScheduler 根据配置初始化调度器并发槽位
-func initRCAScheduler(concurrency int) {
+// InitRCAScheduler 根据配置初始化调度器并发槽位
+func InitRCAScheduler(concurrency int) {
 	if concurrency <= 0 {
 		concurrency = 2
 	}
@@ -286,6 +286,11 @@ func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
 	case <-time.After(timeout):
 		return false
 	}
+}
+
+// ExecuteRCAPipelineForTest 供单元与集成测试直接验证流水线在特定 Context 下的行为
+func (s *Service) ExecuteRCAPipelineForTest(ctx context.Context, taskID string) {
+	s.executeRCAPipeline(ctx, taskID)
 }
 
 // RecoverDanglingRCATasks 启动自愈：扫描全局库中处于 QUEUED 或 RUNNING 的任务，

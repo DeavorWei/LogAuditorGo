@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/config"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
@@ -184,6 +185,9 @@ func NewService(globalDB *gorm.DB, taskDir string, matchEngine *matcher.MatchEng
 		taskDir:     taskDir,
 		matchEngine: matchEngine,
 		rcaEngine:   rcaEngine,
+	}
+	if config.GlobalConfig != nil && config.GlobalConfig.RCA.Concurrency > 0 {
+		InitRCAScheduler(config.GlobalConfig.RCA.Concurrency)
 	}
 	_ = s.RecoverDanglingRCATasks()
 	return s
