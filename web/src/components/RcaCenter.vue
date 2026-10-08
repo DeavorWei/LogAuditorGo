@@ -381,9 +381,11 @@ const startPolling = () => {
 }
 
 const loadTaskInfo = async () => {
-  if (!props.taskId) return
+  const reqTaskId = props.taskId
+  if (!reqTaskId) return
   try {
-    const res = await api.getTask(props.taskId)
+    const res = await api.getTask(reqTaskId)
+    if (reqTaskId !== props.taskId) return
     if (res && res.code === 0) {
       taskInfo.value = res.data
       emit('task-updated', res.data)

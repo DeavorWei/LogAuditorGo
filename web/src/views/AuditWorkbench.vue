@@ -1247,9 +1247,11 @@ const checkAndPollRcaStatus = () => {
   stopRcaPolling()
   if (currentTask.value && (currentTask.value.rca_status === 'QUEUED' || currentTask.value.rca_status === 'RUNNING')) {
     rcaPollTimer = setInterval(async () => {
-      if (!currentTaskId.value) return
+      const pollingId = currentTaskId.value
+      if (!pollingId) return
       try {
-        const res = await api.getTask(currentTaskId.value)
+        const res = await api.getTask(pollingId)
+        if (pollingId !== currentTaskId.value) return
         if (res && res.code === 0) {
           handleTaskMetadataUpdated(res.data)
           if (res.data.rca_status !== 'QUEUED' && res.data.rca_status !== 'RUNNING') {
