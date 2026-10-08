@@ -1,6 +1,7 @@
 package rootcause
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -522,23 +523,46 @@ func (ix *invertedIndex) rangeOf(key string, lo, hi int, after, before time.Time
 //  2. 实例维度（接口/对端 IP/会话 ID）一致性校验（RCA-04）；
 //  3. 全局排他认领，保证每条日志只归属一个根因（RCA-08）；
 //  4. 多因子置信度与四级影响等级（RCA-09 / RCA-16）。
-func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events []model.RCAEvent) {
-	// RCA-16: recover 后必须置位错误标志，而不是"静默返回已累积的偏少结果"。
-	analyzeErr := error(nil)
+// RCAResult 包装 RCA 执行结果，使截断与覆盖水位成为一等公民
+type RCAResult struct {
+	Events        []model.RCAEvent
+	Truncated     bool      // 是否发生超时中断
+	AnalyzedUntil time.Time // 分析覆盖到的最后时序点
+	Err           error
+}
+
+// AnalyzeWithContext 在给定的 context 下执行根因分析。
+// 支持超时熔断与取消、静态规则未命中缓存以及扫描水位动态剪枝。
+//
+// 核心机制：
+//  1. 静态规则未命中缓存（rootRuleMissed）：跳过所有无法作为链首规则的日志，避免无谓重复规则匹配；
+//  2. 扫描水位动态剪枝（scannedWatermark）：记录日志在当前 hi 内确认无衍生，仅当新簇的 hi > upTo 时才重新扫描；
+//  3. 周期性检查点：入口、排序前后及簇循环内检测 context 超时，超时时返回部分已计算结果与截断时间戳。
+func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.NormalizedLog, windowSeconds int) (res RCAResult) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	// 检查点 1: 入口检查
+	select {
+	case <-ctx.Done():
+		return RCAResult{Truncated: true, Err: ctx.Err()}
+	default:
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
-			analyzeErr = fmt.Errorf("panic in RCA Analyze: %v", r)
-			logger.Log.Errorf("[RCA Engine] Panic recovered in Analyze: %v", r)
-			events = nil
+			res.Err = fmt.Errorf("panic in RCA Analyze: %v", r)
+			logger.Log.Errorf("[RCA Engine] Panic recovered in AnalyzeWithContext: %v", r)
+			res.Events = nil
 		}
-		if analyzeErr != nil {
-			logger.Log.Errorf("[RCA Engine] Analyze aborted: %v", analyzeErr)
+		if res.Err != nil && !res.Truncated {
+			logger.Log.Errorf("[RCA Engine] Analyze aborted: %v", res.Err)
 		}
 	}()
 
 	if e == nil || len(logs) == 0 {
-		return nil
+		return RCAResult{}
 	}
 
 	e.ensureIndexes()
@@ -572,11 +596,18 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 		}
 	}
 	if len(validLogs) == 0 {
-		return nil
+		return RCAResult{}
 	}
 
 	if windowSeconds <= 0 {
 		windowSeconds = DefaultWindowSeconds
+	}
+
+	// 检查点 2: 规范化后检查
+	select {
+	case <-ctx.Done():
+		return RCAResult{Truncated: true, Err: ctx.Err()}
+	default:
 	}
 
 	// 按时间升序排序
@@ -593,6 +624,12 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 		return sortedLogs[i].ID < sortedLogs[j].ID
 	})
 
+	select {
+	case <-ctx.Done():
+		return RCAResult{Truncated: true, Err: ctx.Err()}
+	default:
+	}
+
 	logger.Log.Debugf("[RCA Engine] Analyzing %d logs with overlapping window %ds (overlap %ds)",
 		len(sortedLogs), windowSeconds, DefaultOverlapSeconds)
 
@@ -606,8 +643,11 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 	// 旧实现的 visited 只在"本次 BFS 找到衍生事件"时回填，且不阻止"当衍生"，
 	// 于是同一条日志会同时出现在多个 RCA 事件里，前端展示互相矛盾的多重根因。
 	claimed := make(map[uint]uint, len(sortedLogs))
+	rootRuleMissed := make(map[uint]bool, len(sortedLogs))   // 优化 A: 静态规则未命中缓存
+	scannedWatermark := make(map[uint]int, len(sortedLogs)) // 优化 B: 扫描水位表 (logID -> 已扫描的最大 hi)
 
-	events = make([]model.RCAEvent, 0, 16)
+	events := make([]model.RCAEvent, 0, 16)
+	var lastProcessedTime time.Time
 
 	for _, cluster := range clusters {
 		if len(events) >= maxRCAEventsPerAnalyze {
@@ -626,6 +666,20 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 		}
 
 		for i := lo; i < hi; i++ {
+			// 检查点 3: 循环内周期性检测超时预算
+			select {
+			case <-ctx.Done():
+				logger.Log.Warnf("[RCA Engine] RCA analysis timed out by context, returning partial %d events (analyzed until %v)",
+					len(events), lastProcessedTime)
+				return RCAResult{
+					Events:        events,
+					Truncated:     true,
+					AnalyzedUntil: lastProcessedTime,
+					Err:           ctx.Err(),
+				}
+			default:
+			}
+
 			if len(events) >= maxRCAEventsPerAnalyze {
 				break
 			}
@@ -633,25 +687,53 @@ func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events
 			if log == nil {
 				continue
 			}
-			// 已归属于某个根因的事件不再参与后续 BFS
+			lastProcessedTime = log.Timestamp
+
+			// 1. 已被认领的下游衍生直接跳过
 			if _, ok := claimed[log.ID]; ok {
+				continue
+			}
+			// 2. 静态未命中缓存：非规则候选直接跳过
+			if rootRuleMissed[log.ID] {
+				continue
+			}
+			// 3. 扫描水位剪枝：当前簇边界不超过历史已扫描水位，安全跳过
+			if upTo, ok := scannedWatermark[log.ID]; ok && hi <= upTo {
 				continue
 			}
 
 			matchedRule := e.matchRootRule(log.Module, log.Brief)
 			if matchedRule == nil {
+				rootRuleMissed[log.ID] = true
 				continue
 			}
 
 			event, ok := e.propagate(sortedLogs, ix, lo, hi, log, matchedRule, windowSeconds, claimed)
 			if !ok {
+				// 水位推进：记录在当前 hi 范围内确认无衍生，而非全局永久拉黑
+				scannedWatermark[log.ID] = hi
 				continue
 			}
 			events = append(events, event)
 		}
 	}
 
-	return events
+	if len(sortedLogs) > 0 {
+		lastProcessedTime = sortedLogs[len(sortedLogs)-1].Timestamp
+	}
+
+	return RCAResult{
+		Events:        events,
+		Truncated:     false,
+		AnalyzedUntil: lastProcessedTime,
+		Err:           nil,
+	}
+}
+
+// Analyze 是 AnalyzeWithContext 的无超时便捷包装，保持向后兼容。
+func (e *Engine) Analyze(logs []*model.NormalizedLog, windowSeconds int) (events []model.RCAEvent) {
+	res := e.AnalyzeWithContext(context.Background(), logs, windowSeconds)
+	return res.Events
 }
 
 // propagate 从根因日志出发，在给定窗口内做倒排索引 BFS 传播，产出一个 RCA 事件。
