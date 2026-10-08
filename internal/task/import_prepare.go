@@ -317,8 +317,10 @@ func (s *Service) refreshAllDeviceStats(taskDB *gorm.DB) error {
 	return nil
 }
 
-// finalizeTaskInfo 统一的任务收尾：刷新计数、置终态、双写落库 (9.1 / REANA-07)
-func (s *Service) finalizeTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo, logCount, matchedCount int, rcaCount int, status model.TaskStatus, errMsg string) {
+// finalizeTaskInfo 统一的任务收尾：刷新计数、置终态、双写落库 (9.1 / REANA-07)。
+// 注意：rca_count 不在 persistTaskInfo 的白名单内（RCA 字段由后台 worker 独立维护），
+// 这里不再接收 rcaCount 参数，避免"看起来会保存但实际丢弃"的死参数。
+func (s *Service) finalizeTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo, logCount, matchedCount int, status model.TaskStatus, errMsg string) {
 	var fileCount, deviceCount int64
 	if err := taskDB.Model(&model.TaskFile{}).Count(&fileCount).Error; err != nil {
 		logger.Log.Errorf("[Task Service] count task files failed: %v", err)
@@ -332,7 +334,6 @@ func (s *Service) finalizeTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo, lo
 	taskInfo.DeviceCount = int(deviceCount)
 	taskInfo.LogCount = logCount
 	taskInfo.MatchedCount = matchedCount
-	taskInfo.RcaCount = rcaCount
 	taskInfo.Status = status
 	taskInfo.ErrorMessage = errMsg
 	if status == model.TaskStatusCompleted {

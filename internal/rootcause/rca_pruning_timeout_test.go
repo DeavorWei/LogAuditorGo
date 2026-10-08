@@ -242,3 +242,53 @@ func TestAnalyzeWithContext_PropagateCancellation(t *testing.T) {
 	}
 }
 
+// TestAnalyzeWithContext_PropagateTimeoutNotSwallowed 是 P0 回归防线：
+// 超时发生在最后一个根因的 propagate 内部时（此后再无日志迭代，外层检查点无法兜底），
+// 引擎必须返回 Truncated=true 且携带 ctx 错误，绝不能把"超时"上报为"完整完成"。
+//
+// 构造方式：簇 1 完整产出 1 个事件后，簇 2 的根因挂 60 个衍生日志，
+// 使 propagate 的 BFS 拥有充足的 ctx 检查点；阈值 20 保证取消精确落在 propagate 内部。
+func TestAnalyzeWithContext_PropagateTimeoutNotSwallowed(t *testing.T) {
+	base := time.Date(2026, 4, 15, 10, 0, 0, 0, time.Local)
+	var logs []*model.NormalizedLog
+
+	// 簇 1：IF_DOWN + BFD_SESS_DOWN，正常产出 1 个根因事件
+	logs = append(logs,
+		rcaLog(1, "SW-01", "IFNET", "IF_DOWN", base),
+		rcaLog(2, "SW-01", "BFD", "BFD_SESS_DOWN", base.Add(1*time.Second)),
+	)
+
+	// 簇 2（+3600s，与簇 1 无重叠）：根因 + 60 个衍生
+	root2TS := base.Add(3600 * time.Second)
+	logs = append(logs, rcaLog(3, "SW-02", "IFNET", "IF_DOWN", root2TS))
+	for i := 0; i < 60; i++ {
+		logs = append(logs, rcaLog(uint(4+i), "SW-02", "BFD", "BFD_SESS_DOWN",
+			root2TS.Add(time.Duration(i+1)*time.Millisecond)))
+	}
+
+	ctx := &stepCancelContext{
+		doneCh:    make(chan struct{}),
+		threshold: 20,
+	}
+
+	eng := rootcause.NewEngine()
+	res := eng.AnalyzeWithContext(ctx, logs, 300)
+
+	if !res.Truncated {
+		t.Fatalf("expected res.Truncated=true when timeout fires inside propagate, got false (timeout silently swallowed)")
+	}
+	if res.Err != context.DeadlineExceeded {
+		t.Fatalf("expected res.Err=DeadlineExceeded, got %v", res.Err)
+	}
+	if len(res.Events) != 1 {
+		t.Fatalf("expected exactly 1 event from the completed first cluster, got %d", len(res.Events))
+	}
+	if res.AnalyzedUntil.IsZero() {
+		t.Fatalf("expected non-zero AnalyzedUntil")
+	}
+	// 覆盖水位必须落在熔断处（簇 2 根因的时间），而不是全量末尾时间——后者是"谎报完整覆盖"
+	if !res.AnalyzedUntil.Equal(root2TS) {
+		t.Fatalf("expected AnalyzedUntil=%v (cutoff at interrupted root), got %v", root2TS, res.AnalyzedUntil)
+	}
+}
+

@@ -28,6 +28,11 @@ import (
 
 var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
 
+// maxRCALogs RCA 单次分析样本硬上限 (TASK-03)。
+// 保持为 var（而非 const）仅供单元测试注入较小值验证截断探测路径，
+// 生产语义恒为 100000，除测试外不得改写。
+var maxRCALogs = 100000
+
 // 导入与导出的规模上限。缺乏这类硬上限时，单机工具很容易被一次大导入/大导出直接打爆内存。
 const (
 	// exportHTMLMaxRecords 单任务 HTML 报告最多包含的日志明细条数 (DEV-03)。
@@ -36,8 +41,7 @@ const (
 
 	// rcaSeverityThreshold / maxRCALogs 控制回灌给 RCA 引擎的样本规模 (TASK-03)。
 	// RCA 只关心命中知识库或严重级别较高的日志，无需把百万行全部驻留内存。
-	rcaSeverityThreshold = 4      // Severity <= 4（error 及以上）纳入 RCA 样本
-	maxRCALogs           = 100000 // RCA 单次分析样本硬上限
+	rcaSeverityThreshold = 4 // Severity <= 4（error 及以上）纳入 RCA 样本
 
 	// MaxPageSize 单次分页查询返回的最大行数 (TASK-13)。
 	// 深翻页时 offset 越大越慢，这里同时约束单页规模，避免一次拉取过多行。
@@ -502,7 +506,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	if len(failedFiles) > 0 {
 		errSummary = fmt.Sprintf("部分文件导入失败: %s", strings.Join(failedFiles, "; "))
 	}
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), taskInfo.RcaCount,
+	s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount),
 		model.TaskStatusCompleted, errSummary)
 
 	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched",
@@ -2074,7 +2078,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 	finalLogCount, finalMatched := recountTaskLogs(taskDB)
 
 	// ---------- 阶段三：收尾 (主流程极速就绪) ----------
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), taskInfo.RcaCount, model.TaskStatusCompleted, "")
+	s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), model.TaskStatusCompleted, "")
 
 	logger.Log.Infof("[Task Service] Reanalyze completed for task %s: %d total logs, %d matched",
 		taskID, taskInfo.LogCount, taskInfo.MatchedCount)

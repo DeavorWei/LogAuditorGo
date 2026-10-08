@@ -1617,8 +1617,16 @@ const handleLogImportCompleted = async (result) => {
 }
 
 // 监听视图模式切换：确保切换到多设备时间线、设备管理、RCA分析等子视图时展示最新数据
-watch(currentViewMode, async (newMode) => {
+watch(currentViewMode, async (newMode, oldMode) => {
   if (!currentTaskId.value) return
+  // P2 修复：RCA 视图激活期间，RcaCenter 自带轮询并通过 task-updated 事件回抛最新任务元数据，
+  // 工作台停掉自己那份 3s 轮询，避免两处 GET /tasks/:id 并存造成双倍请求；
+  // 离开 RCA 视图时（RcaCenter 随之卸载、轮询停止），若 RCA 仍在进行则由工作台接管轮询。
+  if (newMode === VIEW_MODE.RCA) {
+    stopRcaPolling()
+  } else if (oldMode === VIEW_MODE.RCA) {
+    checkAndPollRcaStatus()
+  }
   if (newMode === VIEW_MODE.DEVICES) {
     await fetchTaskDevices()
     deviceManagerRef.value?.fetchDevices?.()

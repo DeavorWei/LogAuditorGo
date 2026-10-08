@@ -3,6 +3,7 @@ package rootcause
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -523,12 +524,16 @@ func (ix *invertedIndex) rangeOf(key string, lo, hi int, after, before time.Time
 //  2. 实例维度（接口/对端 IP/会话 ID）一致性校验（RCA-04）；
 //  3. 全局排他认领，保证每条日志只归属一个根因（RCA-08）；
 //  4. 多因子置信度与四级影响等级（RCA-09 / RCA-16）。
+// ErrEventCap 单次分析产生的根因事件数量达到上限（区别于超时中断）。
+// 调用方应据此给出与"超时"不同的提示文案，而不是笼统地报告"分析超时"。
+var ErrEventCap = errors.New("rca event count reached per-analyze cap")
+
 // RCAResult 包装 RCA 执行结果，使截断与覆盖水位成为一等公民
 type RCAResult struct {
 	Events        []model.RCAEvent
-	Truncated     bool      // 是否发生超时中断
+	Truncated     bool      // 是否发生截断（超时/取消中断，或触达事件数量上限）
 	AnalyzedUntil time.Time // 分析覆盖到的最后时序点
-	Err           error
+	Err           error     // 超时/取消时为 context 错误；触达事件上限时为 ErrEventCap
 }
 
 // AnalyzeWithContext 在给定的 context 下执行根因分析。
@@ -722,6 +727,20 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 			}
 
 			event, ok := e.propagate(ctx, sortedLogs, ix, lo, hi, log, matchedRule, windowSeconds, claimed)
+			// P0 修复：propagate 内部的 ctx 检查点超时返回 (零值, false)，
+			// 与"确认无衍生"不可区分。若不在此处拦截，超时会被静默吞掉：
+			// 循环正常退出后 Truncated=false / Err=nil，调用方把"超时"当作"完整完成"落库。
+			// 当超时发生在最后一簇最后一个根因的 propagate 内时，外层检查点 3 无法兜底，这里必须显式判定。
+			if ctx.Err() != nil {
+				logger.Log.Warnf("[RCA Engine] timeout/cancel during propagate, returning partial %d events (analyzed until %v)",
+					len(events), lastProcessedTime)
+				return RCAResult{
+					Events:        events,
+					Truncated:     true,
+					AnalyzedUntil: lastProcessedTime,
+					Err:           ctx.Err(),
+				}
+			}
 			if !ok {
 				// 水位推进：记录在当前 hi 范围内确认无衍生，而非全局永久拉黑
 				scannedWatermark[log.ID] = hi
@@ -739,7 +758,12 @@ func (e *Engine) AnalyzeWithContext(ctx context.Context, logs []*model.Normalize
 		Events:        events,
 		Truncated:     eventCapReached,
 		AnalyzedUntil: lastProcessedTime,
-		Err:           nil,
+		Err: func() error {
+			if eventCapReached {
+				return ErrEventCap
+			}
+			return nil
+		}(),
 	}
 }
 

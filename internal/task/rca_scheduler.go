@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +13,7 @@ import (
 
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/storage"
 	"logauditorgo/pkg/logger"
 )
@@ -42,7 +41,13 @@ var GlobalRCAScheduler = &RCAScheduler{
 	active:    make(map[string]map[*rcaInstance]struct{}),
 }
 
-// InitRCAScheduler 根据配置初始化调度器并发槽位
+// InitRCAScheduler 根据配置初始化调度器并发槽位。
+//
+// P2 修复：运行期调用（配置热加载、测试 cleanup）绝不允许清空 instances/active——
+// 在途 worker 的 isCurrentInstance 会因此恒为 false，静默退出且不落任何终态，
+// 任务永久停在 QUEUED/RUNNING，只能等重启自愈。实例表仅在完全空闲时才重置。
+// 信号量替换是安全的：worker 在排队前通过 getSemaphore 取得通道快照，
+// 获取与释放严格作用于同一条通道，不会出现跨通道泄漏。
 func InitRCAScheduler(concurrency int) {
 	if concurrency <= 0 {
 		concurrency = 2
@@ -50,6 +55,11 @@ func InitRCAScheduler(concurrency int) {
 	GlobalRCAScheduler.mu.Lock()
 	defer GlobalRCAScheduler.mu.Unlock()
 	GlobalRCAScheduler.semaphore = make(chan struct{}, concurrency)
+	if len(GlobalRCAScheduler.instances) > 0 || len(GlobalRCAScheduler.active) > 0 {
+		logger.Log.Warnf("[Task Service] InitRCAScheduler called while %d RCA instance(s) still in flight, keeping instance registry intact",
+			len(GlobalRCAScheduler.instances))
+		return
+	}
 	GlobalRCAScheduler.instances = make(map[string]*rcaInstance)
 	GlobalRCAScheduler.active = make(map[string]map[*rcaInstance]struct{})
 }
@@ -106,8 +116,7 @@ func (s *Service) updateTaskRCAState(taskID string, status model.RCAStatus, errM
 	}
 
 	// 2. 更新任务库（若磁盘物理文件不存在，绝不调用 GetOrCreateTaskDB 重建空库）
-	dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", taskID))
-	if _, statErr := os.Stat(dbPath); statErr != nil {
+	if _, statErr := os.Stat(storage.TaskDBPath(s.taskDir, taskID)); statErr != nil {
 		return
 	}
 
@@ -251,12 +260,17 @@ func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 	}()
 }
 
-// fetchNormLogsForRCA 使用 keyset 分页（id > ? LIMIT batchSize）按批次拉取待分析日志，
-// 批次间自动释放连接，彻底消除长游标扫描对前台连接池的占用
+// fetchNormLogsForRCA 使用 keyset 复合游标 (timestamp, id) 分页拉取待分析日志，
+// 批次间自动释放连接，彻底消除长游标扫描对前台连接池的占用。
+//
+// 游标语义说明：样本按 (timestamp, id) 升序截取，多文件乱序导入时
+// 保证"时间最早的 N 行"而非"入库顺序最早的 N 行"（后者会让截断样本不可控）。
+// 支撑索引 idx_log_records_time_id 由 ensureTaskIndexes 维护。
 func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.NormalizedLog, bool, error) {
 	const batchSize = 5000
 	var list []*model.NormalizedLog
-	var lastID uint = 0
+	var lastTS time.Time
+	var lastID uint
 	truncated := false
 
 	for {
@@ -271,13 +285,14 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 			limit = maxRCALogs - len(list)
 		}
 
+		query := taskDB.WithContext(ctx).Model(&model.LogRecord{}).
+			Where("(knowledge_id > 0 OR severity <= ?)", rcaSeverityThreshold)
+		if !lastTS.IsZero() {
+			query = query.Where("(timestamp > ? OR (timestamp = ? AND id > ?))", lastTS, lastTS, lastID)
+		}
+
 		var records []model.LogRecord
-		err := taskDB.WithContext(ctx).Model(&model.LogRecord{}).
-			Where("(knowledge_id > 0 OR severity <= ?) AND id > ?", rcaSeverityThreshold, lastID).
-			Order("id asc").
-			Limit(limit).
-			Find(&records).Error
-		if err != nil {
+		if err := query.Order("timestamp asc, id asc").Limit(limit).Find(&records).Error; err != nil {
 			return nil, false, err
 		}
 
@@ -286,9 +301,11 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 		}
 
 		for _, rec := range records {
-			if rec.ID > lastID {
-				lastID = rec.ID
-			}
+			// 游标必须取本批最后一条记录的 (timestamp, id)。
+			// 复合排序下"批内最大 id" ≠ "尾行 id"（入库顺序与时间顺序无关），
+			// 取最大 id 会把同时间戳的未读行错误排除在下一批之外
+			lastTS = rec.Timestamp
+			lastID = rec.ID
 			var params map[string]string
 			if rec.ParametersJSON != "" {
 				_ = json.Unmarshal([]byte(rec.ParametersJSON), &params)
@@ -313,12 +330,15 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 		}
 
 		if len(list) >= maxRCALogs {
-			var countMore int64
+			// 截断探测：LIMIT 1 的存在性探测。
+			// 此前用 Count() 探测，聚合函数不受 LIMIT 约束，命中上限时会额外全尾扫描一遍。
+			var probe []uint
 			_ = taskDB.WithContext(ctx).Model(&model.LogRecord{}).
-				Where("(knowledge_id > 0 OR severity <= ?) AND id > ?", rcaSeverityThreshold, lastID).
+				Where("(knowledge_id > 0 OR severity <= ?) AND (timestamp > ? OR (timestamp = ? AND id > ?))",
+					rcaSeverityThreshold, lastTS, lastTS, lastID).
 				Limit(1).
-				Count(&countMore).Error
-			if countMore > 0 {
+				Pluck("id", &probe).Error
+			if len(probe) > 0 {
 				truncated = true
 				logger.Log.Warnf("[Task Service] RCA sample size exceeded max limit (%d), truncating subsequent records", maxRCALogs)
 			}
@@ -333,19 +353,28 @@ func fetchNormLogsForRCA(ctx context.Context, taskDB *gorm.DB) ([]*model.Normali
 	return list, truncated, nil
 }
 
-// executeRCAPipeline 执行 RCA 分析核心流水线与短事务落库
-func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *rcaInstance) {
-	// 阶段 1 前置检查：任务是否已在全局库中删除，或物理库已被移除
+// rcaTargetAlive 确认任务仍存活于全局库且任务库物理文件未被并发删除。
+// 收敛 executeRCAPipeline 中分散的存在性守卫（3 处 os.Stat + 2 处 Count），
+// stage 仅用于区分日志语境。
+func (s *Service) rcaTargetAlive(taskID string, stage string) bool {
 	if s.globalDB != nil {
 		var exists int64
 		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Count(&exists).Error; err != nil || exists == 0 {
-			logger.Log.Infof("[Task Service] Task %s not found in global db, skipping RCA pipeline", taskID)
-			return
+			logger.Log.Infof("[Task Service] Task %s not found in global db (%s), skipping RCA pipeline", taskID, stage)
+			return false
 		}
 	}
-	dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", taskID))
-	if _, statErr := os.Stat(dbPath); statErr != nil {
-		logger.Log.Infof("[Task Service] Task %s db file does not exist, skipping RCA pipeline", taskID)
+	if _, statErr := os.Stat(storage.TaskDBPath(s.taskDir, taskID)); statErr != nil {
+		logger.Log.Infof("[Task Service] Task %s db file does not exist (%s), skipping RCA pipeline", taskID, stage)
+		return false
+	}
+	return true
+}
+
+// executeRCAPipeline 执行 RCA 分析核心流水线与短事务落库
+func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *rcaInstance) {
+	// 阶段 1 前置检查：任务是否已在全局库中删除，或物理库已被移除
+	if !s.rcaTargetAlive(taskID, "pre-check") {
 		return
 	}
 
@@ -368,7 +397,7 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 
 	if fetchErr != nil {
 		if errors.Is(fetchErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) ||
-			!GlobalRCAScheduler.isCurrentInstance(taskID, inst) || strings.Contains(fetchErr.Error(), "closed") {
+			!GlobalRCAScheduler.isCurrentInstance(taskID, inst) || storage.IsTaskDBClosed(fetchErr) {
 			logger.Log.Infof("[Task Service] RCA fetch canceled/aborted for task %s", taskID)
 			return
 		}
@@ -388,6 +417,15 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	// 阶段 2: 密集拓扑计算 (纯内存计算，不占数据库连接)
 	res := s.rcaEngine.AnalyzeWithContext(ctx, normLogs, 300)
 
+	// 第二道防线（P0）：无论引擎内部是否正确标记截断，只要计算上下文已超时，
+	// 一律按截断处理，杜绝引擎遗漏时把"超时"当作"完整完成"落库
+	if ctx.Err() != nil && !res.Truncated {
+		res.Truncated = true
+		if res.Err == nil {
+			res.Err = ctx.Err()
+		}
+	}
+
 	// 检查点：是否已被新触发实例取代或取消
 	if !GlobalRCAScheduler.isCurrentInstance(taskID, inst) || ctx.Err() == context.Canceled {
 		logger.Log.Infof("[Task Service] Task %s worker gen=%d canceled/superseded after analysis", taskID, inst.gen)
@@ -395,15 +433,7 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	}
 
 	// 阶段 3 前置检查：再次确认物理文件与全局任务未被并发删除
-	if s.globalDB != nil {
-		var exists int64
-		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Count(&exists).Error; err != nil || exists == 0 {
-			logger.Log.Infof("[Task Service] Task %s deleted during calculation, aborting writeback", taskID)
-			return
-		}
-	}
-	if _, statErr := os.Stat(dbPath); statErr != nil {
-		logger.Log.Infof("[Task Service] Task %s db file removed during calculation, aborting writeback", taskID)
+	if !s.rcaTargetAlive(taskID, "post-calculation") {
 		return
 	}
 
@@ -452,14 +482,19 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	}
 
 	if res.Truncated || fetchTruncated {
+		// 三类截断分别给出准确文案：样本超限 / 事件数触顶 / 超时中断
 		errMsg := "分析达到超时上限，已保存部分结果"
-		if fetchTruncated {
+		switch {
+		case fetchTruncated:
 			errMsg = fmt.Sprintf("分析样本达到硬上限(%d行)，已保存前%d行分析结果", maxRCALogs, maxRCALogs)
-		} else if res.Err != nil && !errors.Is(res.Err, context.DeadlineExceeded) && !errors.Is(res.Err, context.Canceled) {
+		case errors.Is(res.Err, rootcause.ErrEventCap):
+			errMsg = fmt.Sprintf("根因事件数量达到单次分析上限，已保存前%d条结果，可通过缩小日志范围后重跑", len(res.Events))
+		case res.Err != nil && !errors.Is(res.Err, context.DeadlineExceeded) && !errors.Is(res.Err, context.Canceled):
 			errMsg = fmt.Sprintf("分析超时中断: %v", res.Err)
 		}
 		s.updateTaskRCAState(taskID, model.RCAStatusTimeout, errMsg, analyzedUntil, len(res.Events))
-		logger.Log.Warnf("[Task Service] RCA finished with TIMEOUT for task %s: %d events saved (fetchTruncated=%v)", taskID, len(res.Events), fetchTruncated)
+		logger.Log.Warnf("[Task Service] RCA finished with TIMEOUT for task %s: %d events saved (fetchTruncated=%v, err=%v)",
+			taskID, len(res.Events), fetchTruncated, res.Err)
 	} else if res.Err != nil {
 		s.updateTaskRCAState(taskID, model.RCAStatusFailed, res.Err.Error(), analyzedUntil, len(res.Events))
 		logger.Log.Errorf("[Task Service] RCA failed for task %s: %v", taskID, res.Err)
@@ -467,6 +502,19 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 		s.updateTaskRCAState(taskID, model.RCAStatusCompleted, "", analyzedUntil, len(res.Events))
 		logger.Log.Infof("[Task Service] RCA completed successfully for task %s: %d events", taskID, len(res.Events))
 	}
+}
+
+// MarkRCAQueuedSync 同步把任务 RCA 状态落库为 QUEUED。
+//
+// P2 修复：TriggerTaskRCA 把 QUEUED 写入移到了 worker goroutine 内（且需等前代实例退出），
+// 而 ReanalyzeRCA 接口已同步返回 rca_status: QUEUED——存在窗口期"接口说 QUEUED、库里还是旧终态"，
+// 前端"重跑 RCA"按钮的 disabled 判据会短暂失效。API 层在触发后调用本方法立即落库，
+// 保证接口返回时数据库已处于 QUEUED/RUNNING 等进行中状态。
+func (s *Service) MarkRCAQueuedSync(taskID string) {
+	if !isValidTaskID(taskID) {
+		return
+	}
+	s.updateTaskRCAState(taskID, model.RCAStatusQueued, "", nil)
 }
 
 // WaitForTaskRCA 等待指定任务的 RCA 计算结束（供测试或单步调用使用）
@@ -493,7 +541,9 @@ func (s *Service) WaitForTaskRCA(taskID string, timeout time.Duration) bool {
 
 // ExecuteRCAPipelineForTest 供单元与集成测试直接验证流水线在特定 Context 下的行为
 func (s *Service) ExecuteRCAPipelineForTest(ctx context.Context, taskID string) {
-	dummyInst := &rcaInstance{gen: 0, done: make(chan struct{})}
+	// cancel 必须非 nil：一旦与 DeleteTask / force 重触发并发，
+	// CancelTaskRCA / TriggerTaskRCA 对该实例调用 inst.cancel() 会直接 nil panic
+	dummyInst := &rcaInstance{gen: 0, cancel: func() {}, done: make(chan struct{})}
 	defer close(dummyInst.done)
 
 	GlobalRCAScheduler.mu.Lock()
@@ -546,8 +596,7 @@ func (s *Service) RecoverDanglingRCATasks() error {
 		}).Error
 
 		// 开库前先检查物理文件是否存在，避免对已删除任务反向创建空库
-		dbPath := filepath.Join(s.taskDir, fmt.Sprintf("task_%s.db", t.TaskID))
-		if _, statErr := os.Stat(dbPath); statErr == nil {
+		if _, statErr := os.Stat(storage.TaskDBPath(s.taskDir, t.TaskID)); statErr == nil {
 			taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, t.TaskID)
 			if err == nil {
 				_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", t.TaskID).Updates(map[string]interface{}{

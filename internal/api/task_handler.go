@@ -514,6 +514,9 @@ func (h *TaskHandler) ReanalyzeRCA(c *gin.Context) {
 	}
 
 	h.taskSvc.TriggerTaskRCA(taskID, true)
+	// QUEUED 同步落库，消除"接口已返回 QUEUED、数据库仍是旧终态"的窗口期
+	// （worker 内部的 QUEUED 写入需等前代实例退出，可能滞后）
+	h.taskSvc.MarkRCAQueuedSync(taskID)
 	SuccessResponse(c, gin.H{
 		"task_id":    taskID,
 		"rca_status": model.RCAStatusQueued,

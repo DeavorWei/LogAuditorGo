@@ -233,10 +233,13 @@ func TestE2E_RCA_TimeoutCircuitBreakerAndTruncation(t *testing.T) {
 	svc.WaitForTaskRCA(taskInfo.TaskID, 5*time.Second)
 
 	// 模拟执行超时熔断场景：
-	// 使用 stepCancelContext，在引擎检查点调用达到第 15 次时精确触发超时熔断
+	// 使用 stepCancelContext，在引擎检查点调用达到第 45 次时精确触发超时熔断。
+	// 阈值说明：数据集中每个根因约挂 20 个衍生，第 15 次调用落在第一个根因的 BFS 中途
+	// （首事件尚未追加），会得到 0 个部分事件；阈值 45 保证至少 1 个事件完成后熔断，
+	// 使"部分结果不丢失"的断言真正有效
 	calcCtx := &stepCancelContext{
 		doneCh:    make(chan struct{}),
-		threshold: 15,
+		threshold: 45,
 	}
 
 	svc.ExecuteRCAPipelineForTest(calcCtx, taskInfo.TaskID)
@@ -276,6 +279,16 @@ func TestE2E_RCA_TimeoutCircuitBreakerAndTruncation(t *testing.T) {
 	}
 	if inTaskDB.RCAStatus != model.RCAStatusTimeout {
 		t.Errorf("expected RCAStatus in taskDB to be TIMEOUT, got %s", inTaskDB.RCAStatus)
+	}
+
+	// P3 补强：断言部分事件确实已落库且数量 > 0。
+	// 此前只断言状态与水位，未验证"部分结果不丢失"，超时熔断退化成"什么都不保存"时无法察觉。
+	var evCount int64
+	if err := taskDB.Model(&model.RCAEvent{}).Count(&evCount).Error; err != nil {
+		t.Fatalf("count RCA events failed: %v", err)
+	}
+	if evCount == 0 {
+		t.Errorf("expected partial RCA events persisted (>0) after midway timeout, got 0")
 	}
 }
 
@@ -363,10 +376,16 @@ func TestE2E_RCA_DatabaseConnectionIsolation(t *testing.T) {
 	}
 
 	var sb strings.Builder
-	for i := 0; i < 50; i++ {
-		sec := i * 5
-		sb.WriteString(fmt.Sprintf("Apr 15 2026 10:%02d:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", sec/60, sec%60, i*2+1))
-		sb.WriteString(fmt.Sprintf("Apr 15 2026 10:%02d:%02d CORE-SW-01 %%%%01BFD/2/BFD_SESS_DOWN(l)[%d]: Session down.\n", sec/60, (sec%60)+1, i*2+2))
+	// P2 补强：样本量提升到 2 万行（50 行无法验证任何规模化行为）。
+	// 20000 行 > keyset 批次上限 5000，RCA 拉取需 4 批分页；同时导入写事务与
+	// 后台 RCA 读/写事务真实重叠，验证 _txlock=immediate + DSN 级 PRAGMA 下的连接隔离。
+	const totalLines = 20000
+	for i := 0; i < totalLines/2; i++ {
+		elapsed := i * 5 // 距 10:00:00 的秒偏移
+		hh, mm, ss := 10+elapsed/3600, (elapsed%3600)/60, elapsed%60
+		sb.WriteString(fmt.Sprintf("Apr 15 2026 %02d:%02d:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", hh, mm, ss, i*2+1))
+		nh, nm, ns := 10+(elapsed+1)/3600, ((elapsed+1)%3600)/60, (elapsed+1)%60
+		sb.WriteString(fmt.Sprintf("Apr 15 2026 %02d:%02d:%02d CORE-SW-01 %%%%01BFD/2/BFD_SESS_DOWN(l)[%d]: Session down.\n", nh, nm, ns, i*2+2))
 	}
 	logContent := sb.String()
 
@@ -395,8 +414,8 @@ func TestE2E_RCA_DatabaseConnectionIsolation(t *testing.T) {
 				errCh <- fmt.Errorf("concurrent QueryLogs iteration %d failed: %w", iter, qErr)
 				return
 			}
-			if total < 100 || len(logs) < 10 {
-				errCh <- fmt.Errorf("unexpected query result: total=%d, logs=%d", total, len(logs))
+			if total < totalLines || len(logs) < 10 {
+				errCh <- fmt.Errorf("unexpected query result: total=%d (want >= %d), logs=%d", total, totalLines, len(logs))
 			}
 		}(i)
 	}

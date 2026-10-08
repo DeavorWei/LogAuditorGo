@@ -2,10 +2,13 @@ package storage
 
 import (
 	"container/list"
+	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +22,27 @@ import (
 )
 
 var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
+
+// ErrTaskDBClosed 任务库连接已被驱逐/关闭的哨兵错误。
+//
+// EvictTaskDB 强制关闭在途连接后，正在执行的查询收到底层驱动错误
+// （"database is closed" / sql.ErrConnDone），驱动错误无法改写为哨兵本身，
+// 因此 IsTaskDBClosed 采用 errors.Is + 驱动错误特征双保险判定，
+// 取代调用方各自 strings.Contains(err, "closed") 的脆匹配。
+var ErrTaskDBClosed = errors.New("task db closed or evicted")
+
+// IsTaskDBClosed 判定错误是否由任务库连接被驱逐/关闭引起
+func IsTaskDBClosed(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrTaskDBClosed) || errors.Is(err, sql.ErrConnDone) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is closed") ||
+		strings.Contains(msg, "sql: connection is already closed")
+}
 
 // 连接池规模与生命周期相关常量。
 // KB-06: 原实现用裸 map 缓存 *gorm.DB，池满时用 `for range map` 随机挑 16 个直接 Close，
@@ -317,6 +341,26 @@ func (p *TaskDBPool) closeEntry(entry *dbEntry) {
 	}
 }
 
+// taskDBDSN 构造任务库的连接 DSN。
+//
+// P1 修复：PRAGMA 是连接级设置，`sqlDB.Exec` 只作用于当时取到的那一条连接，
+// 连接池扩到 4 条后，第 2/3/4 条连接会带着默认值出生（synchronous=FULL、
+// foreign_keys=off、cache_size 2MB）。这里把全部 PRAGMA 迁入 DSN，
+// 驱动在 newConn→applyQueryParams 中对每一条新连接逐个应用（已核实 glebarez/go-sqlite v1.21.2）。
+//
+// _txlock=immediate 让写事务在 BEGIN 阶段即取写锁：deferred 事务升级写锁时
+// 遇到并发写会立刻返回 SQLITE_BUSY_SNAPSHOT（该错误不触发 busy handler），
+// immediate + busy_timeout 则退化为"排队等待"而非"立即失败"。
+func taskDBDSN(dbPath string) string {
+	return dbPath +
+		"?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_pragma=cache_size(-32000)" + // 32MB 页缓存
+		"&_txlock=immediate"
+}
+
 // openTaskDB 打开（必要时创建）任务库并施加 SQLite 调优参数与表结构迁移
 func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	if err := os.MkdirAll(taskDir, 0755); err != nil {
@@ -324,7 +368,7 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	}
 
 	dbPath := TaskDBPath(taskDir, taskID)
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(taskDBDSN(dbPath)), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
@@ -334,20 +378,6 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	sqlDB, err := db.DB()
 	if err != nil {
 		return nil, fmt.Errorf("get sql.DB failed: %w", err)
-	}
-
-	// pragmas 统一在此处维护，避免在 DSN 与 Exec 两处重复设置且互相覆盖
-	pragmas := []string{
-		"PRAGMA journal_mode = WAL;",
-		"PRAGMA synchronous = NORMAL;",
-		"PRAGMA busy_timeout = 5000;",
-		"PRAGMA cache_size = -32000;", // 32MB 缓存
-		"PRAGMA foreign_keys = ON;",
-	}
-	for _, p := range pragmas {
-		if _, err := sqlDB.Exec(p); err != nil {
-			logger.Log.Warnf("exec pragma '%s' on task db failed: %v", p, err)
-		}
 	}
 
 	sqlDB.SetMaxOpenConns(4) // WAL 模式下多读单写安全，前后台并发隔离杜绝排队
@@ -382,6 +412,9 @@ func ensureTaskIndexes(db *gorm.DB) error {
 		"CREATE INDEX IF NOT EXISTS idx_log_records_device_time ON log_records(device_id, timestamp)",
 		"CREATE INDEX IF NOT EXISTS idx_log_records_device_kb ON log_records(device_id, knowledge_id)",
 		"CREATE INDEX IF NOT EXISTS idx_log_records_module ON log_records(module)",
+		// RCA keyset 分页游标 (timestamp, id) 的支撑索引，
+		// 保证 "WHERE (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp, id" 不退化为全表排序
+		"CREATE INDEX IF NOT EXISTS idx_log_records_time_id ON log_records(timestamp, id)",
 	}
 	for _, stmt := range indexes {
 		if err := db.Exec(stmt).Error; err != nil {
