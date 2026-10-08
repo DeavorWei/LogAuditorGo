@@ -29,8 +29,8 @@ type MultiDeviceLogFilter struct {
 	Briefs     []string   `json:"briefs"`      // 助记符/事件简名过滤
 	Severity   *int       `json:"severity"`    // 严重级别过滤 (<= Severity)
 	Keyword    string     `json:"keyword"`     // 报文关键词检索
-	TimeStart  *time.Time `json:"time_start"`  // 开始时间
-	TimeEnd    *time.Time `json:"time_end"`    // 结束时间
+	TimeStart  *CustomTime `json:"time_start"`  // 开始时间
+	TimeEnd    *CustomTime `json:"time_end"`    // 结束时间
 	Page       int        `json:"page"`        // 分页页码
 	PageSize   int        `json:"page_size"`   // 每页数量 (<=0 表示导出全量，受服务端硬上限约束)
 	AscOrder   bool       `json:"asc_order"`   // 是否按时间升序排列 (时间线通常需要升序)

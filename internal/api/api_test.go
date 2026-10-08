@@ -1273,4 +1273,108 @@ func TestReanalyzeRCARoute(t *testing.T) {
 	}
 }
 
+func TestDeviceTimeline_TimeFilterFormats(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_time_filter_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. 创建任务并准备数据
+	taskInfo, err := taskSvc.CreateEmptyTask("TimelineFilterTest", "CloudEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+	_ = globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Update("status", model.TaskStatusCompleted).Error
+
+	timeFormats := []struct {
+		name      string
+		timeStart string
+		timeEnd   string
+	}{
+		{
+			name:      "Standard Space-Separated DateTime (User bug scenario)",
+			timeStart: "2026-08-08 18:00:00",
+			timeEnd:   "2026-08-08 23:59:59",
+		},
+		{
+			name:      "RFC3339 with timezone",
+			timeStart: "2026-08-08T18:00:00+08:00",
+			timeEnd:   "2026-08-08T23:59:59+08:00",
+		},
+		{
+			name:      "RFC3339 UTC",
+			timeStart: "2026-08-08T10:00:00Z",
+			timeEnd:   "2026-08-08T15:59:59Z",
+		},
+		{
+			name:      "Date only",
+			timeStart: "2026-08-08",
+			timeEnd:   "2026-08-09",
+		},
+	}
+
+	for _, tc := range timeFormats {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := map[string]interface{}{
+				"time_start": tc.timeStart,
+				"time_end":   tc.timeEnd,
+				"page":       1,
+				"page_size":  10,
+			}
+			bodyBytes, _ := json.Marshal(payload)
+
+			req, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskInfo.TaskID+"/multi-device/timeline", bytes.NewReader(bodyBytes))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for time format %s, got %d, body: %s", tc.name, rec.Code, rec.Body.String())
+			}
+
+			// 测试 QueryMultiDeviceLogs (/multi-device/logs)
+			reqLogs, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskInfo.TaskID+"/multi-device/logs", bytes.NewReader(bodyBytes))
+			reqLogs.Header.Set("Content-Type", "application/json")
+			recLogs := httptest.NewRecorder()
+			router.ServeHTTP(recLogs, reqLogs)
+
+			if recLogs.Code != http.StatusOK {
+				t.Fatalf("expected 200 OK for multi-device/logs %s, got %d, body: %s", tc.name, recLogs.Code, recLogs.Body.String())
+			}
+		})
+	}
+}
+
+
 

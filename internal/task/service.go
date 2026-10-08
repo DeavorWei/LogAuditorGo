@@ -618,11 +618,11 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 			query = query.Where("knowledge_id = 0 OR knowledge_id IS NULL")
 		}
 	}
-	if filter.TimeStart != nil {
-		query = query.Where("timestamp >= ?", *filter.TimeStart)
+	if filter.TimeStart != nil && !filter.TimeStart.IsZero() {
+		query = query.Where("timestamp >= ?", filter.TimeStart.Time)
 	}
-	if filter.TimeEnd != nil {
-		query = query.Where("timestamp <= ?", *filter.TimeEnd)
+	if filter.TimeEnd != nil && !filter.TimeEnd.IsZero() {
+		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
 	}
 
 	var total int64
@@ -723,11 +723,11 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 			query = query.Where("knowledge_id = 0 OR knowledge_id IS NULL")
 		}
 	}
-	if filter.TimeStart != nil {
-		query = query.Where("timestamp >= ?", *filter.TimeStart)
+	if filter.TimeStart != nil && !filter.TimeStart.IsZero() {
+		query = query.Where("timestamp >= ?", filter.TimeStart.Time)
 	}
-	if filter.TimeEnd != nil {
-		query = query.Where("timestamp <= ?", *filter.TimeEnd)
+	if filter.TimeEnd != nil && !filter.TimeEnd.IsZero() {
+		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
 	}
 
 	rows, err := query.Order("id asc").Rows()
@@ -1593,11 +1593,11 @@ func (s *Service) QueryMultiDeviceLogs(taskID string, filter model.MultiDeviceLo
 	if filter.Keyword != "" {
 		query = applyKeywordFilter(query, filter.Keyword)
 	}
-	if filter.TimeStart != nil {
-		query = query.Where("timestamp >= ?", *filter.TimeStart)
+	if filter.TimeStart != nil && !filter.TimeStart.IsZero() {
+		query = query.Where("timestamp >= ?", filter.TimeStart.Time)
 	}
-	if filter.TimeEnd != nil {
-		query = query.Where("timestamp <= ?", *filter.TimeEnd)
+	if filter.TimeEnd != nil && !filter.TimeEnd.IsZero() {
+		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
 	}
 
 	var total int64

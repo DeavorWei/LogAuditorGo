@@ -6,7 +6,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -419,17 +418,17 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		matchedPtr = &m
 	}
 
-	var timeStart *time.Time
+	var timeStart *model.CustomTime
 	if tsStr := c.Query("time_start"); tsStr != "" {
-		if ts, err := time.Parse("2006-01-02 15:04:05", tsStr); err == nil {
-			timeStart = &ts
+		if ct, err := model.ParseCustomTime(tsStr); err == nil {
+			timeStart = ct
 		}
 	}
 
-	var timeEnd *time.Time
+	var timeEnd *model.CustomTime
 	if teStr := c.Query("time_end"); teStr != "" {
-		if te, err := time.Parse("2006-01-02 15:04:05", teStr); err == nil {
-			timeEnd = &te
+		if ct, err := model.ParseCustomTime(teStr); err == nil {
+			timeEnd = ct
 		}
 	}
 

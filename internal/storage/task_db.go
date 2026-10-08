@@ -92,11 +92,17 @@ type dbEntry struct {
 //     从而保证 Windows 上 os.Remove 时不会遇到句柄占用；
 //  3. 池满时按 LRU 淘汰"空闲且未被引用"的条目，永不关闭在途连接。
 type TaskDBPool struct {
-	mu       sync.Mutex
-	maxSize  int
-	idleTime time.Duration
-	entries  map[string]*dbEntry
-	order    *list.List // front = 最近使用
+	mu        sync.Mutex
+	maxSize   int
+	idleTime  time.Duration
+	entries   map[string]*dbEntry
+	order     *list.List // front = 最近使用
+	initLocks sync.Map   // taskID -> *sync.Mutex: 串行化同一任务库的打开与 AutoMigrate，杜绝并发建库冲突
+}
+
+func (p *TaskDBPool) getInitLock(taskID string) *sync.Mutex {
+	actual, _ := p.initLocks.LoadOrStore(taskID, &sync.Mutex{})
+	return actual.(*sync.Mutex)
 }
 
 // NewTaskDBPool 创建任务库连接池
@@ -135,36 +141,47 @@ func (p *TaskDBPool) AcquireTaskDB(taskDir string, taskID string) (*gorm.DB, err
 	}
 	p.mu.Unlock()
 
-	// 未命中：在锁外完成建库、PRAGMA 与 AutoMigrate 等重 I/O，避免长时间持锁阻塞其他任务
+	// 未命中缓存：按 taskID 获取互斥锁，确保同一任务库在任何时刻只有一个 goroutine 执行 openTaskDB / AutoMigrate
+	initLock := p.getInitLock(taskID)
+	initLock.Lock()
+	defer initLock.Unlock()
+
+	// 获取锁后进行二次检查（排在前方的并发 goroutine 可能已经完成初始化并入池）
+	p.mu.Lock()
+	if entry, ok := p.entries[taskID]; ok && !entry.closing {
+		atomic.AddInt32(&entry.refCount, 1)
+		entry.lastUsed = time.Now()
+		p.order.MoveToFront(entry.elem)
+		p.mu.Unlock()
+		return entry.db, nil
+	}
+	p.mu.Unlock()
+
+	// 此时持有该 taskID 的互斥锁，安全地在锁外完成建库、PRAGMA 与 AutoMigrate
 	db, err := openTaskDB(taskDir, taskID)
 	if err != nil {
 		return nil, err
 	}
 
 	p.mu.Lock()
-	// 双重检查：可能在建库期间已被其他 goroutine 创建
-	if entry, ok := p.entries[taskID]; ok && !entry.closing {
-		p.mu.Unlock()
-		// 丢弃本次新建的连接，复用池中已有连接
-		if sqlDB, err := db.DB(); err == nil {
-			_ = sqlDB.Close()
-		}
-		atomic.AddInt32(&entry.refCount, 1)
-		return entry.db, nil
-	}
-
 	// 有条目正在被驱逐（closing）时，先把它彻底清理掉，避免同一 taskID 两套句柄
 	if pending, ok := p.entries[taskID]; ok {
 		p.removeLocked(taskID, pending)
 		p.closeEntry(pending)
 	}
 
-	p.evictIdleLocked()
+	evicted := p.evictIdleLocked()
 
 	entry := &dbEntry{db: db, refCount: 1, lastUsed: time.Now()}
 	entry.elem = p.order.PushFront(taskID)
 	p.entries[taskID] = entry
 	p.mu.Unlock()
+
+	// 发生 LRU 淘汰后，在锁外顺便回收已不在池中的锁对象，防止 initLocks 内存膨胀
+	if evicted {
+		p.CleanUnusedInitLocks()
+	}
+
 	return db, nil
 }
 
@@ -206,6 +223,14 @@ func (p *TaskDBPool) EvictTaskDB(taskID string) error {
 	if !isValidTaskID(taskID) {
 		return fmt.Errorf("invalid task id: %s", taskID)
 	}
+
+	// 互斥正在进行中的建库/迁移 (AcquireTaskDB)，防止删库与建库并发导致幽灵连接入池
+	initLock := p.getInitLock(taskID)
+	initLock.Lock()
+	defer func() {
+		p.initLocks.Delete(taskID)
+		initLock.Unlock()
+	}()
 
 	p.mu.Lock()
 	entry, ok := p.entries[taskID]
@@ -257,6 +282,41 @@ func (p *TaskDBPool) CloseAll() {
 	for _, entry := range snapshot {
 		p.closeEntry(entry)
 	}
+
+	p.initLocks.Range(func(key, _ any) bool {
+		p.initLocks.Delete(key)
+		return true
+	})
+}
+
+// CleanUnusedInitLocks 扫描并清理已不在池中且当前无竞争的初始化锁
+func (p *TaskDBPool) CleanUnusedInitLocks() {
+	p.initLocks.Range(func(key, value any) bool {
+		taskID, ok := key.(string)
+		if !ok {
+			return true
+		}
+		lock, ok := value.(*sync.Mutex)
+		if !ok {
+			return true
+		}
+
+		// 若当前有协程持有该锁（TryLock 失败），说明正在建库或驱逐中，跳过
+		if !lock.TryLock() {
+			return true
+		}
+		defer lock.Unlock()
+
+		p.mu.Lock()
+		_, inPool := p.entries[taskID]
+		p.mu.Unlock()
+
+		// 不在池中且没有在途竞争，可以安全释放锁对象
+		if !inPool {
+			p.initLocks.Delete(taskID)
+		}
+		return true
+	})
 }
 
 // Stats 返回当前池的规模快照，便于测试与排障
@@ -273,8 +333,8 @@ func (p *TaskDBPool) Stats() (size int, inUse int) {
 }
 
 // evictIdleLocked 在插入新条目之前，按 LRU 淘汰"未被引用且已空闲"的条目。
-// 与旧实现的关键区别：只淘汰空闲条目，绝不关闭在途连接。
-func (p *TaskDBPool) evictIdleLocked() {
+// 与旧实现的关键区别：只淘汰空闲条目，绝不关闭在途连接。返回是否实际淘汰了条目。
+func (p *TaskDBPool) evictIdleLocked() bool {
 	now := time.Now()
 	// 至少淘汰到 poolEvictTarget，避免每次插入都触发一轮淘汰
 	target := p.maxSize - 1
@@ -282,17 +342,20 @@ func (p *TaskDBPool) evictIdleLocked() {
 		target = poolEvictTarget
 	}
 
+	evicted := false
 	for len(p.entries) >= p.maxSize {
 		victimID, victim := p.pickEvictableLocked(now)
 		if victim == nil {
-			return // 全部在途，宁可超限也不关闭正在使用的连接
+			return evicted // 全部在途，宁可超限也不关闭正在使用的连接
 		}
 		p.removeLocked(victimID, victim)
 		p.closeEntry(victim)
+		evicted = true
 		if len(p.entries) <= target {
-			return
+			return evicted
 		}
 	}
+	return evicted
 }
 
 // pickEvictableLocked 从 LRU 尾部（最久未使用）开始寻找可安全淘汰的条目
@@ -392,8 +455,12 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		&model.RCAEvent{},
 		&model.Device{},
 	); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("auto migrate task tables failed: %w", err)
+		if strings.Contains(err.Error(), "duplicate column name") {
+			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered duplicate column, safely ignored: %v", taskID, err)
+		} else {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("auto migrate task tables failed: %w", err)
+		}
 	}
 
 	// DEV-12: 补齐多设备与时序查询所需的复合索引。

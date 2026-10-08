@@ -83,8 +83,8 @@ type LogQueryFilter struct {
 	Keyword    string     `form:"keyword" json:"keyword"`
 	SourceFile string     `form:"source_file" json:"source_file"`
 	Matched    *bool      `form:"matched" json:"matched"`
-	TimeStart  *time.Time `form:"time_start" json:"time_start"`
-	TimeEnd    *time.Time `form:"time_end" json:"time_end"`
+	TimeStart  *CustomTime `form:"time_start" json:"time_start"`
+	TimeEnd    *CustomTime `form:"time_end" json:"time_end"`
 
 	// AfterID 游标分页锚点 (TASK-13)。
 	//
