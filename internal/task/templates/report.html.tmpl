@@ -65,6 +65,13 @@
       <div class="rca-action"><strong>官方建议排查方案：</strong>{{ .RecommendedAction }}</div>
     </div>
 {{ end }}  </div>
+{{ else if or (eq .Task.RCAStatus "QUEUED") (eq .Task.RCAStatus "RUNNING") }}
+  <div class="section">
+    <h2>🎯 根因分析（RCA）排查建议</h2>
+    <div style="padding: 12px 16px; border-left: 4px solid #3b82f6; background: #eff6ff; color: #1e40af; font-size: 13px;">
+      ⏳ RCA 拓扑尚在后台生成中，日志与知识库匹配已就绪。可在工作台完成分析后重新导出获取完整拓扑建议。
+    </div>
+  </div>
 {{ end }}
 {{ if .Devices }}
   <div class="section">

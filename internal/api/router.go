@@ -155,6 +155,7 @@ func SetupRouter(
 		v1.GET("/tasks/:id/modules", taskHandler.GetTaskModules)
 		v1.POST("/tasks/:id/reanalyze", taskHandler.ReanalyzeTask)
 		v1.GET("/tasks/:id/rca", taskHandler.GetRCA)
+		v1.POST("/tasks/:id/rca/reanalyze", taskHandler.ReanalyzeRCA)
 		v1.GET("/tasks/:id/export", taskHandler.ExportReport)
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
 

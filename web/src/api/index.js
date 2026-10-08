@@ -216,6 +216,10 @@ export default {
   getTaskRCA(taskId, options = {}) {
     return request.get(`/tasks/${taskId}/rca`, options)
   },
+  // 仅重新计算 RCA 根因拓扑
+  reanalyzeTaskRCA(taskId) {
+    return request.post(`/tasks/${taskId}/rca/reanalyze`)
+  },
   deleteTask(taskId) {
     return request.delete(`/tasks/${taskId}`)
   },

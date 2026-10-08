@@ -77,7 +77,28 @@
         <el-radio-button :label="VIEW_MODE.RCA">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Aim /></el-icon>
           <span>RCA 故障联动</span>
-          <el-badge v-if="currentTask && currentTask.rca_count" :value="currentTask.rca_count" type="danger" style="margin-left: 6px;" />
+          <el-tooltip
+            v-if="currentTask && (currentTask.rca_status === 'QUEUED' || currentTask.rca_status === 'RUNNING')"
+            content="根因拓扑正在后台推导中，工作台已就绪可正常审计"
+            placement="top"
+          >
+            <el-icon class="is-loading" style="margin-left: 6px; color: #409eff; vertical-align: middle;"><Loading /></el-icon>
+          </el-tooltip>
+          <el-tag
+            v-else-if="currentTask && currentTask.rca_status === 'TIMEOUT'"
+            type="warning"
+            size="small"
+            effect="dark"
+            style="margin-left: 6px; border-radius: 10px; font-size: 11px; padding: 0 6px;"
+          >
+            {{ currentTask.rca_count || 0 }}条 (超时截断)
+          </el-tag>
+          <el-badge
+            v-else-if="currentTask && currentTask.rca_count"
+            :value="currentTask.rca_count"
+            type="danger"
+            style="margin-left: 6px;"
+          />
         </el-radio-button>
         <el-radio-button :label="VIEW_MODE.MULTI_REPORT">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
@@ -119,6 +140,7 @@
         ref="rcaCenterRef"
         :task-id="currentTaskId"
         @jump-to-log="handleJumpToLog"
+        @task-updated="handleTaskMetadataUpdated"
       />
     </div>
 
@@ -707,10 +729,10 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, watch } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity, Loading } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
@@ -1206,14 +1228,56 @@ const fetchTasks = async () => {
     }
     // 同步 currentTask 快照，避免列表刷新后标题栏仍显示旧任务名
     currentTask.value = taskList.value.find(t => t.task_id === currentTaskId.value) || null
+    checkAndPollRcaStatus()
   } catch (e) {
     // 错误已由 api 拦截器统一弹出
   }
 }
 
+let rcaPollTimer = null
+
+const stopRcaPolling = () => {
+  if (rcaPollTimer) {
+    clearInterval(rcaPollTimer)
+    rcaPollTimer = null
+  }
+}
+
+const checkAndPollRcaStatus = () => {
+  stopRcaPolling()
+  if (currentTask.value && (currentTask.value.rca_status === 'QUEUED' || currentTask.value.rca_status === 'RUNNING')) {
+    rcaPollTimer = setInterval(async () => {
+      if (!currentTaskId.value) return
+      try {
+        const res = await api.getTask(currentTaskId.value)
+        if (res && res.code === 0) {
+          handleTaskMetadataUpdated(res.data)
+          if (res.data.rca_status !== 'QUEUED' && res.data.rca_status !== 'RUNNING') {
+            stopRcaPolling()
+          }
+        }
+      } catch (e) {}
+    }, 3000)
+  }
+}
+
+const handleTaskMetadataUpdated = (updatedTask) => {
+  if (!updatedTask || updatedTask.task_id !== currentTaskId.value) return
+  currentTask.value = updatedTask
+  const idx = taskList.value.findIndex(t => t.task_id === updatedTask.task_id)
+  if (idx !== -1) {
+    taskList.value[idx] = { ...taskList.value[idx], ...updatedTask }
+  }
+}
+
+onUnmounted(() => {
+  stopRcaPolling()
+})
+
 const handleTaskChange = async (taskId) => {
   currentTaskId.value = taskId
   currentTask.value = taskList.value.find(t => t.task_id === taskId)
+  checkAndPollRcaStatus()
   filter.value.page = 1
   filter.value.sourceFile = ''
   filter.value.deviceId = null

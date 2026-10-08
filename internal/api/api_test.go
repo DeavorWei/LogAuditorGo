@@ -979,6 +979,7 @@ func TestTaskAPIValidation(t *testing.T) {
 			{"POST", "/api/v1/tasks/" + badID + "/import"},
 			{"GET", "/api/v1/tasks/" + badID + "/logs"},
 			{"GET", "/api/v1/tasks/" + badID + "/rca"},
+			{"POST", "/api/v1/tasks/" + badID + "/rca/reanalyze"},
 			{"GET", "/api/v1/tasks/" + badID + "/export"},
 			{"DELETE", "/api/v1/tasks/" + badID},
 		}
@@ -1179,6 +1180,96 @@ func TestTaskPathImport(t *testing.T) {
 
 	if res2.Data.LogCount != 3 || res2.Data.FileCount != 3 {
 		t.Errorf("expected 3 logs and 3 files after import, got logs=%d, files=%d", res2.Data.LogCount, res2.Data.FileCount)
+	}
+}
+
+func TestReanalyzeRCARoute(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_rca_reanalyze_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 1. 创建任务并模拟处于 COMPLETED 状态
+	taskInfo, err := taskSvc.CreateEmptyTask("Test-RCA-Reanalyze", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+	_ = globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Update("status", model.TaskStatusCompleted).Error
+
+	// 2. 调用 POST /api/v1/tasks/:id/rca/reanalyze
+	req, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskInfo.TaskID+"/rca/reanalyze", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for reanalyze rca, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. 测试 GET /api/v1/tasks/:id/rca 保持裸数组契约返回
+	reqGet, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskInfo.TaskID+"/rca", nil)
+	recGet := httptest.NewRecorder()
+	router.ServeHTTP(recGet, reqGet)
+
+	if recGet.Code != http.StatusOK {
+		t.Fatalf("expected 200 for get rca, got %d: %s", recGet.Code, recGet.Body.String())
+	}
+	var resGet struct {
+		Code int                      `json:"code"`
+		Data []model.EnrichedRCAEvent `json:"data"`
+	}
+	if err := json.Unmarshal(recGet.Body.Bytes(), &resGet); err != nil {
+		t.Fatalf("unmarshal get rca response failed: %v", err)
+	}
+	if resGet.Data == nil {
+		t.Errorf("expected non-nil data array")
+	}
+
+	// 4. 测试错误 taskID 格式校验
+	badReq, _ := http.NewRequest("POST", "/api/v1/tasks/short/rca/reanalyze", nil)
+	badRec := httptest.NewRecorder()
+	router.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for bad task id, got %d", badRec.Code)
+	}
+
+	// 5. 测试任务不存在 404
+	notFoundReq, _ := http.NewRequest("POST", "/api/v1/tasks/nonexistent123/rca/reanalyze", nil)
+	notFoundRec := httptest.NewRecorder()
+	router.ServeHTTP(notFoundRec, notFoundReq)
+	if notFoundRec.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for not found task, got %d", notFoundRec.Code)
 	}
 }
 

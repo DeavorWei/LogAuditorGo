@@ -472,13 +472,23 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	})
 }
 
-// GetRCA 获取任务 RCA 事件 (返回包含根因与级联时序日志元数据的完整实体)
+// GetRCA 获取任务 RCA 事件 (返回包含根因与级联时序日志元数据的完整实体，维持裸数组契约)
 func (h *TaskHandler) GetRCA(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
+	taskInfo, err := h.taskSvc.GetTaskByID(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusNotFound, -1, "Task not found")
+		return
+	}
+	if taskInfo.RCAStatus == model.RCAStatusQueued || taskInfo.RCAStatus == model.RCAStatusRunning {
+		SuccessResponse(c, []model.EnrichedRCAEvent{})
+		return
+	}
+
 	events, err := h.taskSvc.GetEnrichedRCAEvents(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
@@ -486,6 +496,30 @@ func (h *TaskHandler) GetRCA(c *gin.Context) {
 	}
 
 	SuccessResponse(c, events)
+}
+
+// ReanalyzeRCA 仅重跑 RCA 根因拓扑分析，不重复执行耗时的日志分词解析与知识库匹配
+func (h *TaskHandler) ReanalyzeRCA(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	taskInfo, err := h.taskSvc.GetTaskByID(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusNotFound, -1, "Task not found")
+		return
+	}
+	if taskInfo.Status != model.TaskStatusCompleted {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Task is not ready for RCA analysis")
+		return
+	}
+
+	h.taskSvc.TriggerTaskRCA(taskID, true)
+	SuccessResponse(c, gin.H{
+		"task_id":    taskID,
+		"rca_status": model.RCAStatusQueued,
+	}, "RCA analysis triggered successfully")
 }
 
 // ExportReport 导出分析报告

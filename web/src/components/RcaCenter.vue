@@ -25,13 +25,83 @@
       </div>
       <div class="bar-right">
         <el-button-group>
-          <el-button icon="Refresh" @click="fetchRCAEvents">刷新联动分析</el-button>
+          <el-button icon="Refresh" @click="fetchTaskAndRCA">刷新联动分析</el-button>
+          <el-button
+            type="warning"
+            plain
+            icon="Opportunity"
+            :loading="reanalyzing"
+            :disabled="isRcaRunning"
+            @click="handleReanalyzeRCA"
+          >
+            重跑 RCA
+          </el-button>
         </el-button-group>
       </div>
     </div>
 
+    <!-- 超时截断警示栏 -->
+    <el-alert
+      v-if="taskInfo?.rca_status === 'TIMEOUT'"
+      type="warning"
+      show-icon
+      :closable="false"
+      class="timeout-alert-bar"
+    >
+      <template #title>
+        <span style="font-weight: 600;">分析达到超时上限 (已安全中止并保存部分结果)</span>
+      </template>
+      <template #default>
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <span>
+            由于分析样本极大，本次分析在达到超时上限时安全中止。当前拓扑仅包含至
+            <strong>{{ rcaAnalyzedUntilText }}</strong> 前的故障链路，后续时段可能存在未识别事件。
+          </span>
+          <el-button type="warning" size="small" plain @click="handleReanalyzeRCA" :loading="reanalyzing">
+            重新计算 RCA
+          </el-button>
+        </div>
+      </template>
+    </el-alert>
+
+    <!-- 失败状态提示栏 -->
+    <el-alert
+      v-else-if="taskInfo?.rca_status === 'FAILED'"
+      type="error"
+      show-icon
+      :closable="false"
+      class="timeout-alert-bar"
+    >
+      <template #title>
+        <span style="font-weight: 600;">RCA 根因推导异常中断</span>
+      </template>
+      <template #default>
+        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+          <span>{{ taskInfo.rca_error_message || '计算过程发生异常' }}</span>
+          <el-button type="danger" size="small" plain @click="handleReanalyzeRCA" :loading="reanalyzing">
+            点击重试
+          </el-button>
+        </div>
+      </template>
+    </el-alert>
+
+    <!-- 正在计算中的骨架屏 -->
+    <el-card v-if="isRcaRunning" shadow="never" class="running-card">
+      <div class="running-header">
+        <el-icon class="is-loading" size="44" color="#0284c7"><Loading /></el-icon>
+        <h3 style="margin: 12px 0 6px 0; color: #0f172a;">根因拓扑正在后台推导中...</h3>
+        <p v-if="taskInfo?.rca_status === 'QUEUED'" class="running-tip">
+          当前任务正在排队等待并发计算槽位，工作台已就绪可正常审计浏览日志。
+        </p>
+        <p v-else class="running-tip">
+          正在基于全量时序关联与协议故障传播模型计算因果拓扑，完成后将自动刷新展示。
+        </p>
+      </div>
+      <el-skeleton :rows="7" animated style="margin-top: 24px;" />
+    </el-card>
+
     <!-- 无联动事件空状态 -->
-    <el-card v-if="!loading && rcaList.length === 0" shadow="never" class="empty-card">
+    <el-card v-else-if="!loading && rcaList.length === 0" shadow="never" class="empty-card">
       <el-empty description="当前任务尚未检测到协议级故障联动事件">
         <template #extra>
           <p class="empty-tip">
@@ -226,8 +296,9 @@
 
 <script setup>
 // UI-16: defineProps / defineEmits 是编译器宏，无需从 vue 导入
-import { ref, computed, onMounted, watch } from 'vue'
-import { Position } from '@element-plus/icons-vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { Position, Loading, Opportunity, Refresh } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import { useRequest } from '@/composables/useRequest'
@@ -239,13 +310,33 @@ const props = defineProps({
   }
 })
 
-const emit = defineEmits(['jump-to-log'])
+const emit = defineEmits(['jump-to-log', 'task-updated'])
 
 const loading = ref(false)
+const reanalyzing = ref(false)
+const taskInfo = ref(null)
 const rcaList = ref([])
 const selectedRCA = ref(null)
 const levelFilter = ref('ALL')
 const activeDetailTab = ref('dag')
+
+const formatDateTime = (val) => {
+  if (!val) return ''
+  const d = new Date(val)
+  if (isNaN(d.getTime())) return String(val)
+  const pad = (n) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
+
+const isRcaRunning = computed(() => {
+  const st = taskInfo.value?.rca_status
+  return st === 'QUEUED' || st === 'RUNNING'
+})
+
+const rcaAnalyzedUntilText = computed(() => {
+  if (!taskInfo.value?.rca_analyzed_until) return '未知时序边界'
+  return formatDateTime(taskInfo.value.rca_analyzed_until)
+})
 
 const totalCorrelatedLogs = computed(() => {
   return rcaList.value.reduce((acc, cur) => acc + (cur.correlated_count || 0), 0)
@@ -269,16 +360,47 @@ const filteredRcaList = computed(() => {
 // 失败提示由 api 拦截器统一弹出，这里不再重复 toast
 const { run: runFetchRCA } = useRequest(api.getTaskRCA)
 
+let pollTimer = null
+
+const stopPolling = () => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
+}
+
+const startPolling = () => {
+  stopPolling()
+  pollTimer = setInterval(async () => {
+    await loadTaskInfo()
+    if (!isRcaRunning.value) {
+      stopPolling()
+      fetchRCAEvents()
+    }
+  }, 3000)
+}
+
+const loadTaskInfo = async () => {
+  if (!props.taskId) return
+  try {
+    const res = await api.getTask(props.taskId)
+    if (res && res.code === 0) {
+      taskInfo.value = res.data
+      emit('task-updated', res.data)
+    }
+  } catch (e) {
+    // ignore
+  }
+}
+
 const fetchRCAEvents = async () => {
   if (!props.taskId) return
   loading.value = true
   try {
     const res = await runFetchRCA(props.taskId)
-    // 竞态守卫：请求被 newer 请求取消时返回 undefined，直接丢弃
     if (!res || res.code !== 0) return
     rcaList.value = res.data || []
     if (rcaList.value.length > 0) {
-      // 默认选中第一个
       if (!selectedRCA.value || !rcaList.value.find(e => e.id === selectedRCA.value.id)) {
         selectedRCA.value = rcaList.value[0]
       } else {
@@ -289,6 +411,33 @@ const fetchRCAEvents = async () => {
     }
   } finally {
     loading.value = false
+  }
+}
+
+const fetchTaskAndRCA = async () => {
+  await loadTaskInfo()
+  if (isRcaRunning.value) {
+    startPolling()
+  } else {
+    stopPolling()
+  }
+  await fetchRCAEvents()
+}
+
+const handleReanalyzeRCA = async () => {
+  if (!props.taskId) return
+  reanalyzing.value = true
+  try {
+    const res = await api.reanalyzeTaskRCA(props.taskId)
+    if (res && res.code === 0) {
+      ElMessage.success('已触发 RCA 重新推导，后台排队计算中')
+      await loadTaskInfo()
+      startPolling()
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '重跑 RCA 失败')
+  } finally {
+    reanalyzing.value = false
   }
 }
 
@@ -323,17 +472,20 @@ const jumpToAuditStream = (logId) => {
 
 watch(() => props.taskId, (newVal) => {
   if (newVal) {
-    fetchRCAEvents()
+    fetchTaskAndRCA()
   }
 })
 
 onMounted(() => {
-  fetchRCAEvents()
+  fetchTaskAndRCA()
 })
 
-// 供父组件主动刷新（替代 :key 强制重挂载，避免丢失选中项与滚动位置）
+onUnmounted(() => {
+  stopPolling()
+})
+
 defineExpose({
-  refresh: fetchRCAEvents
+  refresh: fetchTaskAndRCA
 })
 </script>
 
@@ -379,6 +531,28 @@ defineExpose({
 .text-danger { color: #dc2626; }
 .text-warning { color: #ea580c; }
 .text-success { color: #16a34a; }
+
+.timeout-alert-bar {
+  margin-bottom: 2px;
+  border-radius: 8px;
+}
+.running-card {
+  border-radius: 8px;
+  padding: 40px 30px;
+  text-align: center;
+}
+.running-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.running-tip {
+  max-width: 540px;
+  font-size: 13px;
+  color: #64748b;
+  line-height: 1.6;
+  margin-top: 4px;
+}
 
 .empty-card {
   border-radius: 8px;
