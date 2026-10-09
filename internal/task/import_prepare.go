@@ -206,6 +206,8 @@ func (s *Service) prepareBundles(
 				// 虽然旧日志无法自动恢复，但至少不会留下"新旧混杂"的错误数据 (TASK-02)。
 				addLog("info", "清理覆盖旧同名文件数据: %s", cleanName)
 				delErr := taskDB.Transaction(func(tx *gorm.DB) error {
+					// 双保险清理旧日志关联的标签，防止产生孤儿记录
+					_ = tx.Exec("DELETE FROM log_tag_relations WHERE log_id IN (SELECT id FROM log_records WHERE source_file = ?)", cleanName).Error
 					if err := tx.Where("source_file = ?", cleanName).Delete(&model.LogRecord{}).Error; err != nil {
 						return fmt.Errorf("delete old log records failed: %w", err)
 					}

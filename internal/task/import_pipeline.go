@@ -417,6 +417,7 @@ func (s *Service) persistFileBundle(
 
 	// 补偿清理：删掉该文件已入库的碎片与 TaskFile 空壳，避免留下"幽灵文件记录"
 	cleanup := func() {
+		_ = taskDB.Exec("DELETE FROM log_tag_relations WHERE log_id IN (SELECT id FROM log_records WHERE source_file = ?)", bundle.cleanName).Error
 		if delErr := taskDB.Where("source_file = ?", bundle.cleanName).Delete(&model.LogRecord{}).Error; delErr != nil {
 			logger.Log.Warnf("[Task Service] compensate delete log records of %s failed: %v", bundle.cleanName, delErr)
 		}

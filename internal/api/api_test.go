@@ -160,6 +160,26 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for /tasks/:id/logs, got %d", w4.Code)
 	}
 
+	// 4.0 测试 POST /api/v1/tasks/:id/logs/query 统一查询端点
+	queryBody := `{"page":1,"page_size":10,"advanced":{"logic":"AND","conditions":[{"field":"raw_log","op":"contains","value":"IF"}]}}`
+	req4Post, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/logs/query", strings.NewReader(queryBody))
+	req4Post.Header.Set("Content-Type", "application/json")
+	w4Post := httptest.NewRecorder()
+	router.ServeHTTP(w4Post, req4Post)
+	if w4Post.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/logs/query, got %d: %s", w4Post.Code, w4Post.Body.String())
+	}
+
+	// 4.0.1 测试 POST /api/v1/tasks/:id/export 协同导出端点 (CSV)
+	exportBody := `{"advanced":{"logic":"AND","conditions":[{"field":"raw_log","op":"contains","value":"IF"}]}}`
+	req4Export, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/export?format=csv", strings.NewReader(exportBody))
+	req4Export.Header.Set("Content-Type", "application/json")
+	w4Export := httptest.NewRecorder()
+	router.ServeHTTP(w4Export, req4Export)
+	if w4Export.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/export, got %d: %s", w4Export.Code, w4Export.Body.String())
+	}
+
 	// 4.1 审计问题 1：验证未传 sort_by 时携带 after_id 的 keyset 向后兼容性（应为 200 OK，而非被默认 time 拦截导致 500）
 	req4Keyset, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?after_id=1", nil)
 	w4Keyset := httptest.NewRecorder()

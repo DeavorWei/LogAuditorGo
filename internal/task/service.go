@@ -576,8 +576,12 @@ func (s *Service) SetTaskDeviceVersion(taskID string, deviceVersion string) erro
 // applyLogOrder 根据 LogQueryFilter 配置统一构建安全、确定性的排序子句。
 // 默认规则为时间优先 (timestamp asc, id asc)，支持根据需求切换为时间降序或物理行序 (id asc/desc)。
 func applyLogOrder(query *gorm.DB, filter model.LogQueryFilter) *gorm.DB {
-	sortBy := strings.ToLower(strings.TrimSpace(filter.SortBy))
-	order := strings.ToLower(strings.TrimSpace(filter.Order))
+	return applyLogOrderBySortAndOrder(query, filter.SortBy, filter.Order)
+}
+
+func applyLogOrderBySortAndOrder(query *gorm.DB, rawSortBy, rawOrder string) *gorm.DB {
+	sortBy := strings.ToLower(strings.TrimSpace(rawSortBy))
+	order := strings.ToLower(strings.TrimSpace(rawOrder))
 	if order != "desc" {
 		order = "asc"
 	}
@@ -593,8 +597,59 @@ func applyLogOrder(query *gorm.DB, filter model.LogQueryFilter) *gorm.DB {
 	return query.Order("timestamp asc, id asc")
 }
 
-// QueryTaskLogs 分页及多维度过滤查询任务内日志
-func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]model.LogRecord, int64, error) {
+// populateLogTags 批量二次查询关联表并回填 LogRecord.Tags 字段，
+// 严格避免在主查询中进行 JOIN 导致的分页行膨胀 (TAG-05)。
+func populateLogTags(taskDB *gorm.DB, records []model.LogRecord) error {
+	if len(records) == 0 {
+		return nil
+	}
+	logIDs := make([]uint, len(records))
+	for i, r := range records {
+		logIDs[i] = r.ID
+	}
+
+	var tagRows []struct {
+		LogID     uint      `gorm:"column:log_id"`
+		TagID     uint      `gorm:"column:tag_id"`
+		Name      string    `gorm:"column:name"`
+		Color     string    `gorm:"column:color"`
+		Remark    string    `gorm:"column:remark"`
+		CreatedAt time.Time `gorm:"column:created_at"`
+	}
+
+	err := taskDB.Table("log_tag_relations r").
+		Select("r.log_id, t.id as tag_id, t.name, t.color, t.remark, t.created_at").
+		Joins("JOIN log_tags t ON r.tag_id = t.id").
+		Where("r.log_id IN (?)", logIDs).
+		Order("t.id asc").
+		Scan(&tagRows).Error
+	if err != nil {
+		return err
+	}
+
+	tagMap := make(map[uint][]model.LogTag, len(records))
+	for _, tr := range tagRows {
+		tagMap[tr.LogID] = append(tagMap[tr.LogID], model.LogTag{
+			ID:        tr.TagID,
+			Name:      tr.Name,
+			Color:     tr.Color,
+			Remark:    tr.Remark,
+			CreatedAt: tr.CreatedAt,
+		})
+	}
+
+	for i := range records {
+		if tags, ok := tagMap[records[i].ID]; ok {
+			records[i].Tags = tags
+		} else {
+			records[i].Tags = []model.LogTag{}
+		}
+	}
+	return nil
+}
+
+// QueryTaskLogsUnified 统一查询任务内日志（支持高级筛选条件组、标签多维过滤与标签二次回填）
+func (s *Service) QueryTaskLogsUnified(taskID string, req model.LogQueryRequestBody) ([]model.LogRecord, int64, error) {
 	if !isValidTaskID(taskID) {
 		return nil, 0, fmt.Errorf("invalid task id: %s", taskID)
 	}
@@ -604,45 +659,10 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	query := taskDB.Model(&model.LogRecord{})
-
-	if filter.DeviceID != nil {
-		query = query.Where("device_id = ?", *filter.DeviceID)
-	}
-	if filter.Module != "" {
-		query = query.Where("UPPER(module) = ?", strings.ToUpper(filter.Module))
-	}
-	if filter.Severity != nil {
-		query = query.Where("severity <= ?", *filter.Severity)
-	}
-	if filter.Brief != "" {
-		query = query.Where("brief LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Brief)+"%")
-	}
-	if filter.Hostname != "" {
-		query = query.Where("hostname LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Hostname)+"%")
-	}
-	if filter.SourceFile != "" {
-		// TASK-19: 原模式的 `_` 未转义，在 LIKE 里等价于"任意一个字符"，
-		// 会让 `]` 后跟任意字符的文件名都被误匹配进来。
-		// escapeLikePattern 已经把 `_` 处理成 `\_`，这里的前缀分隔符同样必须转义。
-		escaped := escapeLikePattern(filter.SourceFile)
-		query = query.Where("(source_file = ? OR source_file LIKE ? ESCAPE '\\')", filter.SourceFile, "%]\\_"+escaped)
-	}
-	if filter.Keyword != "" {
-		query = applyKeywordFilter(query, filter.Keyword)
-	}
-	if filter.Matched != nil {
-		if *filter.Matched {
-			query = query.Where("knowledge_id > 0")
-		} else {
-			query = query.Where("knowledge_id = 0 OR knowledge_id IS NULL")
-		}
-	}
-	if filter.TimeStart != nil && !filter.TimeStart.IsZero() {
-		query = query.Where("timestamp >= ?", filter.TimeStart.Time)
-	}
-	if filter.TimeEnd != nil && !filter.TimeEnd.IsZero() {
-		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
+	baseQuery := taskDB.Model(&model.LogRecord{})
+	query, err := BuildLogFilterScope(baseQuery, req)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	var total int64
@@ -650,50 +670,83 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 		return nil, 0, err
 	}
 
-	// TASK-13: 提供了游标锚点时改走 keyset 分页，避免深翻页的 offset 线性开销。
-	// Keyset 分页专用于正序逐批拉取（PageSize <= 0 时默认归一化为 50 条，不支持全量导出模式）。
-	// 游标仅支持物理序号 id asc 排序。一期明确：若指定 sort_by=time 或 order=desc，报错拦截杜绝非预期混合语义。
-	if filter.AfterID > 0 {
-		if strings.ToLower(strings.TrimSpace(filter.SortBy)) == "time" {
+	// Keyset 分页
+	if req.AfterID > 0 {
+		if strings.ToLower(strings.TrimSpace(req.SortBy)) == "time" {
 			return nil, total, fmt.Errorf("cursor pagination (after_id) is only supported with sort_by=id")
 		}
-		if strings.ToLower(strings.TrimSpace(filter.Order)) == "desc" {
+		if strings.ToLower(strings.TrimSpace(req.Order)) == "desc" {
 			return nil, total, fmt.Errorf("cursor pagination (after_id) is only supported with order=asc")
 		}
-		pageSize := normalizePageSize(filter.PageSize)
+		pageSize := normalizePageSize(req.PageSize)
 		var records []model.LogRecord
-		err = query.Where("id > ?", filter.AfterID).
+		err = query.Where("id > ?", req.AfterID).
 			Order("id asc").Limit(pageSize).Find(&records).Error
-		return records, total, err
+		if err != nil {
+			return nil, total, err
+		}
+		if err := populateLogTags(taskDB, records); err != nil {
+			logger.Log.Warnf("[QueryTaskLogsUnified] populate tags failed: %v", err)
+		}
+		return records, total, nil
 	}
 
 	// 导出模式 (PageSize <= 0)
-	//
-	// TASK-09: 原实现 `PageSize: -1` 一次性把整表（含 raw_log / message_body 大文本）
-	// 读进内存，大任务导出必然 OOM。这里加上硬上限并在超限时明确报错，
-	// 让调用方改用分批拉取，而不是"静默返回残缺结果"。
-	if filter.PageSize <= 0 {
+	if req.PageSize <= 0 {
 		if total > maxExportRows {
 			return nil, total, fmt.Errorf("export size limit exceeded: task has %d logs, hard limit is %d; please narrow the filter or page through the data",
 				total, maxExportRows)
 		}
 		var records []model.LogRecord
-		if err := applyLogOrder(query, filter).Limit(maxExportRows).Find(&records).Error; err != nil {
+		if err := applyLogOrderBySortAndOrder(query, req.SortBy, req.Order).Limit(maxExportRows).Find(&records).Error; err != nil {
 			return nil, total, err
+		}
+		if err := populateLogTags(taskDB, records); err != nil {
+			logger.Log.Warnf("[QueryTaskLogsUnified] populate tags failed: %v", err)
 		}
 		return records, total, nil
 	}
 
-	page := filter.Page
+	page := req.Page
 	if page <= 0 {
 		page = 1
 	}
-	pageSize := normalizePageSize(filter.PageSize)
+	pageSize := normalizePageSize(req.PageSize)
 
 	var records []model.LogRecord
 	offset := (page - 1) * pageSize
-	err = applyLogOrder(query, filter).Offset(offset).Limit(pageSize).Find(&records).Error
-	return records, total, err
+	err = applyLogOrderBySortAndOrder(query, req.SortBy, req.Order).Offset(offset).Limit(pageSize).Find(&records).Error
+	if err != nil {
+		return nil, total, err
+	}
+
+	if err := populateLogTags(taskDB, records); err != nil {
+		logger.Log.Warnf("[QueryTaskLogsUnified] populate tags failed: %v", err)
+	}
+
+	return records, total, nil
+}
+
+// QueryTaskLogs 分页及多维度过滤查询任务内日志（兼容旧接口签名，底层转发至统一编译器）
+func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]model.LogRecord, int64, error) {
+	req := model.LogQueryRequestBody{
+		Page:       filter.Page,
+		PageSize:   filter.PageSize,
+		AfterID:    filter.AfterID,
+		SortBy:     filter.SortBy,
+		Order:      filter.Order,
+		Keyword:    filter.Keyword,
+		Severity:   filter.Severity,
+		Matched:    filter.Matched,
+		DeviceID:   filter.DeviceID,
+		Module:     filter.Module,
+		Brief:      filter.Brief,
+		Hostname:   filter.Hostname,
+		SourceFile: filter.SourceFile,
+		TimeStart:  filter.TimeStart,
+		TimeEnd:    filter.TimeEnd,
+	}
+	return s.QueryTaskLogsUnified(taskID, req)
 }
 
 // normalizePageSize 归一化分页条数，默认 50，最大不超过 MaxPageSize
@@ -707,16 +760,8 @@ func normalizePageSize(pageSize int) int {
 	return pageSize
 }
 
-// StreamTaskLogs 以数据库游标逐行流式读取日志并回调给调用方 (ARCH-07 / TASK-09)。
-//
-// 旧导出链路是 `QueryTaskLogs(PageSize:-1)` + 全量富化，
-// 一次性把整表读进内存再序列化，大任务必然 OOM。
-// 这里用 Rows() 游标 + 逐行回调，内存占用恒定为 O(1)，
-// 配合 http.Flusher 即可实现边查边下发的真流式导出。
-//
-// 排序定位：结构化流式导出（CSV/JSON）默认以真实业务时间 (timestamp asc, id asc) 导出，
-// 与主工作台默认时序严格对齐，支持调用方通过 filter.SortBy / filter.Order 自定义。
-func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emit func(rec model.LogRecord) error) error {
+// StreamTaskLogsUnified 以数据库游标逐行流式读取日志并回调（支持高级筛选与标签过滤）
+func (s *Service) StreamTaskLogsUnified(taskID string, req model.LogQueryRequestBody, emit func(rec model.LogRecord) error) error {
 	if !isValidTaskID(taskID) {
 		return fmt.Errorf("invalid task id: %s", taskID)
 	}
@@ -730,45 +775,33 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	query := taskDB.Model(&model.LogRecord{})
-	if filter.DeviceID != nil {
-		query = query.Where("device_id = ?", *filter.DeviceID)
-	}
-	if filter.Module != "" {
-		query = query.Where("UPPER(module) = ?", strings.ToUpper(filter.Module))
-	}
-	if filter.Severity != nil {
-		query = query.Where("severity <= ?", *filter.Severity)
-	}
-	if filter.Brief != "" {
-		query = query.Where("brief LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Brief)+"%")
-	}
-	if filter.Hostname != "" {
-		query = query.Where("hostname LIKE ? ESCAPE '\\'", "%"+escapeLikePattern(filter.Hostname)+"%")
-	}
-	if filter.SourceFile != "" {
-		// TASK-19: 分隔符写作 `\_`，避免 `]` 后的任意字符被 LIKE 的通配符误匹配
-		escaped := escapeLikePattern(filter.SourceFile)
-		query = query.Where("(source_file = ? OR source_file LIKE ? ESCAPE '\\')", filter.SourceFile, "%]\\_"+escaped)
-	}
-	if filter.Keyword != "" {
-		query = applyKeywordFilter(query, filter.Keyword)
-	}
-	if filter.Matched != nil {
-		if *filter.Matched {
-			query = query.Where("knowledge_id > 0")
-		} else {
-			query = query.Where("knowledge_id = 0 OR knowledge_id IS NULL")
-		}
-	}
-	if filter.TimeStart != nil && !filter.TimeStart.IsZero() {
-		query = query.Where("timestamp >= ?", filter.TimeStart.Time)
-	}
-	if filter.TimeEnd != nil && !filter.TimeEnd.IsZero() {
-		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
+	baseQuery := taskDB.Model(&model.LogRecord{})
+	query, err := BuildLogFilterScope(baseQuery, req)
+	if err != nil {
+		return err
 	}
 
-	rows, err := applyLogOrder(query, filter).Rows()
+	// 预加载所有有标签的映射（导出时用）
+	var tagRows []struct {
+		LogID uint   `gorm:"column:log_id"`
+		TagID uint   `gorm:"column:tag_id"`
+		Name  string `gorm:"column:name"`
+		Color string `gorm:"column:color"`
+	}
+	_ = taskDB.Table("log_tag_relations r").
+		Select("r.log_id, t.id as tag_id, t.name, t.color").
+		Joins("JOIN log_tags t ON r.tag_id = t.id").
+		Scan(&tagRows).Error
+	tagMap := make(map[uint][]model.LogTag, len(tagRows))
+	for _, tr := range tagRows {
+		tagMap[tr.LogID] = append(tagMap[tr.LogID], model.LogTag{
+			ID:    tr.TagID,
+			Name:  tr.Name,
+			Color: tr.Color,
+		})
+	}
+
+	rows, err := applyLogOrderBySortAndOrder(query, req.SortBy, req.Order).Rows()
 	if err != nil {
 		return fmt.Errorf("open log rows for stream export failed: %w", err)
 	}
@@ -779,6 +812,9 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 		if err := taskDB.ScanRows(rows, &rec); err != nil {
 			return fmt.Errorf("scan log row failed: %w", err)
 		}
+		if tags, ok := tagMap[rec.ID]; ok {
+			rec.Tags = tags
+		}
 		if err := emit(rec); err != nil {
 			return err
 		}
@@ -787,6 +823,26 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 		return fmt.Errorf("iterate log rows failed: %w", err)
 	}
 	return nil
+}
+
+// StreamTaskLogs 兼容接口签名，转发至 StreamTaskLogsUnified
+func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emit func(rec model.LogRecord) error) error {
+	req := model.LogQueryRequestBody{
+		PageSize:   -1,
+		SortBy:     filter.SortBy,
+		Order:      filter.Order,
+		Keyword:    filter.Keyword,
+		Severity:   filter.Severity,
+		Matched:    filter.Matched,
+		DeviceID:   filter.DeviceID,
+		Module:     filter.Module,
+		Brief:      filter.Brief,
+		Hostname:   filter.Hostname,
+		SourceFile: filter.SourceFile,
+		TimeStart:  filter.TimeStart,
+		TimeEnd:    filter.TimeEnd,
+	}
+	return s.StreamTaskLogsUnified(taskID, req, emit)
 }
 
 // GetTaskRCAEvents 获取任务的 RCA 分析事件

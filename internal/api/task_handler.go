@@ -484,6 +484,45 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	})
 }
 
+// QueryLogsUnified 统一日志查询与高级筛选接口 (POST /api/v1/tasks/:id/logs/query)
+func (h *TaskHandler) QueryLogsUnified(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req model.LogQueryRequestBody
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+		return
+	}
+
+	records, total, err := h.taskSvc.QueryTaskLogsUnified(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+
+	enrichedList := h.enrichRecords(records)
+
+	page := req.Page
+	if page <= 0 {
+		page = 1
+	}
+	pageSize := req.PageSize
+	if pageSize <= 0 {
+		pageSize = 50
+	}
+
+	SuccessResponse(c, gin.H{
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+		"records":   enrichedList,
+	})
+}
+
 // GetRCA 获取任务 RCA 事件 (返回包含根因与级联时序日志元数据的完整实体，维持裸数组契约)
 func (h *TaskHandler) GetRCA(c *gin.Context) {
 	taskID := c.Param("id")
@@ -558,15 +597,16 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 
 	// CSV 导出：真流式逐行下发，内存占用恒定 (ARCH-07 / TASK-09)
 	if format == "csv" {
-		h.streamCSVExport(c, taskID)
+		sortBy := c.DefaultQuery("sort_by", "time")
+		order := c.DefaultQuery("order", "asc")
+		h.streamCSVExportUnified(c, taskID, model.LogQueryRequestBody{
+			SortBy: sortBy,
+			Order:  order,
+		})
 		return
 	}
 
 	// JSON format export
-	//
-	// REANA-12 / ARCH-07: 原实现 `t, _ := ...; records, _, _ := ...; rcas, _ := ...`
-	// 三个错误全部丢弃，导出失败时静默返回残缺报告。这里全部判空并返回 500。
-	// 同时 RCA 改用 GetEnrichedRCAEvents，与列表接口保持同一字段形态。
 	t, err := h.taskSvc.GetTaskByID(taskID)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Load task failed: "+err.Error())
@@ -574,7 +614,7 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 	}
 	sortBy := c.DefaultQuery("sort_by", "time")
 	order := c.DefaultQuery("order", "asc")
-	records, _, err := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{
+	records, _, err := h.taskSvc.QueryTaskLogsUnified(taskID, model.LogQueryRequestBody{
 		PageSize: 0,
 		SortBy:   sortBy,
 		Order:    order,
@@ -597,12 +637,69 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 	})
 }
 
-// streamCSVExport 以数据库游标逐行生成 CSV 并流式下发 (ARCH-07)。
-//
-// 与 JSON 导出的区别：JSON 需要完整的数组结构，只能整体序列化；
-// CSV 天然是行式格式，配合 http.Flusher 可以做到"查一行、写一行、刷一行"，
-// 百万行导出的内存占用与单条日志同阶。
-func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
+// ExportReportUnified 协同导出接口 (POST /api/v1/tasks/:id/export)，
+// 支持与当前高级筛选及标签圈选完全一致的子集导出 (EXP-01)。
+func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req model.LogQueryRequestBody
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	format := c.DefaultQuery("format", "csv")
+	if format == "html" {
+		htmlContent, err := h.taskSvc.ExportTaskHTML(taskID)
+		if err != nil {
+			ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+			return
+		}
+		c.Header("Content-Type", "text/html; charset=utf-8")
+		c.Header("Content-Disposition", "attachment; filename=report_"+taskID+".html")
+		c.String(http.StatusOK, htmlContent)
+		return
+	}
+
+	if format == "csv" {
+		h.streamCSVExportUnified(c, taskID, req)
+		return
+	}
+
+	// JSON format export
+	t, err := h.taskSvc.GetTaskByID(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load task failed: "+err.Error())
+		return
+	}
+	req.PageSize = 0
+	records, _, err := h.taskSvc.QueryTaskLogsUnified(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load log records failed: "+err.Error())
+		return
+	}
+	rcas, err := h.taskSvc.GetEnrichedRCAEvents(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "Load RCA events failed: "+err.Error())
+		return
+	}
+	enrichedRecords := h.enrichRecords(records)
+
+	c.JSON(http.StatusOK, gin.H{
+		"task":    t,
+		"records": enrichedRecords,
+		"rcas":    rcas,
+	})
+}
+
+// streamCSVExportUnified 以数据库游标逐行生成带标签列的 CSV 并流式下发
+func (h *TaskHandler) streamCSVExportUnified(c *gin.Context, taskID string, req model.LogQueryRequestBody) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=logs_"+taskID+".csv")
 
@@ -610,18 +707,11 @@ func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
 	if _, err := c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
 		return
 	}
-	if _, err := c.Writer.WriteString("ID,时间,级别,模块,助记符,主机名,来源文件,匹配层级,置信度,原始报文\n"); err != nil {
+	if _, err := c.Writer.WriteString("ID,时间,级别,模块,助记符,主机名,来源文件,匹配层级,置信度,标签,原始报文\n"); err != nil {
 		return
 	}
 
-	sortBy := c.DefaultQuery("sort_by", "time")
-	order := c.DefaultQuery("order", "asc")
-	filter := model.LogQueryFilter{
-		SortBy: sortBy,
-		Order:  order,
-	}
-
-	err := h.taskSvc.StreamTaskLogs(taskID, filter, func(rec model.LogRecord) error {
+	err := h.taskSvc.StreamTaskLogsUnified(taskID, req, func(rec model.LogRecord) error {
 		row := buildCSVRow(rec)
 		if _, err := c.Writer.WriteString(row); err != nil {
 			return err
@@ -632,7 +722,6 @@ func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
 		return nil
 	})
 	if err != nil {
-		// 流已开始，无法再改响应头，只能追加一条错误行供调用方识别
 		logger.Log.Errorf("[API Tasks] stream CSV export for task %s failed: %v", taskID, err)
 		_, _ = c.Writer.WriteString("\n# EXPORT_ABORTED: " + strings.ReplaceAll(err.Error(), "\n", " ") + "\n")
 	}
@@ -641,6 +730,12 @@ func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
 // buildCSVRow 把单条日志序列化为 CSV 行。
 // 对引号、换行与公式注入前缀做防护，避免导出的 CSV 被表格软件当作公式执行。
 func buildCSVRow(rec model.LogRecord) string {
+	tagNames := make([]string, len(rec.Tags))
+	for i, t := range rec.Tags {
+		tagNames[i] = t.Name
+	}
+	tagStr := strings.Join(tagNames, ";")
+
 	fields := []string{
 		strconv.FormatUint(uint64(rec.ID), 10),
 		rec.Timestamp.Format("2006-01-02 15:04:05"),
@@ -651,6 +746,7 @@ func buildCSVRow(rec model.LogRecord) string {
 		rec.SourceFile,
 		rec.MatchTier,
 		strconv.FormatFloat(rec.MatchConfidence, 'f', 2, 64),
+		tagStr,
 		rec.RawLog,
 	}
 	var sb strings.Builder
