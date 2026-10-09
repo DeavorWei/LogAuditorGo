@@ -25,14 +25,27 @@ export const useFilterStore = defineStore('filter', () => {
     timeEnd: null,
     viewMode: 'workbench',
     // UI-13: RCA 级别筛选，补齐后左栏与右栏联动
-    rcaLevel: ''
+    rcaLevel: '',
+    // 排序维度与方向：默认按真实日志发生时间正序 (time_asc)
+    sortBy: 'time',
+    order: 'asc'
   })
+
+  const sanitizeSort = (loaded) => {
+    const valid = (loaded.sortBy === 'time' && (loaded.order === 'asc' || loaded.order === 'desc')) ||
+                  (loaded.sortBy === 'id' && loaded.order === 'asc')
+    if (!valid) {
+      loaded.sortBy = 'time'
+      loaded.order = 'asc'
+    }
+    return loaded
+  }
 
   const load = () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return defaults()
-      return { ...defaults(), ...JSON.parse(raw) }
+      return sanitizeSort({ ...defaults(), ...JSON.parse(raw) })
     } catch (e) {
       return defaults()
     }
@@ -79,6 +92,8 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.sourceFile) params.source_file = f.sourceFile
     if (f.timeStart) params.time_start = f.timeStart
     if (f.timeEnd) params.time_end = f.timeEnd
+    if (f.sortBy) params.sort_by = f.sortBy
+    if (f.order) params.order = f.order
     return params
   }
 

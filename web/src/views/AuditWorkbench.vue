@@ -215,6 +215,19 @@
               </el-button>
             </div>
           <div class="filter-row">
+            <el-select
+              v-model="currentSortOption"
+              placeholder="排序方式"
+              size="small"
+              style="width: 100%;"
+              @change="onSortChange"
+            >
+              <el-option label="⏰ 时间正序 (从早到晚)" value="time_asc" />
+              <el-option label="⏰ 时间倒序 (从新到旧)" value="time_desc" />
+              <el-option label="📄 原始入库顺序 (物理行序)" value="id_asc" />
+            </el-select>
+          </div>
+          <div class="filter-row">
             <el-select v-model="filter.severity" placeholder="级别过滤" clearable size="small" style="width: 48%;" @change="onFilterChange">
               <el-option label="全部级别" :value="null" />
               <el-option label="<=2 (紧急/告警)" :value="2" />
@@ -1346,6 +1359,32 @@ const hasActiveFilter = computed(() => {
 
 const handleResetFilters = async () => {
   filterStore.resetFilters()
+  await fetchLogs()
+}
+
+const SORT_CONFIGS = {
+  time_asc:  { sortBy: 'time', order: 'asc' },
+  time_desc: { sortBy: 'time', order: 'desc' },
+  id_asc:    { sortBy: 'id',   order: 'asc' }
+}
+
+const currentSortOption = computed({
+  get() {
+    const s = filter.value.sortBy || 'time'
+    const o = filter.value.order || 'asc'
+    if (s === 'id') return 'id_asc'
+    return o === 'desc' ? 'time_desc' : 'time_asc'
+  },
+  set(val) {
+    const target = SORT_CONFIGS[val] || SORT_CONFIGS.time_asc
+    filterStore.filters.sortBy = target.sortBy
+    filterStore.filters.order = target.order
+  }
+})
+
+const onSortChange = async (val) => {
+  currentSortOption.value = val
+  filter.value.page = 1
   await fetchLogs()
 }
 
