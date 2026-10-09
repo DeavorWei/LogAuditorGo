@@ -46,5 +46,6 @@ type LogRecord struct {
 	MatchTier       string    `gorm:"size:32" json:"match_tier"`
 	MatchConfidence float64   `json:"match_confidence"`
 	EventSummary    string    `gorm:"-" json:"event_summary,omitempty"` // 动态生成的中文语义摘要，不持久化到表
+	Tags            []LogTag  `gorm:"-" json:"tags,omitempty"`          // 关联的标签列表，不持久化到表
 }
 

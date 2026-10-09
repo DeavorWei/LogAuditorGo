@@ -89,7 +89,8 @@ func main() {
 	log.Infof("Starting LogAuditorGo server on port %d...", cfg.Server.Port)
 	log.Infof("File logging active at dir: %s (Max: %dMB, Retain: %ddays)", cfg.Log.Dir, cfg.Log.MaxSizeMB, cfg.Log.MaxDays)
 
-	// 3. 初始化全局知识库 SQLite
+	// 3. 注册 SQLite 自定义函数并初始化全局知识库
+	storage.RegisterSQLiteFunctions()
 	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
 	if err != nil {
 		log.Fatalf("Failed to initialize knowledge DB: %v", err)

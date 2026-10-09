@@ -454,6 +454,8 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		&model.LogRecord{},
 		&model.RCAEvent{},
 		&model.Device{},
+		&model.LogTag{},
+		&model.LogTagRelation{},
 	); err != nil {
 		if strings.Contains(err.Error(), "duplicate column name") {
 			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered duplicate column, safely ignored: %v", taskID, err)
@@ -470,6 +472,11 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		logger.Log.Warnf("[TaskDBPool] ensure task db indexes failed: %v", err)
 	}
 
+	// 孤儿标签自愈清理：兜底历史残留与异常删除路径，保证无孤儿关联
+	if err := db.Exec("DELETE FROM log_tag_relations WHERE log_id NOT IN (SELECT id FROM log_records)").Error; err != nil {
+		logger.Log.Debugf("[TaskDBPool] auto heal orphan tag relations skipped or failed: %v", err)
+	}
+
 	return db, nil
 }
 
@@ -482,6 +489,9 @@ func ensureTaskIndexes(db *gorm.DB) error {
 		// RCA keyset 分页游标 (timestamp, id) 的支撑索引，
 		// 保证 "WHERE (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp, id" 不退化为全表排序
 		"CREATE INDEX IF NOT EXISTS idx_log_records_time_id ON log_records(timestamp, id)",
+		// 标签关联表反向与正向索引：支撑分页回填 (WHERE log_id IN (...)) 与聚合统计
+		"CREATE INDEX IF NOT EXISTS idx_tag_relations_log_id ON log_tag_relations(log_id)",
+		"CREATE INDEX IF NOT EXISTS idx_tag_relations_tag_id ON log_tag_relations(tag_id)",
 	}
 	for _, stmt := range indexes {
 		if err := db.Exec(stmt).Error; err != nil {
