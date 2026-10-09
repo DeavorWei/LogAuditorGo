@@ -68,7 +68,9 @@
         <el-radio-button :label="VIEW_MODE.DEVICES">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Monitor /></el-icon>
           <span>设备管理</span>
-          <el-badge v-if="currentTask && currentTask.device_count" :value="currentTask.device_count" type="primary" style="margin-left: 6px;" />
+          <span v-if="currentTask && currentTask.device_count" class="nav-count-badge">
+            {{ currentTask.device_count }}
+          </span>
         </el-radio-button>
         <el-radio-button :label="VIEW_MODE.MULTI_TIMELINE">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
@@ -84,21 +86,21 @@
           >
             <el-icon class="is-loading" style="margin-left: 6px; color: #409eff; vertical-align: middle;"><Loading /></el-icon>
           </el-tooltip>
-          <el-tag
+          <el-tooltip
             v-else-if="currentTask && currentTask.rca_status === 'TIMEOUT'"
-            type="warning"
-            size="small"
-            effect="dark"
-            style="margin-left: 6px; border-radius: 10px; font-size: 11px; padding: 0 6px;"
+            :content="`根因拓扑分析超时截断，已推导出 ${currentTask.rca_count || 0} 个事件`"
+            placement="top"
           >
-            {{ currentTask.rca_count || 0 }}条 (超时截断)
-          </el-tag>
-          <el-badge
+            <span class="nav-count-badge warning">
+              {{ currentTask.rca_count || 0 }}!
+            </span>
+          </el-tooltip>
+          <span
             v-else-if="currentTask && currentTask.rca_count"
-            :value="currentTask.rca_count"
-            type="danger"
-            style="margin-left: 6px;"
-          />
+            class="nav-count-badge danger"
+          >
+            {{ currentTask.rca_count }}
+          </span>
         </el-radio-button>
         <el-radio-button :label="VIEW_MODE.MULTI_REPORT">
           <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
@@ -2505,6 +2507,59 @@ watch(
   border: 1px solid #e2e8f0;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   flex-shrink: 0;
+}
+
+/* 统一导航栏 5 个按钮的高度、对齐和内边距，根除个别按钮过大或错位 */
+.workbench-nav-bar :deep(.el-radio-button__inner) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  line-height: 32px;
+  padding: 0 14px;
+  box-sizing: border-box;
+}
+
+/* 导航栏轻量微型计数角标，避免原生 el-badge/el-tag 撑高父容器 */
+.nav-count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+  min-width: 16px;
+  padding: 0 4px;
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  border-radius: 8px;
+  background-color: #3b82f6;
+  color: #ffffff;
+  box-sizing: border-box;
+}
+
+.nav-count-badge.danger {
+  background-color: #ef4444;
+}
+
+.nav-count-badge.warning {
+  background-color: #f59e0b;
+}
+
+/* 激活状态下角标样式适配，保证高对比度与一体感 */
+.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge {
+  background-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.danger {
+  background-color: #dc2626;
+  color: #ffffff;
+}
+
+.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.warning {
+  background-color: #d97706;
+  color: #ffffff;
 }
 
 .workbench-sub-view {
