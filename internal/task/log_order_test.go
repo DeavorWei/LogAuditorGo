@@ -156,3 +156,71 @@ func TestQueryTaskLogsSorting(t *testing.T) {
 		t.Errorf("expected 3 logs after id=1, got %d", len(logsAfter))
 	}
 }
+
+func TestLogOrderingExplainQueryPlan(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_explain_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+	taskDir := filepath.Join(tmpDir, "tasks")
+
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+	taskInfo, err := svc.CreateEmptyTask("Explain-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(taskDir, taskInfo.TaskID)
+	if err != nil {
+		t.Fatalf("GetOrCreateTaskDB failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskInfo.TaskID)
+
+	type PlanRow struct {
+		ID     int
+		Parent int
+		NotUsed int
+		Detail string
+	}
+
+	// 1. 验证纯时间排序命中 idx_log_records_time_id，无 temp b-tree
+	var planPure []PlanRow
+	if err := taskDB.Raw("EXPLAIN QUERY PLAN SELECT * FROM log_records ORDER BY timestamp ASC, id ASC LIMIT 50").Scan(&planPure).Error; err != nil {
+		t.Fatalf("explain pure query plan failed: %v", err)
+	}
+	pureUsesIndex := false
+	pureUsesTempBTree := false
+	for _, p := range planPure {
+		t.Logf("[EXPLAIN Pure Sort] %s", p.Detail)
+		if strings.Contains(p.Detail, "idx_log_records_time") || strings.Contains(p.Detail, "idx_log_records_timestamp") {
+			pureUsesIndex = true
+		}
+		if strings.Contains(p.Detail, "USE TEMP B-TREE") {
+			pureUsesTempBTree = true
+		}
+	}
+	if !pureUsesIndex {
+		t.Errorf("expected pure time sort to use an index on timestamp")
+	}
+	if pureUsesTempBTree {
+		t.Errorf("expected pure time sort to NOT use temp b-tree for sorting")
+	}
+
+	// 2. 验证组合模块过滤 (WHERE module = 'IFNET' ORDER BY timestamp ASC, id ASC)
+	var planFiltered []PlanRow
+	if err := taskDB.Raw("EXPLAIN QUERY PLAN SELECT * FROM log_records WHERE UPPER(module) = 'IFNET' ORDER BY timestamp ASC, id ASC LIMIT 50").Scan(&planFiltered).Error; err != nil {
+		t.Fatalf("explain filtered query plan failed: %v", err)
+	}
+	for _, p := range planFiltered {
+		t.Logf("[EXPLAIN Filtered Sort] %s", p.Detail)
+	}
+}
