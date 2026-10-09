@@ -129,6 +129,38 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for /tasks/:id/logs, got %d", w4.Code)
 	}
 
+	// 4.1 审计问题 1：验证未传 sort_by 时携带 after_id 的 keyset 向后兼容性（应为 200 OK，而非被默认 time 拦截导致 500）
+	req4Keyset, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?after_id=1", nil)
+	w4Keyset := httptest.NewRecorder()
+	router.ServeHTTP(w4Keyset, req4Keyset)
+	if w4Keyset.Code != http.StatusOK {
+		t.Errorf("expected 200 for /tasks/:id/logs?after_id=1 backwards compatibility, got %d: %s", w4Keyset.Code, w4Keyset.Body.String())
+	}
+
+	// 4.2 审计问题 1&3：验证 after_id 显式与 sort_by=time 组合时的防御拦截
+	req4IllegalTime, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?after_id=1&sort_by=time", nil)
+	w4IllegalTime := httptest.NewRecorder()
+	router.ServeHTTP(w4IllegalTime, req4IllegalTime)
+	if w4IllegalTime.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for after_id with sort_by=time, got %d", w4IllegalTime.Code)
+	}
+
+	// 4.3 审计问题 3：验证 after_id 配合 order=desc 时的防御拦截
+	req4IllegalDesc, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?after_id=1&order=desc", nil)
+	w4IllegalDesc := httptest.NewRecorder()
+	router.ServeHTTP(w4IllegalDesc, req4IllegalDesc)
+	if w4IllegalDesc.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for after_id with order=desc, got %d", w4IllegalDesc.Code)
+	}
+
+	// 4.4 验证正常的多维排序参数（time desc）
+	req4Desc, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?sort_by=time&order=desc", nil)
+	w4Desc := httptest.NewRecorder()
+	router.ServeHTTP(w4Desc, req4Desc)
+	if w4Desc.Code != http.StatusOK {
+		t.Errorf("expected 200 for /tasks/:id/logs?sort_by=time&order=desc, got %d", w4Desc.Code)
+	}
+
 	// 5. 测试 GET /api/v1/tasks/:id/rca
 	req5, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/rca", nil)
 	w5 := httptest.NewRecorder()

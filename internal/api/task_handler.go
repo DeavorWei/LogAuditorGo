@@ -440,8 +440,15 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		}
 	}
 
-	sortBy := c.DefaultQuery("sort_by", "time")
-	order := c.DefaultQuery("order", "asc")
+	var afterID uint
+	if aStr := c.Query("after_id"); aStr != "" {
+		if a, err := strconv.ParseUint(aStr, 10, 32); err == nil {
+			afterID = uint(a)
+		}
+	}
+
+	sortBy := c.Query("sort_by")
+	order := c.Query("order")
 
 	filter := model.LogQueryFilter{
 		Page:       page,
@@ -456,6 +463,7 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		Matched:    matchedPtr,
 		TimeStart:  timeStart,
 		TimeEnd:    timeEnd,
+		AfterID:    afterID,
 		SortBy:     sortBy,
 		Order:      order,
 	}

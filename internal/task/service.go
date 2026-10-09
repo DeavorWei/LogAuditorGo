@@ -651,17 +651,16 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 	}
 
 	// TASK-13: 提供了游标锚点时改走 keyset 分页，避免深翻页的 offset 线性开销。
-	// 游标仅支持物理序号 id asc 排序。一期明确：若显式指定 sort_by=time，报错拦截杜绝非预期混合语义。
+	// Keyset 分页专用于正序逐批拉取（PageSize <= 0 时默认归一化为 50 条，不支持全量导出模式）。
+	// 游标仅支持物理序号 id asc 排序。一期明确：若指定 sort_by=time 或 order=desc，报错拦截杜绝非预期混合语义。
 	if filter.AfterID > 0 {
 		if strings.ToLower(strings.TrimSpace(filter.SortBy)) == "time" {
 			return nil, total, fmt.Errorf("cursor pagination (after_id) is only supported with sort_by=id")
 		}
-		pageSize := filter.PageSize
-		if pageSize <= 0 {
-			pageSize = 50
-		} else if pageSize > MaxPageSize {
-			pageSize = MaxPageSize
+		if strings.ToLower(strings.TrimSpace(filter.Order)) == "desc" {
+			return nil, total, fmt.Errorf("cursor pagination (after_id) is only supported with order=asc")
 		}
+		pageSize := normalizePageSize(filter.PageSize)
 		var records []model.LogRecord
 		err = query.Where("id > ?", filter.AfterID).
 			Order("id asc").Limit(pageSize).Find(&records).Error
@@ -689,17 +688,23 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 	if page <= 0 {
 		page = 1
 	}
-	pageSize := filter.PageSize
-	if pageSize <= 0 {
-		pageSize = 50
-	} else if pageSize > MaxPageSize {
-		pageSize = MaxPageSize
-	}
+	pageSize := normalizePageSize(filter.PageSize)
 
 	var records []model.LogRecord
 	offset := (page - 1) * pageSize
 	err = applyLogOrder(query, filter).Offset(offset).Limit(pageSize).Find(&records).Error
 	return records, total, err
+}
+
+// normalizePageSize 归一化分页条数，默认 50，最大不超过 MaxPageSize
+func normalizePageSize(pageSize int) int {
+	if pageSize <= 0 {
+		return 50
+	}
+	if pageSize > MaxPageSize {
+		return MaxPageSize
+	}
+	return pageSize
 }
 
 // StreamTaskLogs 以数据库游标逐行流式读取日志并回调给调用方 (ARCH-07 / TASK-09)。
@@ -708,6 +713,9 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 // 一次性把整表读进内存再序列化，大任务必然 OOM。
 // 这里用 Rows() 游标 + 逐行回调，内存占用恒定为 O(1)，
 // 配合 http.Flusher 即可实现边查边下发的真流式导出。
+//
+// 排序定位：结构化流式导出（CSV/JSON）默认以真实业务时间 (timestamp asc, id asc) 导出，
+// 与主工作台默认时序严格对齐，支持调用方通过 filter.SortBy / filter.Order 自定义。
 func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emit func(rec model.LogRecord) error) error {
 	if !isValidTaskID(taskID) {
 		return fmt.Errorf("invalid task id: %s", taskID)
@@ -1009,7 +1017,8 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 	}
 
 	var records []model.LogRecord
-	// 按严重级别升序（数值越小越紧急）+ 时间排序，确保截断时保留最有诊断价值的日志
+	// 排序定位：HTML 诊断报告专用于离线事故复盘取证，刻意保持按严重级别升序（数值越小越紧急）+ 时间排序，
+	// 确保在条数截断时保留最有诊断价值的高危日志，与工作台/结构化导出的全量时序定位区分。
 	q := taskDB.Order("severity asc, timestamp asc, id asc")
 	if totalLogs > int64(exportHTMLMaxRecords) {
 		q = q.Limit(exportHTMLMaxRecords)
@@ -2049,6 +2058,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 	matchedCount := 0
 	var processedCount int64 = 0
 	var lastID uint = 0
+	var reanalyzeLastFile string
 	var reanalyzeLastTS time.Time
 
 	for {
@@ -2077,7 +2087,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 			records[i] = parsed
 		}
 
-		alignChunkTimestamps(records, &reanalyzeLastTS)
+		alignChunkTimestamps(records, &reanalyzeLastFile, &reanalyzeLastTS)
 
 		if err := batchUpdateLogRecords(taskDB, records); err != nil {
 			return s.failTask(taskDB, &taskInfo, tr,

@@ -309,52 +309,79 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 	}
 }
 
-// alignChunkTimestamps 对一个批次解析产出的日志记录进行上下文时间戳继承 (Contextual Timestamp Alignment)。
+// alignChunkTimestamps 对解析产出的日志记录进行上下文时间戳继承 (Contextual Timestamp Alignment)。
 //
 // 业务背景：文件头注释行（# This logfile is generated at...）、Digest 校验行、以及无法提取时间戳的残缺/注释行，
 // 其解析产出的 Timestamp 均为零值（0001-01-01）。
 // 若直接以零值落库，在 ORDER BY timestamp ASC 时会导致这些非正常日志全部堆积在第 1 页最前方，破坏审计体验。
-// 这里对单文件流式处理维护 lastValidTS 状态：
-// 1. 若当前批次尚未确立有效时间戳（如文件开头的多行注释），向前探测借用本批次内首条有效日志的时间；
-// 2. 后续若遇到无时间戳行，继承当前最新的有效时间戳；
-// 3. 依靠二级排序键 id asc，同一时间戳下的文件头行（id 较小）依然严格排在首条有效日志之前。
-func alignChunkTimestamps(records []model.LogRecord, lastValidTS *time.Time) {
+// 这里对日志流维护 (lastFile, lastValidTS) 状态：
+// 1. 当 SourceFile 发生切换（进入新文件）时，重置 lastValidTS，避免跨文件继承导致新文件头注释时间漂移；
+// 2. 若新文件尚未确立有效时间戳（如文件开头的多行注释），向前探测借用该文件内部首条有效日志的时间；
+// 3. 后续若遇到无时间戳行，继承当前文件最新的有效时间戳；
+// 4. 依靠二级排序键 id asc，同一时间戳下的文件头行（id 较小）依然严格排在首条有效日志之前。
+func alignChunkTimestamps(records []model.LogRecord, lastFile *string, lastValidTS *time.Time) {
 	if len(records) == 0 {
 		return
 	}
 
-	// 1. 若此前尚未确立有效时间戳，先向前寻找本批次内的首个有效时间戳
-	if lastValidTS == nil || lastValidTS.IsZero() {
-		var firstValid time.Time
-		for i := range records {
-			if !records[i].Timestamp.IsZero() && records[i].Timestamp.Year() > 1970 {
-				firstValid = records[i].Timestamp
-				break
+	start := 0
+	for start < len(records) {
+		curFile := records[start].SourceFile
+		// 寻找当前连续属于同一个 SourceFile 的切片区间 [start, end)
+		end := start + 1
+		for end < len(records) && (lastFile == nil || records[end].SourceFile == curFile) {
+			end++
+		}
+
+		// 若存在文件跟踪指针且发生跨文件切换
+		if lastFile != nil {
+			if *lastFile == "" {
+				*lastFile = curFile
+			} else if *lastFile != curFile {
+				*lastFile = curFile
+				if lastValidTS != nil {
+					*lastValidTS = time.Time{} // 文件边界切换，重置时钟
+				}
 			}
 		}
-		if !firstValid.IsZero() {
-			for i := range records {
-				if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
-					records[i].Timestamp = firstValid
-				} else {
+
+		subRecords := records[start:end]
+
+		// 1. 若当前文件尚未确立有效时间戳，先向前寻找本批次内该文件的首个有效时间戳
+		if lastValidTS == nil || lastValidTS.IsZero() {
+			var firstValid time.Time
+			for i := range subRecords {
+				if !subRecords[i].Timestamp.IsZero() && subRecords[i].Timestamp.Year() > 1970 {
+					firstValid = subRecords[i].Timestamp
 					break
 				}
 			}
-			if lastValidTS != nil {
-				*lastValidTS = firstValid
+			if !firstValid.IsZero() {
+				for i := range subRecords {
+					if subRecords[i].Timestamp.IsZero() || subRecords[i].Timestamp.Year() <= 1970 {
+						subRecords[i].Timestamp = firstValid
+					} else {
+						break
+					}
+				}
+				if lastValidTS != nil {
+					*lastValidTS = firstValid
+				}
 			}
 		}
-	}
 
-	// 2. 依次向后扫描：有效行更新 lastValidTS，无时间行继承当前最新的 lastValidTS
-	for i := range records {
-		if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
-			if lastValidTS != nil && !lastValidTS.IsZero() {
-				records[i].Timestamp = *lastValidTS
+		// 2. 依次向后扫描：有效行更新 lastValidTS，无时间行继承当前最新的 lastValidTS
+		for i := range subRecords {
+			if subRecords[i].Timestamp.IsZero() || subRecords[i].Timestamp.Year() <= 1970 {
+				if lastValidTS != nil && !lastValidTS.IsZero() {
+					subRecords[i].Timestamp = *lastValidTS
+				}
+			} else if lastValidTS != nil {
+				*lastValidTS = subRecords[i].Timestamp
 			}
-		} else if lastValidTS != nil {
-			*lastValidTS = records[i].Timestamp
 		}
+
+		start = end
 	}
 }
 
@@ -385,6 +412,7 @@ func (s *Service) persistFileBundle(
 
 	first := true
 	processed := 0
+	lastFile := bundle.cleanName
 	var lastValidTS time.Time
 
 	// 补偿清理：删掉该文件已入库的碎片与 TaskFile 空壳，避免留下"幽灵文件记录"
@@ -420,7 +448,7 @@ func (s *Service) persistFileBundle(
 
 	ingestChunk := func(chunk []string) error {
 		records := s.parseAndMatchChunk(chunk, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
-		alignChunkTimestamps(records, &lastValidTS)
+		alignChunkTimestamps(records, &lastFile, &lastValidTS)
 		if err := commit(records); err != nil {
 			cleanup()
 			return err

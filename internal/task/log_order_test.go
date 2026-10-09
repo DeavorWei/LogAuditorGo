@@ -147,6 +147,12 @@ func TestQueryTaskLogsSorting(t *testing.T) {
 		t.Errorf("expected error when combining sort_by=time and after_id>0, got nil")
 	}
 
+	// 6.1 验证 AfterID 与 Order: "desc" 的防御拦截 (审计问题 3)
+	_, _, err = svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{SortBy: "id", Order: "desc", AfterID: 10})
+	if err == nil {
+		t.Errorf("expected error when combining order=desc and after_id>0, got nil")
+	}
+
 	// 7. 验证 AfterID 在 SortBy: "id" 时正常工作
 	logsAfter, _, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{SortBy: "id", AfterID: 1, PageSize: 10})
 	if err != nil {
@@ -154,6 +160,130 @@ func TestQueryTaskLogsSorting(t *testing.T) {
 	}
 	if len(logsAfter) != 3 { // 总共 4 条，after id=1 应剩 3 条
 		t.Errorf("expected 3 logs after id=1, got %d", len(logsAfter))
+	}
+}
+
+// TestLogOrderingPaginationDeterminism 验证同时间戳下基于 (timestamp, id) 联合排序的分页确定性（跨页不重不漏）
+// 对应审计问题 5：同时间戳 + id 二级键的分页确定性显式用例
+func TestLogOrderingPaginationDeterminism(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_paging_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+	taskDir := filepath.Join(tmpDir, "tasks")
+
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+	taskInfo, err := svc.CreateEmptyTask("Paging-Determinism-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("CreateEmptyTask failed: %v", err)
+	}
+
+	// 构造 10 条时间戳完全相同但序号不同的日志
+	var sb strings.Builder
+	for i := 1; i <= 10; i++ {
+		sb.WriteString("May 19 2026 12:00:00 CE-01 %%01IFNET/4/IF_DOWN(l)[")
+		sb.WriteString(string(rune('0' + i)))
+		sb.WriteString("]: IF identical timestamp line.\n")
+	}
+	content := sb.String()
+
+	_, err = svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{
+		{
+			FileName: "identical_time.log",
+			FileSize: int64(len(content)),
+			Content:  content,
+		},
+	}, "overwrite", nil)
+	if err != nil {
+		t.Fatalf("ImportLogs failed: %v", err)
+	}
+
+	// 1. 验证升序跨页遍历：PageSize=4，应分 3 页（4 + 4 + 2）
+	var collectedAscIDs []uint
+	pageSize := 4
+	for page := 1; ; page++ {
+		pageLogs, total, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{
+			Page:     page,
+			PageSize: pageSize,
+			SortBy:   "time",
+			Order:    "asc",
+		})
+		if err != nil {
+			t.Fatalf("page %d query failed: %v", page, err)
+		}
+		if total != 10 {
+			t.Fatalf("expected total 10, got %d", total)
+		}
+		if len(pageLogs) == 0 {
+			break
+		}
+		for _, r := range pageLogs {
+			collectedAscIDs = append(collectedAscIDs, r.ID)
+		}
+		if len(collectedAscIDs) == int(total) {
+			break
+		}
+	}
+
+	if len(collectedAscIDs) != 10 {
+		t.Fatalf("expected 10 collected IDs across pages, got %d", len(collectedAscIDs))
+	}
+	// 验证 ID 严格单调递增，且无重复、无遗漏
+	seenAsc := make(map[uint]bool)
+	for i, id := range collectedAscIDs {
+		if seenAsc[id] {
+			t.Errorf("duplicate ID %d encountered in pagination", id)
+		}
+		seenAsc[id] = true
+		if i > 0 && id <= collectedAscIDs[i-1] {
+			t.Errorf("IDs not strictly ascending: %d after %d", id, collectedAscIDs[i-1])
+		}
+	}
+
+	// 2. 验证降序跨页遍历：PageSize=4，应分 3 页（4 + 4 + 2）
+	var collectedDescIDs []uint
+	for page := 1; ; page++ {
+		pageLogs, total, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{
+			Page:     page,
+			PageSize: pageSize,
+			SortBy:   "time",
+			Order:    "desc",
+		})
+		if err != nil {
+			t.Fatalf("desc page %d query failed: %v", page, err)
+		}
+		if len(pageLogs) == 0 {
+			break
+		}
+		for _, r := range pageLogs {
+			collectedDescIDs = append(collectedDescIDs, r.ID)
+		}
+		if len(collectedDescIDs) == int(total) {
+			break
+		}
+	}
+
+	if len(collectedDescIDs) != 10 {
+		t.Fatalf("expected 10 collected IDs in desc across pages, got %d", len(collectedDescIDs))
+	}
+	seenDesc := make(map[uint]bool)
+	for i, id := range collectedDescIDs {
+		if seenDesc[id] {
+			t.Errorf("duplicate ID %d encountered in desc pagination", id)
+		}
+		seenDesc[id] = true
+		if i > 0 && id >= collectedDescIDs[i-1] {
+			t.Errorf("IDs not strictly descending: %d after %d", id, collectedDescIDs[i-1])
+		}
 	}
 }
 
@@ -215,7 +345,9 @@ func TestLogOrderingExplainQueryPlan(t *testing.T) {
 		t.Errorf("expected pure time sort to NOT use temp b-tree for sorting")
 	}
 
-	// 2. 验证组合模块过滤 (WHERE module = 'IFNET' ORDER BY timestamp ASC, id ASC)
+	// 2. 观测组合模块过滤场景 (WHERE module = 'IFNET' ORDER BY timestamp ASC, id ASC)
+	// 说明（审计问题 5）：在带有 keyword/module 等过滤条件时，SQLite 无法同时用单列索引完成过滤和消除排序，
+	// 会选择过滤索引并配合 temp b-tree 完成 top-N 排序。鉴于 Count 本就全扫且每页仅 50 条，开销完全可控。
 	var planFiltered []PlanRow
 	if err := taskDB.Raw("EXPLAIN QUERY PLAN SELECT * FROM log_records WHERE UPPER(module) = 'IFNET' ORDER BY timestamp ASC, id ASC LIMIT 50").Scan(&planFiltered).Error; err != nil {
 		t.Fatalf("explain filtered query plan failed: %v", err)
