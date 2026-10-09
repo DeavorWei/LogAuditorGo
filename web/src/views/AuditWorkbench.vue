@@ -258,6 +258,12 @@
               />
             </el-select>
           </div>
+          <!--
+            WB-FILTER: 筛选机制移除基于来源文件筛选，升级为基于起始与截止时间区间筛选。
+            采用独立双 datetime 选择器（各占 48%），复用标准两列 Flex 布局；
+            采用 value-format="YYYY-MM-DDTHH:mm:ssZ" 携带时区偏移，根除跨时区部署偏差；
+            通过 :shortcuts 提供常用排查窗口，并在窄屏下做紧凑字号与边距优化。
+          -->
           <div class="filter-row">
             <el-date-picker
               v-model="filter.timeStart"
