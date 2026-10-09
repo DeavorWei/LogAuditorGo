@@ -203,6 +203,10 @@ export default {
   queryTaskLogs(taskId, params, options = {}) {
     return request.get(`/tasks/${taskId}/logs`, { params, ...options })
   },
+  // 高级筛选与标签统一查询端点 (POST /tasks/:id/logs/query)
+  queryTaskLogsUnified(taskId, queryBody, options = {}) {
+    return request.post(`/tasks/${taskId}/logs/query`, queryBody, options)
+  },
   getTaskModules(taskId) {
     return request.get(`/tasks/${taskId}/modules`)
   },
@@ -274,21 +278,54 @@ export default {
     return request.post(`/tasks/${taskId}/multi-device/report`, { device_ids: deviceIds }, options)
   },
 
+  // 标签系统 (Phase 1C)
+  getTaskTags(taskId) {
+    return request.get(`/tasks/${taskId}/tags`)
+  },
+  createTaskTag(taskId, data) {
+    return request.post(`/tasks/${taskId}/tags`, data)
+  },
+  updateTaskTag(taskId, tagId, data) {
+    return request.put(`/tasks/${taskId}/tags/${tagId}`, data)
+  },
+  deleteTaskTag(taskId, tagId) {
+    return request.delete(`/tasks/${taskId}/tags/${tagId}`)
+  },
+  batchTagLogs(taskId, tagId, queryBody) {
+    return request.post(`/tasks/${taskId}/tags/${tagId}/logs`, queryBody)
+  },
+  batchUntagLogs(taskId, tagId, queryBody) {
+    return request.delete(`/tasks/${taskId}/tags/${tagId}/logs`, { data: queryBody })
+  },
+  addLogTag(taskId, logId, tagId) {
+    return request.post(`/tasks/${taskId}/logs/${logId}/tags`, { tag_id: tagId })
+  },
+  removeLogTag(taskId, logId, tagId) {
+    return request.delete(`/tasks/${taskId}/logs/${logId}/tags/${tagId}`)
+  },
+
   // 报表导出下载 (基于 Blob，防御重复提交并由拦截器统一弹窗报错)
-  //
-  // ARCH-07: 新增 csv 格式——后端已实现游标流式导出，内存占用恒定，
-  // 适合大任务的全量留痕；html / json 仍受服务端上限约束。
-  async downloadTaskReport(taskId, format = 'html') {
+  // 支持传入 queryBody 协同导出高级筛选与标签圈选子集 (EXP-01)
+  async downloadTaskReport(taskId, format = 'html', queryBody = null) {
     const mimeTypes = {
       html: 'text/html;charset=utf-8',
       json: 'application/json;charset=utf-8',
       csv: 'text/csv;charset=utf-8'
     }
-    const res = await request.get(`/tasks/${taskId}/export`, {
-      params: { format },
-      responseType: 'blob',
-      timeout: EXPORT_TIMEOUT
-    })
+    let res
+    if (queryBody) {
+      res = await request.post(`/tasks/${taskId}/export`, queryBody, {
+        params: { format },
+        responseType: 'blob',
+        timeout: EXPORT_TIMEOUT
+      })
+    } else {
+      res = await request.get(`/tasks/${taskId}/export`, {
+        params: { format },
+        responseType: 'blob',
+        timeout: EXPORT_TIMEOUT
+      })
+    }
     // WEB-17: 不再固定写死 text/html，按实际格式设置 MIME，避免 JSON/CSV 被错误处理
     const blob = new Blob([res], { type: mimeTypes[format] || 'application/octet-stream' })
     const url = window.URL.createObjectURL(blob)

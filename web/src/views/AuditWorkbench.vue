@@ -292,6 +292,69 @@
               @change="onFilterChange"
             />
           </div>
+
+          <!-- 标签多维筛选行 -->
+          <div class="filter-row tag-filter-row">
+            <el-select
+              v-model="filter.tagIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="🏷 按标签筛选"
+              size="small"
+              style="flex: 1;"
+              @change="onFilterChange"
+            >
+              <el-option
+                v-for="t in tagStore.tags"
+                :key="t.id"
+                :label="`${t.name} (${t.log_count || 0})`"
+                :value="t.id"
+              >
+                <div style="display: flex; align-items: center; justify-content: space-between">
+                  <span>{{ t.name }}</span>
+                  <span
+                    :style="{
+                      display: 'inline-block',
+                      width: '10px',
+                      height: '10px',
+                      borderRadius: '50%',
+                      backgroundColor: t.color || '#409EFF'
+                    }"
+                  />
+                </div>
+              </el-option>
+            </el-select>
+            <el-button
+              size="small"
+              type="info"
+              plain
+              title="管理标签"
+              @click="openTagManagerModal"
+            >
+              管理
+            </el-button>
+          </div>
+        </div>
+
+        <!-- 日志流顶部高级筛选操作条 -->
+        <div class="log-stream-toolbar">
+          <span class="log-total-text">共 {{ totalLogs }} 条日志</span>
+          <el-badge
+            :value="filterStore.activeAdvancedCount()"
+            :hidden="filterStore.activeAdvancedCount() === 0"
+            type="danger"
+          >
+            <el-button
+              size="small"
+              :type="filterStore.activeAdvancedCount() > 0 ? 'primary' : 'default'"
+              plain
+              @click="openAdvFilterDrawer"
+            >
+              ⚡ 高级筛选
+            </el-button>
+          </el-badge>
         </div>
 
         <div class="log-stream-list" v-loading="loadingLogs">
@@ -317,6 +380,26 @@
                 📄 {{ rec.source_file }}
               </span>
               <span v-if="rec.slot_info" class="slot-tag">{{ rec.slot_info }}</span>
+            </div>
+            <!-- 卡片标签色块 -->
+            <div v-if="rec.tags && rec.tags.length > 0" class="log-card-tags">
+              <el-tag
+                v-for="tag in rec.tags.slice(0, 3)"
+                :key="tag.id"
+                size="small"
+                effect="dark"
+                :color="tag.color || '#409EFF'"
+                class="card-tag-pill"
+              >
+                {{ tag.name }}
+              </el-tag>
+              <el-tooltip
+                v-if="rec.tags.length > 3"
+                :content="rec.tags.slice(3).map(t => t.name).join(', ')"
+                placement="top"
+              >
+                <el-tag size="small" type="info" class="card-tag-pill">+{{ rec.tags.length - 3 }}</el-tag>
+              </el-tooltip>
             </div>
           </div>
           <el-empty
@@ -365,6 +448,43 @@
             <el-tag v-else size="small" :type="selectedLog.knowledge_id ? 'success' : 'info'">
               {{ selectedLog.knowledge_id ? `知识库已匹配 (${(selectedLog.match_confidence * 100).toFixed(0)}%)` : '未匹配' }}
             </el-tag>
+          </div>
+
+          <!-- 标签展示与单条打标/摘标操作 -->
+          <div class="log-detail-tags-bar">
+            <span class="detail-tags-label">🏷 标签:</span>
+            <div class="detail-tags-list">
+              <el-tag
+                v-for="t in (selectedLog.tags || [])"
+                :key="t.id"
+                size="small"
+                closable
+                effect="dark"
+                :color="t.color || '#409EFF'"
+                class="detail-tag-pill"
+                @close="handleRemoveLogTag(selectedLog.id, t.id)"
+              >
+                {{ t.name }}
+              </el-tag>
+              <el-dropdown trigger="click" @command="handleAddLogTag">
+                <el-button size="small" type="primary" plain class="add-log-tag-btn">+ 打标签</el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item
+                      v-for="t in availableTagsForSelected"
+                      :key="t.id"
+                      :command="t.id"
+                    >
+                      <span :style="{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: t.color || '#409EFF', marginRight: '6px' }"></span>
+                      {{ t.name }}
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="availableTagsForSelected.length === 0" disabled>
+                      暂无可选新标签
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </div>
 
           <!-- 原始日志 -->
@@ -761,6 +881,19 @@
       favorite-key="task-logs"
       :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
     />
+
+    <!-- 高级筛选抽屉与标签管理弹窗 -->
+    <AdvancedFilterDrawer
+      ref="advFilterDrawerRef"
+      :task-id="currentTaskId || ''"
+      @apply="fetchLogs"
+    />
+
+    <TagManagerModal
+      ref="tagManagerModalRef"
+      :task-id="currentTaskId || ''"
+      @filter-applied="fetchLogs"
+    />
   </div>
 </template>
 
@@ -777,8 +910,11 @@ import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import RcaCenter from '@/components/RcaCenter.vue'
+import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
+import TagManagerModal from '@/components/TagManagerModal.vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTaskStore } from '@/stores/task'
+import { useTagStore } from '@/stores/tag'
 import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
 import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
@@ -791,7 +927,23 @@ const route = useRoute()
 const filterStore = useFilterStore()
 const filter = computed(() => filterStore.filters)
 const taskStore = useTaskStore()
+const tagStore = useTagStore()
 const rcaEvents = computed(() => taskStore.rcaEvents)
+
+const advFilterDrawerRef = ref(null)
+const tagManagerModalRef = ref(null)
+
+const openAdvFilterDrawer = () => {
+  if (advFilterDrawerRef.value) {
+    advFilterDrawerRef.value.open()
+  }
+}
+
+const openTagManagerModal = () => {
+  if (tagManagerModalRef.value) {
+    tagManagerModalRef.value.open()
+  }
+}
 
 const taskList = ref([])
 const currentTaskId = ref('')
@@ -1333,10 +1485,10 @@ const handleTaskChange = async (taskId) => {
   selectedLog.value = null
 
   /**
-   * WEB-12: 文件 / 设备 / RCA 三个维度彼此独立，旧实现串行 await 需要 3 个 RTT。
+   * WEB-12: 文件 / 设备 / RCA / 标签 四个维度彼此独立，旧实现串行 await 需要 3 个 RTT。
    * 这里改为并发拉取；日志列表依赖设备与文件下拉框就绪，仍放在最后串行执行。
    */
-  await Promise.all([fetchTaskFiles(), fetchTaskDevices(), fetchRCA()])
+  await Promise.all([fetchTaskFiles(), fetchTaskDevices(), fetchRCA(), tagStore.fetchTags(taskId)])
   await fetchLogs()
 }
 
@@ -1455,17 +1607,20 @@ const fetchLogs = async () => {
   if (!currentTaskId.value) return
   loadingLogs.value = true
   try {
-    // 复用 filter store 的参数组装逻辑：空值一律不下发，
-    // 避免把 "" / null 当成有效过滤条件传给后端 (WEB-05)
-    const params = filterStore.toLogQueryParams(filter.value.page, filter.value.pageSize)
-    const res = await api.queryTaskLogs(currentTaskId.value, params)
+    // 使用统一查询请求体 (包含高级筛选与标签过滤)
+    const body = filterStore.toLogQueryBody(filter.value.page, filter.value.pageSize)
+    const res = await api.queryTaskLogsUnified(currentTaskId.value, body)
     if (res.code === 0) {
-      logRecords.value = res.data.records
-      totalLogs.value = res.data.total
+      logRecords.value = res.data?.records || []
+      totalLogs.value = res.data?.total || 0
       if (logRecords.value.length > 0) {
         const found = selectedLog.value && logRecords.value.some(r => r.id === selectedLog.value.id)
         if (!found) {
           selectLog(logRecords.value[0])
+        } else {
+          // 同步最新的日志引用（含 tags）
+          const updated = logRecords.value.find(r => r.id === selectedLog.value.id)
+          if (updated) selectLog(updated)
         }
       } else {
         selectedLog.value = null
@@ -1473,6 +1628,59 @@ const fetchLogs = async () => {
     }
   } finally {
     loadingLogs.value = false
+  }
+}
+
+const availableTagsForSelected = computed(() => {
+  if (!selectedLog.value) return []
+  const assignedIds = new Set((selectedLog.value.tags || []).map(t => t.id))
+  return tagStore.tags.filter(t => !assignedIds.has(t.id))
+})
+
+const handleAddLogTag = async (tagId) => {
+  if (!currentTaskId.value || !selectedLog.value || !tagId) return
+  try {
+    const res = await api.addLogTag(currentTaskId.value, selectedLog.value.id, tagId)
+    if (res.code === 0) {
+      ElMessage.success('标签添加成功')
+      const tag = tagStore.tags.find(t => t.id === tagId)
+      if (tag) {
+        if (!selectedLog.value.tags) selectedLog.value.tags = []
+        if (!selectedLog.value.tags.some(t => t.id === tagId)) {
+          selectedLog.value.tags.push(tag)
+        }
+        const recordInList = logRecords.value.find(r => r.id === selectedLog.value.id)
+        if (recordInList) {
+          if (!recordInList.tags) recordInList.tags = []
+          if (!recordInList.tags.some(t => t.id === tagId)) {
+            recordInList.tags.push(tag)
+          }
+        }
+      }
+      await tagStore.fetchTags(currentTaskId.value)
+    }
+  } catch (e) {
+    // 错误已由 api 统一拦截提示
+  }
+}
+
+const handleRemoveLogTag = async (logId, tagId) => {
+  if (!currentTaskId.value || !logId || !tagId) return
+  try {
+    const res = await api.removeLogTag(currentTaskId.value, logId, tagId)
+    if (res.code === 0) {
+      ElMessage.success('标签已移除')
+      if (selectedLog.value && selectedLog.value.id === logId && selectedLog.value.tags) {
+        selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tagId)
+      }
+      const recordInList = logRecords.value.find(r => r.id === logId)
+      if (recordInList && recordInList.tags) {
+        recordInList.tags = recordInList.tags.filter(t => t.id !== tagId)
+      }
+      await tagStore.fetchTags(currentTaskId.value)
+    }
+  } catch (e) {
+    // 错误已由 api 统一拦截提示
   }
 }
 
@@ -2607,5 +2815,78 @@ watch(
 .rca-banner-alert .banner-text {
   font-size: 12px;
   color: #9a3412;
+}
+
+/* 标签与高级筛选相关样式 */
+.tag-filter-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.log-stream-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.log-total-text {
+  font-size: 12px;
+  color: #64748b;
+  font-weight: 500;
+}
+
+.log-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.card-tag-pill {
+  font-size: 11px;
+  height: 20px;
+  line-height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  border: none;
+}
+
+.log-detail-tags-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 6px;
+  margin-bottom: 12px;
+  border: 1px solid #e2e8f0;
+}
+
+.detail-tags-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  flex-shrink: 0;
+}
+
+.detail-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.detail-tag-pill {
+  border: none;
+}
+
+.add-log-tag-btn {
+  font-size: 12px;
+  height: 24px;
+  padding: 0 8px;
 }
 </style>

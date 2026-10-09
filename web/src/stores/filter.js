@@ -27,7 +27,15 @@ export const useFilterStore = defineStore('filter', () => {
     rcaLevel: '',
     // 排序维度与方向：默认按真实日志发生时间正序 (time_asc)
     sortBy: 'time',
-    order: 'asc'
+    order: 'asc',
+    // 高级筛选 (Phase 1)
+    advanced: {
+      logic: 'AND',
+      conditions: []
+    },
+    // 标签多维筛选
+    tagIds: [],
+    tagLogic: 'any'
   })
 
   const sanitizeSort = (loaded) => {
@@ -36,6 +44,15 @@ export const useFilterStore = defineStore('filter', () => {
     if (!valid) {
       loaded.sortBy = 'time'
       loaded.order = 'asc'
+    }
+    if (!loaded.advanced) {
+      loaded.advanced = { logic: 'AND', conditions: [] }
+    }
+    if (!Array.isArray(loaded.tagIds)) {
+      loaded.tagIds = []
+    }
+    if (!loaded.tagLogic) {
+      loaded.tagLogic = 'any'
     }
     return loaded
   }
@@ -79,8 +96,46 @@ export const useFilterStore = defineStore('filter', () => {
   }
 
   /**
-   * 把筛选条件转换为后端查询参数。
-   * 空值一律不下发，避免把 "" 当成有效过滤条件。
+   * 把筛选条件转换为后端统一请求体 (POST /tasks/:id/logs/query)
+   */
+  const toLogQueryBody = (page, pageSize) => {
+    const f = filters.value
+    const body = {
+      page: page ?? f.page,
+      page_size: pageSize ?? f.pageSize,
+      sort_by: f.sortBy || 'time',
+      order: f.order || 'asc'
+    }
+    if (f.keyword) body.keyword = f.keyword
+    if (f.severity !== null && f.severity !== undefined) body.severity = f.severity
+    if (f.matched !== null && f.matched !== undefined) body.matched = !!f.matched
+    if (f.deviceId) body.device_id = f.deviceId
+    if (f.module) body.module = f.module
+    if (f.timeStart) body.time_start = f.timeStart
+    if (f.timeEnd) body.time_end = f.timeEnd
+
+    // 高级筛选组
+    if (f.advanced && Array.isArray(f.advanced.conditions) && f.advanced.conditions.length > 0) {
+      const validConditions = f.advanced.conditions.filter(c => c.field && c.op && c.value !== undefined && c.value !== '')
+      if (validConditions.length > 0) {
+        body.advanced = {
+          logic: f.advanced.logic || 'AND',
+          conditions: validConditions
+        }
+      }
+    }
+
+    // 标签筛选
+    if (Array.isArray(f.tagIds) && f.tagIds.length > 0) {
+      body.tag_ids = f.tagIds
+      body.tag_logic = f.tagLogic || 'any'
+    }
+
+    return body
+  }
+
+  /**
+   * 兼容旧 query params
    */
   const toLogQueryParams = (page, pageSize) => {
     const f = filters.value
@@ -97,6 +152,12 @@ export const useFilterStore = defineStore('filter', () => {
     return params
   }
 
+  const activeAdvancedCount = () => {
+    const conds = filters.value.advanced?.conditions
+    if (!Array.isArray(conds)) return 0
+    return conds.filter(c => c.field && c.op && c.value !== undefined && c.value !== '').length
+  }
+
   const activeFilterCount = () => {
     const f = filters.value
     let n = 0
@@ -106,6 +167,8 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.deviceId) n++
     if (f.module) n++
     if (f.timeStart || f.timeEnd) n++
+    if (Array.isArray(f.tagIds) && f.tagIds.length > 0) n++
+    n += activeAdvancedCount()
     return n
   }
 
@@ -113,7 +176,9 @@ export const useFilterStore = defineStore('filter', () => {
     filters,
     resetFilters,
     resetPagination,
+    toLogQueryBody,
     toLogQueryParams,
+    activeAdvancedCount,
     activeFilterCount
   }
 })
