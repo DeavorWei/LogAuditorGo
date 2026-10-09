@@ -72,12 +72,13 @@ export const useFilterStore = defineStore('filter', () => {
   const filters = ref(load())
 
   // 变更即落盘（浅序列化，全部字段都是可 JSON 化的标量）。
-  // page / pageSize 属于"本次会话的浏览位置"，刷新后应回到第一页，故不持久化。
+  // page / pageSize 属于"本次会话的浏览位置"，tagIds / deviceId 属于任务专属数据，
+  // 均不参与跨任务全局持久化，彻底杜绝切任务时的筛选态串味 (P0-4)。
   watch(
     filters,
     (val) => {
       try {
-        const { page, pageSize, ...persisted } = val
+        const { page, pageSize, tagIds, ...persisted } = val
         localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
       } catch (e) {
         // 隐私模式下 localStorage 可能不可写，忽略即可，不影响功能
@@ -88,6 +89,13 @@ export const useFilterStore = defineStore('filter', () => {
 
   const resetFilters = () => {
     filters.value = defaults()
+  }
+
+  /** 重置任务专属的筛选维度 (deviceId, tagIds 等) */
+  const clearTaskScopedFilters = () => {
+    filters.value.deviceId = null
+    filters.value.tagIds = []
+    filters.value.tagLogic = 'any'
   }
 
   /** 仅重置分页位置，保留用户已配置的筛选条件 */
@@ -175,6 +183,7 @@ export const useFilterStore = defineStore('filter', () => {
   return {
     filters,
     resetFilters,
+    clearTaskScopedFilters,
     resetPagination,
     toLogQueryBody,
     toLogQueryParams,

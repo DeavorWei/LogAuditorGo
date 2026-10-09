@@ -153,13 +153,21 @@
     <!-- 底部操作条 -->
     <template #footer>
       <div class="drawer-footer">
-        <el-button @click="clearAdvanced">清空条件</el-button>
+        <el-button @click="clearAdvanced">清空并重置</el-button>
         <el-button
           type="warning"
           :disabled="previewTotal <= 0"
           @click="openBatchTagDialog"
         >
-          🏷 给这 {{ previewTotal }} 条打标签…
+          🏷 批量打标…
+        </el-button>
+        <el-button
+          type="danger"
+          plain
+          :disabled="previewTotal <= 0"
+          @click="openBatchUntagDialog"
+        >
+          🏷 批量摘标…
         </el-button>
         <el-button type="primary" @click="applyFilters">
           应用筛选并查看
@@ -179,6 +187,15 @@
         <p class="batch-tag-tip">
           将为当前筛选命中的 <strong>{{ previewTotal }}</strong> 条日志添加指定标签：
         </p>
+
+        <el-alert
+          v-if="previewTotal > 50000"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          命中数量较大 ({{ previewTotal }} 条)，批量打标预计耗时数秒，请谨慎操作。
+        </el-alert>
 
         <el-form label-position="top">
           <el-form-item label="选择已有标签">
@@ -220,7 +237,7 @@
             />
           </el-form-item>
           <el-form-item label="标签颜色">
-            <el-color-picker v-model="newTagColor" :predefine="predefineColors" />
+            <el-color-picker v-model="newTagColor" :predefine="PREDEFINE_TAG_COLORS" />
           </el-form-item>
         </el-form>
       </div>
@@ -235,16 +252,82 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量摘标确认弹窗 -->
+    <el-dialog
+      v-model="batchUntagDialogVisible"
+      title="按当前筛选结果批量摘除标签"
+      width="440px"
+      append-to-body
+      destroy-on-close
+    >
+      <div class="batch-tag-body">
+        <p class="batch-tag-tip">
+          将为当前筛选命中的 <strong>{{ previewTotal }}</strong> 条日志移除指定标签关联：
+        </p>
+
+        <el-alert
+          v-if="previewTotal > 50000"
+          type="warning"
+          :closable="false"
+          style="margin-bottom: 12px"
+        >
+          命中数量较大 ({{ previewTotal }} 条)，批量摘标预计耗时数秒，请谨慎操作。
+        </el-alert>
+
+        <el-form label-position="top">
+          <el-form-item label="选择要摘除的标签" required>
+            <el-select
+              v-model="selectedUntagId"
+              placeholder="选择已有标签"
+              style="width: 100%"
+              filterable
+            >
+              <el-option
+                v-for="t in tagStore.tags"
+                :key="t.id"
+                :label="`${t.name} (${t.log_count || 0})`"
+                :value="t.id"
+              >
+                <div style="display: flex; align-items: center; justify-content: space-between">
+                  <span>{{ t.name }}</span>
+                  <span
+                    :style="{
+                      display: 'inline-block',
+                      width: '12px',
+                      height: '12px',
+                      borderRadius: '50%',
+                      backgroundColor: t.color || '#409EFF'
+                    }"
+                  />
+                </div>
+              </el-option>
+            </el-select>
+          </el-form-item>
+        </el-form>
+      </div>
+      <template #footer>
+        <el-button @click="batchUntagDialogVisible = false">取消</el-button>
+        <el-button
+          type="danger"
+          :loading="untaggingLoading"
+          @click="confirmBatchUntag"
+        >
+          确认摘标
+        </el-button>
+      </template>
+    </el-dialog>
   </el-drawer>
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive, computed, watch, onUnmounted } from 'vue'
 import { Delete } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import useFilterStore from '@/stores/filter'
 import useTagStore from '@/stores/tag'
+import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
 
 const props = defineProps({
   taskId: {
@@ -299,7 +382,7 @@ const removeCondition = (index) => {
   debouncedPreview()
 }
 
-// 字段与操作符联动配置
+// 字段与操作符联动配置（与后端白名单 100% 对齐）
 const operatorMap = {
   raw_log: [
     { label: '包含', value: 'contains' },
@@ -323,6 +406,9 @@ const operatorMap = {
     { label: '包含', value: 'contains' },
     { label: '不包含', value: 'not_contains' },
     { label: '正则匹配', value: 'regex' },
+    { label: '正则不匹配', value: 'not_regex' },
+    { label: '前缀匹配', value: 'prefix' },
+    { label: '后缀匹配', value: 'suffix' },
     { label: '多值包含 (逗号分隔)', value: 'in' },
     { label: '多值排除 (逗号分隔)', value: 'not_in' },
     { label: '精确等于', value: 'eq' }
@@ -330,6 +416,10 @@ const operatorMap = {
   module: [
     { label: '包含', value: 'contains' },
     { label: '不包含', value: 'not_contains' },
+    { label: '正则匹配', value: 'regex' },
+    { label: '正则不匹配', value: 'not_regex' },
+    { label: '前缀匹配', value: 'prefix' },
+    { label: '后缀匹配', value: 'suffix' },
     { label: '多值包含 (逗号分隔)', value: 'in' },
     { label: '多值排除 (逗号分隔)', value: 'not_in' },
     { label: '精确等于', value: 'eq' }
@@ -338,11 +428,18 @@ const operatorMap = {
     { label: '包含', value: 'contains' },
     { label: '不包含', value: 'not_contains' },
     { label: '正则匹配', value: 'regex' },
+    { label: '正则不匹配', value: 'not_regex' },
+    { label: '前缀匹配', value: 'prefix' },
+    { label: '后缀匹配', value: 'suffix' },
     { label: '精确等于', value: 'eq' }
   ],
   slot_info: [
     { label: '包含', value: 'contains' },
     { label: '不包含', value: 'not_contains' },
+    { label: '正则匹配', value: 'regex' },
+    { label: '正则不匹配', value: 'not_regex' },
+    { label: '前缀匹配', value: 'prefix' },
+    { label: '后缀匹配', value: 'suffix' },
     { label: '精确等于', value: 'eq' }
   ],
   source_file: [
@@ -360,6 +457,8 @@ const operatorMap = {
   severity: [
     { label: '级别 <=', value: 'lte' },
     { label: '级别 >=', value: 'gte' },
+    { label: '级别 <', value: 'lt' },
+    { label: '级别 >', value: 'gt' },
     { label: '级别 =', value: 'eq' },
     { label: '多级别 (1,2,3)', value: 'in' }
   ],
@@ -370,10 +469,16 @@ const operatorMap = {
   ],
   match_confidence: [
     { label: '置信度 >=', value: 'gte' },
-    { label: '置信度 <=', value: 'lte' }
+    { label: '置信度 <=', value: 'lte' },
+    { label: '置信度 >', value: 'gt' },
+    { label: '置信度 <', value: 'lt' },
+    { label: '置信度 =', value: 'eq' }
   ],
   knowledge_id: [
+    { label: '知识ID >=', value: 'gte' },
+    { label: '知识ID <=', value: 'lte' },
     { label: '知识ID >', value: 'gt' },
+    { label: '知识ID <', value: 'lt' },
     { label: '知识ID =', value: 'eq' }
   ]
 }
@@ -394,7 +499,7 @@ const getValuePlaceholder = (cond) => {
   if (cond.field === 'parameters') {
     return 'Key=Value，例如: PeerIP=10.1.1.1'
   }
-  if (cond.op === 'regex' || cond.op === 'not_regex') {
+  if (cond.op === 'regex' || cond.op === 'not_regex' || cond.op === 'kv_regex' || cond.op === 'kv_not_regex') {
     return '输入标准 RE2 正则表达式'
   }
   if (cond.op === 'in' || cond.op === 'not_in') {
@@ -458,6 +563,13 @@ const debouncedPreview = () => {
   }, 350)
 }
 
+onUnmounted(() => {
+  if (timer) {
+    clearTimeout(timer)
+    timer = null
+  }
+})
+
 const fetchPreviewCount = async () => {
   if (!props.taskId) return
   previewLoading.value = true
@@ -482,11 +594,14 @@ const fetchPreviewCount = async () => {
   }
 }
 
-// 清空高级筛选
+// 清空高级筛选（立即同步清空并刷新列表，保证状态与视图一致）
 const clearAdvanced = () => {
   localAdvanced.conditions = []
   filterStore.filters.advanced = { logic: 'AND', conditions: [] }
+  filterStore.resetPagination()
   debouncedPreview()
+  emit('apply')
+  ElMessage.info('已清空高级筛选条件')
 }
 
 // 应用筛选
@@ -507,13 +622,14 @@ const applyFilters = () => {
 const batchTagDialogVisible = ref(false)
 const selectedTagId = ref(null)
 const newTagName = ref('')
-const newTagColor = ref('#F56C6C')
+const newTagColor = ref(PREDEFINE_TAG_COLORS[0])
 const taggingLoading = ref(false)
-const predefineColors = [
-  '#F56C6C', '#E6A23C', '#67C23A', '#409EFF', '#909399', '#795548', '#9C27B0'
-]
 
 const openBatchTagDialog = () => {
+  if (previewTotal.value > 500000) {
+    ElMessage.warning('单次批量打标不能超过 50 万条，请增加筛选条件细化范围')
+    return
+  }
   selectedTagId.value = tagStore.tags.length > 0 ? tagStore.tags[0].id : null
   newTagName.value = ''
   batchTagDialogVisible.value = true
@@ -562,6 +678,50 @@ const confirmBatchTag = async () => {
     ElMessage.error(e.message || '批量打标失败')
   } finally {
     taggingLoading.value = false
+  }
+}
+
+// 批量摘标
+const batchUntagDialogVisible = ref(false)
+const selectedUntagId = ref(null)
+const untaggingLoading = ref(false)
+
+const openBatchUntagDialog = () => {
+  if (previewTotal.value > 500000) {
+    ElMessage.warning('单次批量摘标不能超过 50 万条，请增加筛选条件细化范围')
+    return
+  }
+  selectedUntagId.value = tagStore.tags.length > 0 ? tagStore.tags[0].id : null
+  batchUntagDialogVisible.value = true
+}
+
+const confirmBatchUntag = async () => {
+  if (!selectedUntagId.value) {
+    ElMessage.warning('请选择要摘除的标签')
+    return
+  }
+  untaggingLoading.value = true
+  try {
+    const validConds = localAdvanced.conditions.filter(
+      c => c.field && c.op && c.value !== undefined && c.value !== '' && !getRegexError(c)
+    )
+    const baseBody = filterStore.toLogQueryBody(1, 50)
+    baseBody.advanced = {
+      logic: localAdvanced.logic || 'AND',
+      conditions: validConds
+    }
+
+    const res = await api.batchUntagLogs(props.taskId, selectedUntagId.value, baseBody)
+    if (res.code === 0) {
+      ElMessage.success(`成功从 ${res.data.untagged_count} 条日志中移除标签`)
+      batchUntagDialogVisible.value = false
+      await tagStore.fetchTags(props.taskId)
+      applyFilters()
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '批量摘标失败')
+  } finally {
+    untaggingLoading.value = false
   }
 }
 </script>

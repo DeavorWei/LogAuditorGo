@@ -45,9 +45,27 @@
           <el-button type="primary" icon="Upload" :disabled="!currentTaskId" @click="openImportDialog">
             {{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}
           </el-button>
-          <el-button type="success" icon="Download" :loading="exportingHTML" :disabled="!currentTaskId || currentTask?.status === 'PENDING'" @click="handleExportHTML">
-            导出报告
-          </el-button>
+          <el-dropdown trigger="click" :disabled="!currentTaskId || currentTask?.status === 'PENDING'" @command="handleExportCommand">
+            <el-button type="success" icon="Download" :loading="exportingReport" :disabled="!currentTaskId || currentTask?.status === 'PENDING'">
+              导出报告 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="subset_html">
+                  📄 导出筛选结果 (HTML)
+                </el-dropdown-item>
+                <el-dropdown-item command="subset_csv">
+                  📊 导出筛选结果 (CSV)
+                </el-dropdown-item>
+                <el-dropdown-item divided command="full_html">
+                  📦 导出全量报告 (HTML)
+                </el-dropdown-item>
+                <el-dropdown-item command="full_csv">
+                  📑 导出全量明细 (CSV)
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">新建任务</el-button>
         </el-button-group>
       </div>
@@ -326,6 +344,21 @@
                 </div>
               </el-option>
             </el-select>
+            <!-- 多标签时支持切换 全部满足(ALL) / 任一满足(ANY) (P1-12) -->
+            <el-tooltip
+              v-if="filter.tagIds && filter.tagIds.length > 1"
+              :content="filter.tagLogic === 'all' ? '当前模式: 必须同时拥有所有选中标签 (AND)' : '当前模式: 拥有任一选中标签即可 (OR)'"
+              placement="top"
+            >
+              <el-button
+                size="small"
+                :type="filter.tagLogic === 'all' ? 'primary' : 'default'"
+                plain
+                @click="toggleTagLogic"
+              >
+                {{ filter.tagLogic === 'all' ? '全部' : '任一' }}
+              </el-button>
+            </el-tooltip>
             <el-button
               size="small"
               type="info"
@@ -901,7 +934,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, Opportunity, Loading } from '@element-plus/icons-vue'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, ArrowDown, Opportunity, Loading } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
@@ -1478,8 +1511,8 @@ const handleTaskChange = async (taskId) => {
   currentTaskId.value = taskId
   currentTask.value = taskList.value.find(t => t.task_id === taskId)
   checkAndPollRcaStatus()
+  filterStore.clearTaskScopedFilters()
   filter.value.page = 1
-  filter.value.deviceId = null
   filter.value.timeStart = null
   filter.value.timeEnd = null
   selectedLog.value = null
@@ -1698,17 +1731,35 @@ const selectLog = (log) => {
   selectedLog.value = log
 }
 
-const exportingHTML = ref(false)
-const handleExportHTML = async () => {
-  if (!currentTaskId.value || exportingHTML.value) return
-  exportingHTML.value = true
+const toggleTagLogic = async () => {
+  filter.value.tagLogic = filter.value.tagLogic === 'all' ? 'any' : 'all'
+  await onFilterChange()
+}
+
+const exportingReport = ref(false)
+const handleExportCommand = async (cmd) => {
+  if (!currentTaskId.value || exportingReport.value) return
+  exportingReport.value = true
   try {
-    await api.downloadTaskReport(currentTaskId.value, 'html')
-    ElMessage.success('HTML 报告已成功导出并下载')
+    if (cmd === 'subset_html') {
+      const body = filterStore.toLogQueryBody()
+      await api.downloadTaskReport(currentTaskId.value, 'html', body)
+      ElMessage.success('已成功导出当前筛选子集 HTML 报告')
+    } else if (cmd === 'subset_csv') {
+      const body = filterStore.toLogQueryBody()
+      await api.downloadTaskReport(currentTaskId.value, 'csv', body)
+      ElMessage.success('已成功导出当前筛选子集 CSV 明细')
+    } else if (cmd === 'full_html') {
+      await api.downloadTaskReport(currentTaskId.value, 'html')
+      ElMessage.success('已成功导出全量任务 HTML 报告')
+    } else if (cmd === 'full_csv') {
+      await api.downloadTaskReport(currentTaskId.value, 'csv')
+      ElMessage.success('已成功导出全量任务 CSV 明细')
+    }
   } catch (e) {
     // 错误已由 api 统一拦截器弹出提示
   } finally {
-    exportingHTML.value = false
+    exportingReport.value = false
   }
 }
 

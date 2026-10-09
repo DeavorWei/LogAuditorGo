@@ -21,7 +21,7 @@
             />
           </el-form-item>
           <el-form-item label="颜色">
-            <el-color-picker v-model="form.color" :predefine="predefineColors" />
+            <el-color-picker v-model="form.color" :predefine="PREDEFINE_TAG_COLORS" />
           </el-form-item>
           <el-form-item label="备注">
             <el-input
@@ -107,6 +107,7 @@ import { ref, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import useTagStore from '@/stores/tag'
 import useFilterStore from '@/stores/filter'
+import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   taskId: {
@@ -125,13 +126,9 @@ const submitting = ref(false)
 const isEditing = ref(false)
 const editingTagId = ref(null)
 
-const predefineColors = [
-  '#F56C6C', '#E6A23C', '#67C23A', '#409EFF', '#909399', '#795548', '#9C27B0'
-]
-
 const form = reactive({
   name: '',
-  color: '#409EFF',
+  color: DEFAULT_TAG_COLOR,
   remark: ''
 })
 
