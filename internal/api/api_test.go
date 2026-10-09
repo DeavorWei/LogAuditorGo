@@ -161,6 +161,14 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for /tasks/:id/logs?sort_by=time&order=desc, got %d", w4Desc.Code)
 	}
 
+	// 4.5 验证工作台基于时间区间（time_start / time_end）的查询支持（RFC3339 带时区偏移格式）
+	req4TimeRange, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-01-01T00:00:00%2B08:00&time_end=2026-12-31T23:59:59%2B08:00", nil)
+	w4TimeRange := httptest.NewRecorder()
+	router.ServeHTTP(w4TimeRange, req4TimeRange)
+	if w4TimeRange.Code != http.StatusOK {
+		t.Errorf("expected 200 for /tasks/:id/logs with RFC3339 time range, got %d: %s", w4TimeRange.Code, w4TimeRange.Body.String())
+	}
+
 	// 5. 测试 GET /api/v1/tasks/:id/rca
 	req5, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/rca", nil)
 	w5 := httptest.NewRecorder()
