@@ -161,12 +161,38 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for /tasks/:id/logs?sort_by=time&order=desc, got %d", w4Desc.Code)
 	}
 
-	// 4.5 验证工作台基于时间区间（time_start / time_end）的查询支持（RFC3339 带时区偏移格式）
-	req4TimeRange, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-01-01T00:00:00%2B08:00&time_end=2026-12-31T23:59:59%2B08:00", nil)
-	w4TimeRange := httptest.NewRecorder()
-	router.ServeHTTP(w4TimeRange, req4TimeRange)
-	if w4TimeRange.Code != http.StatusOK {
-		t.Errorf("expected 200 for /tasks/:id/logs with RFC3339 time range, got %d: %s", w4TimeRange.Code, w4TimeRange.Body.String())
+	// 4.5 验证工作台基于时间区间（time_start / time_end）的严格断言与反例
+	// 反例：明显排除零值时间（2026 年区间不应包含 0001 年的日志）
+	req4Exclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-01-01T00:00:00%2B08:00&time_end=2026-12-31T23:59:59%2B08:00", nil)
+	w4Exclude := httptest.NewRecorder()
+	router.ServeHTTP(w4Exclude, req4Exclude)
+	if w4Exclude.Code != http.StatusOK {
+		t.Fatalf("expected 200 for excluded time range query, got %d", w4Exclude.Code)
+	}
+	var res4Exclude struct {
+		Code int `json:"code"`
+		Data struct {
+			Total int `json:"total"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w4Exclude.Body.Bytes(), &res4Exclude)
+	if res4Exclude.Data.Total != 0 {
+		t.Errorf("expected 0 logs for out-of-range filter, got %d (body: %s)", res4Exclude.Data.Total, w4Exclude.Body.String())
+	}
+
+	// 正例：宽区间覆盖零值时间（0001-01-01 开始）应命中全部 2 条日志
+	req4Include, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=0001-01-01T00:00:00Z&time_end=2099-12-31T23:59:59Z", nil)
+	w4Include := httptest.NewRecorder()
+	router.ServeHTTP(w4Include, req4Include)
+	var res4Include struct {
+		Code int `json:"code"`
+		Data struct {
+			Total int `json:"total"`
+		} `json:"data"`
+	}
+	json.Unmarshal(w4Include.Body.Bytes(), &res4Include)
+	if res4Include.Data.Total != 2 {
+		t.Errorf("expected 2 logs for broad time range filter, got %d", res4Include.Data.Total)
 	}
 
 	// 5. 测试 GET /api/v1/tasks/:id/rca
@@ -1413,6 +1439,130 @@ func TestDeviceTimeline_TimeFilterFormats(t *testing.T) {
 				t.Fatalf("expected 200 OK for multi-device/logs %s, got %d, body: %s", tc.name, recLogs.Code, recLogs.Body.String())
 			}
 		})
+	}
+}
+
+func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "api_time_range_strict_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+
+	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
+	if err != nil {
+		t.Fatalf("init db failed: %v", err)
+	}
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	knowledgeSvc := knowledge.NewService(globalDB)
+	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+	router := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
+
+	// 创建任务并导入两条带有明确时间戳的日志 (2026-08-08 18:30:00 与 2026-08-08 19:30:00)
+	content := "2026-08-08 18:30:00 SW-01 %%01IFNET/4/IF_DOWN(l)[10]: Interface 100GE1/0/1 is down.\n2026-08-08 19:30:00 SW-01 %%01BFD/2/BFD_SESS_DOWN(l)[11]: BFD session state changed to DOWN. (SessionID=10)"
+	createPayload := fmt.Sprintf(`{"task_name": "TimeRangeStrictTest", "device_type": "CloudEngine 16800", "content": %q}`, content)
+	reqCreate, _ := http.NewRequest("POST", "/api/v1/tasks", strings.NewReader(createPayload))
+	reqCreate.Header.Set("Content-Type", "application/json")
+	wCreate := httptest.NewRecorder()
+	router.ServeHTTP(wCreate, reqCreate)
+	if wCreate.Code != http.StatusOK {
+		t.Fatalf("expected 200 for POST /tasks, got %d: %s", wCreate.Code, wCreate.Body.String())
+	}
+
+	var resCreate struct {
+		Code int `json:"code"`
+		Data struct {
+			TaskID string `json:"task_id"`
+		} `json:"data"`
+	}
+	json.Unmarshal(wCreate.Body.Bytes(), &resCreate)
+	taskID := resCreate.Data.TaskID
+	if taskID == "" {
+		t.Fatalf("expected non-empty task_id")
+	}
+
+	// 1. 宽区间应命中全部 2 条日志 (RFC3339 带时区偏移)
+	reqBroad, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-08-08T18:00:00%2B08:00&time_end=2026-08-08T20:00:00%2B08:00", nil)
+	wBroad := httptest.NewRecorder()
+	router.ServeHTTP(wBroad, reqBroad)
+	if wBroad.Code != http.StatusOK {
+		t.Fatalf("expected 200 for broad range, got %d", wBroad.Code)
+	}
+	var resBroad struct {
+		Data struct {
+			Total   int               `json:"total"`
+			Records []model.LogRecord `json:"records"`
+		} `json:"data"`
+	}
+	json.Unmarshal(wBroad.Body.Bytes(), &resBroad)
+	if resBroad.Data.Total != 2 || len(resBroad.Data.Records) != 2 {
+		t.Errorf("broad range expected total=2, got %d (len=%d)", resBroad.Data.Total, len(resBroad.Data.Records))
+	}
+
+	// 2. 单边开区间过滤 (仅指定起始时间 >= 19:00:00)，应仅命中第二条日志 (BFD)
+	reqStartOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-08-08T19:00:00%2B08:00", nil)
+	wStartOnly := httptest.NewRecorder()
+	router.ServeHTTP(wStartOnly, reqStartOnly)
+	var resStartOnly struct {
+		Data struct {
+			Total   int               `json:"total"`
+			Records []model.LogRecord `json:"records"`
+		} `json:"data"`
+	}
+	json.Unmarshal(wStartOnly.Body.Bytes(), &resStartOnly)
+	if resStartOnly.Data.Total != 1 || len(resStartOnly.Data.Records) != 1 || resStartOnly.Data.Records[0].Module != "BFD" {
+		t.Errorf("start-only filter expected 1 BFD log, got total=%d, records=%+v", resStartOnly.Data.Total, resStartOnly.Data.Records)
+	}
+
+	// 3. 单边开区间过滤 (仅指定截止时间 <= 19:00:00)，应仅命中第一条日志 (IFNET)
+	reqEndOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_end=2026-08-08T19:00:00%2B08:00", nil)
+	wEndOnly := httptest.NewRecorder()
+	router.ServeHTTP(wEndOnly, reqEndOnly)
+	var resEndOnly struct {
+		Data struct {
+			Total   int               `json:"total"`
+			Records []model.LogRecord `json:"records"`
+		} `json:"data"`
+	}
+	json.Unmarshal(wEndOnly.Body.Bytes(), &resEndOnly)
+	if resEndOnly.Data.Total != 1 || len(resEndOnly.Data.Records) != 1 || resEndOnly.Data.Records[0].Module != "IFNET" {
+		t.Errorf("end-only filter expected 1 IFNET log, got total=%d, records=%+v", resEndOnly.Data.Total, resEndOnly.Data.Records)
+	}
+
+	// 4. 关键反例：区间完全排除所有日志 (2000 年区间)，断言 total == 0
+	reqExclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2000-01-01T00:00:00%2B08:00&time_end=2000-12-31T23:59:59%2B08:00", nil)
+	wExclude := httptest.NewRecorder()
+	router.ServeHTTP(wExclude, reqExclude)
+	var resExclude struct {
+		Data struct {
+			Total   int               `json:"total"`
+			Records []model.LogRecord `json:"records"`
+		} `json:"data"`
+	}
+	json.Unmarshal(wExclude.Body.Bytes(), &resExclude)
+	if resExclude.Data.Total != 0 || len(resExclude.Data.Records) != 0 {
+		t.Errorf("critical counter-example expected total=0, got %d (len=%d)", resExclude.Data.Total, len(resExclude.Data.Records))
 	}
 }
 
