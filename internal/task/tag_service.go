@@ -19,6 +19,10 @@ var (
 	ErrTagNotFound = errors.New("tag not found")
 	// ErrLogNotFound 日志不存在
 	ErrLogNotFound = errors.New("log record not found")
+	// ErrBatchLimitExceeded 批量操作超出单次 50 万条上限
+	ErrBatchLimitExceeded = errors.New("batch operation limit exceeded (max 500,000 logs)")
+	// ErrRelationNotFound 标签关联不存在
+	ErrRelationNotFound = errors.New("tag relation not found")
 )
 
 // ListTaskTags 获取任务标签列表及关联的日志计数
@@ -124,7 +128,9 @@ func (s *Service) UpdateTaskTag(taskID string, tagID uint, req model.TagUpdateRe
 	if req.Color != "" {
 		tag.Color = strings.TrimSpace(req.Color)
 	}
-	tag.Remark = strings.TrimSpace(req.Remark)
+	if req.Remark != "" {
+		tag.Remark = strings.TrimSpace(req.Remark)
+	}
 
 	if err := taskDB.Save(&tag).Error; err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "unique") {
@@ -207,6 +213,12 @@ func (s *Service) BatchTagLogs(taskID string, tagID uint, req model.LogQueryRequ
 		return 0, 0, nil
 	}
 
+	// 单次批量操作上限 50 万条，防止超长事务独占锁
+	const maxBatchLimit = 500000
+	if matchedTotal > maxBatchLimit {
+		return 0, matchedTotal, ErrBatchLimitExceeded
+	}
+
 	// 高效单条 SQL 批量插入并幂等去重 (INSERT OR IGNORE INTO ... SELECT)
 	subQuery := query.Select("id")
 	res := taskDB.Exec(
@@ -245,6 +257,15 @@ func (s *Service) BatchUntagLogs(taskID string, tagID uint, req model.LogQueryRe
 		return 0, err
 	}
 
+	var matchedTotal int64
+	if err := query.Count(&matchedTotal).Error; err != nil {
+		return 0, err
+	}
+	const maxBatchLimit = 500000
+	if matchedTotal > maxBatchLimit {
+		return 0, ErrBatchLimitExceeded
+	}
+
 	subQuery := query.Select("id")
 	res := taskDB.Exec(
 		"DELETE FROM log_tag_relations WHERE tag_id = ? AND log_id IN (?)",
@@ -268,14 +289,18 @@ func (s *Service) AddLogTag(taskID string, logID uint, tagID uint) error {
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	// 确认标签与日志是否存在
+	// 确认标签与日志是否存在，防吞真实 DB 错误
 	var tagCount int64
-	_ = taskDB.Model(&model.LogTag{}).Where("id = ?", tagID).Count(&tagCount).Error
+	if err := taskDB.Model(&model.LogTag{}).Where("id = ?", tagID).Count(&tagCount).Error; err != nil {
+		return err
+	}
 	if tagCount == 0 {
 		return ErrTagNotFound
 	}
 	var logCount int64
-	_ = taskDB.Model(&model.LogRecord{}).Where("id = ?", logID).Count(&logCount).Error
+	if err := taskDB.Model(&model.LogRecord{}).Where("id = ?", logID).Count(&logCount).Error; err != nil {
+		return err
+	}
 	if logCount == 0 {
 		return ErrLogNotFound
 	}
@@ -297,6 +322,29 @@ func (s *Service) RemoveLogTag(taskID string, logID uint, tagID uint) error {
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	return taskDB.Where("tag_id = ? AND log_id = ?", tagID, logID).
-		Delete(&model.LogTagRelation{}).Error
+	// 确认标签与日志是否存在
+	var tagCount int64
+	if err := taskDB.Model(&model.LogTag{}).Where("id = ?", tagID).Count(&tagCount).Error; err != nil {
+		return err
+	}
+	if tagCount == 0 {
+		return ErrTagNotFound
+	}
+	var logCount int64
+	if err := taskDB.Model(&model.LogRecord{}).Where("id = ?", logID).Count(&logCount).Error; err != nil {
+		return err
+	}
+	if logCount == 0 {
+		return ErrLogNotFound
+	}
+
+	res := taskDB.Where("tag_id = ? AND log_id = ?", tagID, logID).
+		Delete(&model.LogTagRelation{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 0 {
+		return ErrRelationNotFound
+	}
+	return nil
 }

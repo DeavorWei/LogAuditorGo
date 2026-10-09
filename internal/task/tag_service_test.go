@@ -218,10 +218,12 @@ func TestOrphanTagCleanupOnOverwrite(t *testing.T) {
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	// 模拟覆盖导入清理：物理删除 core.log 对应的日志
-	// 触发外键级联与双保险清理
-	_ = taskDB.Exec("DELETE FROM log_tag_relations WHERE log_id IN (SELECT id FROM log_records WHERE source_file = ?)", "core.log")
-	_ = taskDB.Where("source_file = ?", "core.log").Delete(&model.LogRecord{})
+	// 模拟覆盖导入或直接删除：物理删除 core.log 对应的日志
+	// 验证 SQLite 级联删除触发器与外键双保险机制：无需手写清理 SQL 即可自动清空关联
+	res := taskDB.Where("source_file = ?", "core.log").Delete(&model.LogRecord{})
+	if res.Error != nil {
+		t.Fatalf("delete log records failed: %v", res.Error)
+	}
 
 	// 验证关联表记录已被清空
 	var relCount int64
@@ -309,8 +311,7 @@ func TestTagRelationLogIDIndexUsage(t *testing.T) {
 		}
 	}
 	if !hasIndexUsage {
-		t.Logf("Query Plan details: %+v", plans)
-		// 只要计划表明用了索引或符合 SQLite 优化规则即可
+		t.Fatalf("expected query plan to use index (idx_tag_rel_log_id or USING INDEX), got plans: %+v", plans)
 	}
 }
 

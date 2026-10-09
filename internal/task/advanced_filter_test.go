@@ -10,6 +10,8 @@ import (
 
 	"path/filepath"
 
+	"gorm.io/gorm"
+
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
 )
@@ -245,12 +247,38 @@ func TestAdvancedFilterLogicModes(t *testing.T) {
 	}
 }
 
-// ADV-04: KV 参数过滤在含空串 parameters_json 记录的表上不报错且命中正确
+// ADV-04: KV 参数过滤在含空串、NULL 以及非法畸形 JSON 记录的表上不报错且命中正确
 func TestAdvancedFilterKVParameters(t *testing.T) {
 	svc, taskID, cleanup := setupTestTaskWithLogs(t)
 	defer cleanup()
 
-	// 查询 PeerIP=10.1.1.1（精确匹配） -> 命中文档 ID 1 和 2
+	taskDB, _, err := storage.GetOrCreateTaskDB(svc.taskDir, taskID)
+	if err != nil {
+		t.Fatalf("get task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	// 插入一条 parameters_json 显式为 NULL 的记录，以及一条非法非 JSON 格式的脏数据
+	rawLogs := []model.LogRecord{
+		{
+			ID:             5,
+			Timestamp:      time.Now(),
+			Severity:       3,
+			RawLog:         "null params log",
+			ParametersJSON: "", // 临时赋空
+		},
+		{
+			ID:             6,
+			Timestamp:      time.Now(),
+			Severity:       4,
+			RawLog:         "malformed json log",
+			ParametersJSON: "not_a_valid_{json}",
+		},
+	}
+	taskDB.Create(&rawLogs)
+	taskDB.Exec("UPDATE log_records SET parameters_json = NULL WHERE id = 5")
+
+	// 查询 PeerIP=10.1.1.1（精确匹配） -> 命中文档 ID 1 和 2，NULL 和非法 JSON 被安全排除且不报 SQL 语法错
 	kvReq := model.LogQueryRequestBody{
 		PageSize: 10,
 		Advanced: &model.AdvancedFilter{
@@ -340,7 +368,7 @@ func TestAdvancedFilterKeyValidation(t *testing.T) {
 	}
 }
 
-// ADV-07: 标签过滤（any / all 子查询与回填）
+// ADV-07: 标签过滤（any / all 子查询与回填，断言无 JOIN 且防行膨胀）
 func TestAdvancedFilterTagSubqueries(t *testing.T) {
 	svc, taskID, cleanup := setupTestTaskWithLogs(t)
 	defer cleanup()
@@ -363,6 +391,21 @@ func TestAdvancedFilterTagSubqueries(t *testing.T) {
 		{TagID: tag2.ID, LogID: 1},
 		{TagID: tag1.ID, LogID: 2},
 	})
+
+	// 断言 SQL 形态：必须采用子查询防行膨胀，严禁 JOIN log_tag_relations
+	sqlStr := taskDB.ToSQL(func(tx *gorm.DB) *gorm.DB {
+		q, _ := BuildLogFilterScope(tx.Model(&model.LogRecord{}), model.LogQueryRequestBody{
+			TagIDs:   []uint{tag1.ID, tag2.ID},
+			TagLogic: "all",
+		})
+		return q.Find(&[]model.LogRecord{})
+	})
+	if strings.Contains(strings.ToUpper(sqlStr), "JOIN LOG_TAG_RELATIONS") {
+		t.Fatalf("expected NO JOIN on log_tag_relations to avoid row explosion, got SQL: %s", sqlStr)
+	}
+	if !strings.Contains(strings.ToUpper(sqlStr), "ID IN (SELECT LOG_ID FROM LOG_TAG_RELATIONS") {
+		t.Fatalf("expected subquery 'id IN (SELECT log_id...', got SQL: %s", sqlStr)
+	}
 
 	// 1. any 逻辑：tag_ids=[tag1, tag2] -> 命中 Log 1, 2
 	anyReq := model.LogQueryRequestBody{
@@ -392,18 +435,18 @@ func TestAdvancedFilterTagSubqueries(t *testing.T) {
 		t.Fatal("expected log 1 in results")
 	}
 
-	// 2. all 逻辑：tag_ids=[tag1, tag2] -> 仅命中 Log 1
-	allReq := model.LogQueryRequestBody{
+	// 2. all 逻辑且包含重复 tag ID（[tag1, tag1, tag2] 验证去重）：依然正确命中 Log 1
+	allReqWithDup := model.LogQueryRequestBody{
 		PageSize: 10,
-		TagIDs:   []uint{tag1.ID, tag2.ID},
+		TagIDs:   []uint{tag1.ID, tag1.ID, tag2.ID},
 		TagLogic: "all",
 	}
-	recordsAll, totalAll, err := svc.QueryTaskLogsUnified(taskID, allReq)
+	recordsAll, totalAll, err := svc.QueryTaskLogsUnified(taskID, allReqWithDup)
 	if err != nil {
-		t.Fatalf("tag all query failed: %v", err)
+		t.Fatalf("tag all query with duplicates failed: %v", err)
 	}
 	if totalAll != 1 || len(recordsAll) != 1 || recordsAll[0].ID != 1 {
-		t.Fatalf("expected only log 1 for tag all, got total=%d", totalAll)
+		t.Fatalf("expected only log 1 for tag all with duplicates, got total=%d", totalAll)
 	}
 }
 

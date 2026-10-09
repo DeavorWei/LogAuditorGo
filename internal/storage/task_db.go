@@ -472,9 +472,10 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		logger.Log.Warnf("[TaskDBPool] ensure task db indexes failed: %v", err)
 	}
 
-	// 孤儿标签自愈清理：兜底历史残留与异常删除路径，保证无孤儿关联
-	if err := db.Exec("DELETE FROM log_tag_relations WHERE log_id NOT IN (SELECT id FROM log_records)").Error; err != nil {
-		logger.Log.Debugf("[TaskDBPool] auto heal orphan tag relations skipped or failed: %v", err)
+	// 建立 SQLite 级联删除触发器，作为外键级联的双保险防线
+	// 无论通过任何路径删除 log_records 或 log_tags，均由引擎层级自动级联删除关联关系，杜绝孤儿记录
+	if err := ensureTaskTriggers(db); err != nil {
+		logger.Log.Warnf("[TaskDBPool] ensure task cascade triggers failed: %v", err)
 	}
 
 	return db, nil
@@ -489,11 +490,32 @@ func ensureTaskIndexes(db *gorm.DB) error {
 		// RCA keyset 分页游标 (timestamp, id) 的支撑索引，
 		// 保证 "WHERE (timestamp > ? OR (timestamp = ? AND id > ?)) ORDER BY timestamp, id" 不退化为全表排序
 		"CREATE INDEX IF NOT EXISTS idx_log_records_time_id ON log_records(timestamp, id)",
-		// 标签关联表反向与正向索引：支撑分页回填 (WHERE log_id IN (...)) 与聚合统计
-		"CREATE INDEX IF NOT EXISTS idx_tag_relations_log_id ON log_tag_relations(log_id)",
-		"CREATE INDEX IF NOT EXISTS idx_tag_relations_tag_id ON log_tag_relations(tag_id)",
 	}
 	for _, stmt := range indexes {
+		if err := db.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ensureTaskTriggers 为任务库建立级联删除触发器（幂等）
+func ensureTaskTriggers(db *gorm.DB) error {
+	triggers := []string{
+		// 当 log_records 行被物理删除时，自动级联清理其标签关联
+		`CREATE TRIGGER IF NOT EXISTS trg_cascade_delete_log_tag_rel
+		AFTER DELETE ON log_records
+		BEGIN
+			DELETE FROM log_tag_relations WHERE log_id = OLD.id;
+		END;`,
+		// 当 log_tags 行被删除时，自动级联清理其关联关系
+		`CREATE TRIGGER IF NOT EXISTS trg_cascade_delete_tag_tag_rel
+		AFTER DELETE ON log_tags
+		BEGIN
+			DELETE FROM log_tag_relations WHERE tag_id = OLD.id;
+		END;`,
+	}
+	for _, stmt := range triggers {
 		if err := db.Exec(stmt).Error; err != nil {
 			return err
 		}

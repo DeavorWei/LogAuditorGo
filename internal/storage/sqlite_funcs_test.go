@@ -110,10 +110,17 @@ func TestTaskDBTagTablesMigration(t *testing.T) {
 		t.Errorf("expected 2 tag tables, got %d", tagTableCount)
 	}
 
-	// 验证反向索引 idx_tag_relations_log_id 是否存在
+	// 验证反向索引 idx_tag_rel_log_id 是否存在 (无冗余)
 	var indexCount int64
-	db.Raw("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_tag_relations_log_id'").Scan(&indexCount)
+	db.Raw("SELECT count(*) FROM sqlite_master WHERE type='index' AND name='idx_tag_rel_log_id'").Scan(&indexCount)
 	if indexCount != 1 {
-		t.Errorf("expected idx_tag_relations_log_id index, got %d", indexCount)
+		t.Errorf("expected idx_tag_rel_log_id index, got %d", indexCount)
+	}
+
+	// 验证级联删除触发器 trg_cascade_delete_log_tag_rel 是否存在
+	var triggerCount int64
+	db.Raw("SELECT count(*) FROM sqlite_master WHERE type='trigger' AND name='trg_cascade_delete_log_tag_rel'").Scan(&triggerCount)
+	if triggerCount != 1 {
+		t.Errorf("expected trg_cascade_delete_log_tag_rel trigger, got %d", triggerCount)
 	}
 }

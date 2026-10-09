@@ -170,14 +170,29 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for POST /tasks/:id/logs/query, got %d: %s", w4Post.Code, w4Post.Body.String())
 	}
 
-	// 4.0.1 测试 POST /api/v1/tasks/:id/export 协同导出端点 (CSV)
+	// 4.0.1 测试 POST /api/v1/tasks/:id/export 协同导出端点 (CSV 与 HTML，EXP-01)
 	exportBody := `{"advanced":{"logic":"AND","conditions":[{"field":"raw_log","op":"contains","value":"IF"}]}}`
-	req4Export, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/export?format=csv", strings.NewReader(exportBody))
-	req4Export.Header.Set("Content-Type", "application/json")
-	w4Export := httptest.NewRecorder()
-	router.ServeHTTP(w4Export, req4Export)
-	if w4Export.Code != http.StatusOK {
-		t.Errorf("expected 200 for POST /tasks/:id/export, got %d: %s", w4Export.Code, w4Export.Body.String())
+	req4ExportCSV, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/export?format=csv", strings.NewReader(exportBody))
+	req4ExportCSV.Header.Set("Content-Type", "application/json")
+	w4ExportCSV := httptest.NewRecorder()
+	router.ServeHTTP(w4ExportCSV, req4ExportCSV)
+	if w4ExportCSV.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/export?format=csv, got %d: %s", w4ExportCSV.Code, w4ExportCSV.Body.String())
+	}
+	if !strings.Contains(w4ExportCSV.Body.String(), "IF") {
+		t.Errorf("expected exported CSV to contain matched logs with 'IF', got %s", w4ExportCSV.Body.String())
+	}
+
+	// 4.0.1.b 测试 POST /api/v1/tasks/:id/export 协同导出端点 (HTML 分支，EXP-01)
+	req4ExportHTML, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/export?format=html", strings.NewReader(exportBody))
+	req4ExportHTML.Header.Set("Content-Type", "application/json")
+	w4ExportHTML := httptest.NewRecorder()
+	router.ServeHTTP(w4ExportHTML, req4ExportHTML)
+	if w4ExportHTML.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/export?format=html, got %d: %s", w4ExportHTML.Code, w4ExportHTML.Body.String())
+	}
+	if !strings.Contains(w4ExportHTML.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("expected Content-Type text/html for HTML export, got %s", w4ExportHTML.Header().Get("Content-Type"))
 	}
 
 	// 4.0.2 测试标签系统 API (Phase 1C)
@@ -222,6 +237,22 @@ func TestAPIEndpoints(t *testing.T) {
 	router.ServeHTTP(wSingleTag, reqSingleTag)
 	if wSingleTag.Code != http.StatusOK {
 		t.Errorf("expected 200 for POST /tasks/:id/logs/:log_id/tags, got %d", wSingleTag.Code)
+	}
+
+	// 单条摘标
+	reqSingleUntag, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/tasks/%s/logs/1/tags/%d", taskID, createdTagID), nil)
+	wSingleUntag := httptest.NewRecorder()
+	router.ServeHTTP(wSingleUntag, reqSingleUntag)
+	if wSingleUntag.Code != http.StatusOK {
+		t.Errorf("expected 200 for DELETE /tasks/:id/logs/:log_id/tags/:tag_id, got %d", wSingleUntag.Code)
+	}
+
+	// 再次摘标应返回 404 (ErrRelationNotFound)
+	reqSingleUntag404, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/tasks/%s/logs/1/tags/%d", taskID, createdTagID), nil)
+	wSingleUntag404 := httptest.NewRecorder()
+	router.ServeHTTP(wSingleUntag404, reqSingleUntag404)
+	if wSingleUntag404.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for repeated DELETE /tasks/:id/logs/:log_id/tags/:tag_id, got %d", wSingleUntag404.Code)
 	}
 
 	// 批量打标

@@ -492,6 +492,8 @@ func (h *TaskHandler) QueryLogsUnified(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB 限制
+
 	var req model.LogQueryRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
@@ -646,6 +648,8 @@ func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB 限制
+
 	var req model.LogQueryRequestBody
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -656,7 +660,7 @@ func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
 
 	format := c.DefaultQuery("format", "csv")
 	if format == "html" {
-		htmlContent, err := h.taskSvc.ExportTaskHTML(taskID)
+		htmlContent, err := h.taskSvc.ExportTaskHTMLUnified(taskID, req)
 		if err != nil {
 			ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 			return
@@ -762,11 +766,11 @@ func buildCSVRow(rec model.LogRecord) string {
 
 // escapeCSVField 转义 CSV 字段：包裹引号 + 双写内部引号，并防御公式注入
 func escapeCSVField(v string) string {
-	// 以 = + - @ 开头的字段会被 Excel/Sheets 当作公式求值，统一加前导单引号
-	if len(v) > 0 && (v[0] == '=' || v[0] == '+' || v[0] == '-' || v[0] == '@') {
+	// 以 = + - @ \t \r ` 开头的字段会被 Excel/Sheets 当作公式求值，统一加前导单引号
+	if len(v) > 0 && (v[0] == '=' || v[0] == '+' || v[0] == '-' || v[0] == '@' || v[0] == '\t' || v[0] == '\r' || v[0] == '`') {
 		v = "'" + v
 	}
-	if strings.ContainsAny(v, ",\"\n\r") {
+	if strings.ContainsAny(v, ",\"\n\r\t") {
 		return `"` + strings.ReplaceAll(v, `"`, `""`) + `"`
 	}
 	return v

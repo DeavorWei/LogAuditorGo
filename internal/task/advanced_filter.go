@@ -196,6 +196,12 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 			Args: []any{"%" + escapeLikePattern(val)},
 		}, nil
 	case "eq":
+		if colName == "module" {
+			return &conditionSQL{
+				SQL:  colName + " = ? COLLATE NOCASE",
+				Args: []any{val},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  colName + " = ?",
 			Args: []any{val},
@@ -206,6 +212,16 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 			// 空集等价恒假
 			return &conditionSQL{SQL: "1 = 0", Args: nil}, nil
 		}
+		if colName == "module" {
+			upperItems := make([]string, len(items))
+			for i, it := range items {
+				upperItems[i] = strings.ToUpper(it)
+			}
+			return &conditionSQL{
+				SQL:  "UPPER(" + colName + ") IN (?)",
+				Args: []any{upperItems},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  colName + " IN (?)",
 			Args: []any{items},
@@ -215,6 +231,16 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 		if len(items) == 0 {
 			// 空集 not_in 等价恒真
 			return &conditionSQL{SQL: "1 = 1", Args: nil}, nil
+		}
+		if colName == "module" {
+			upperItems := make([]string, len(items))
+			for i, it := range items {
+				upperItems[i] = strings.ToUpper(it)
+			}
+			return &conditionSQL{
+				SQL:  "COALESCE(UPPER(" + colName + "), '') NOT IN (?)",
+				Args: []any{upperItems},
+			}, nil
 		}
 		return &conditionSQL{
 			SQL:  "COALESCE(" + colName + ", '') NOT IN (?)",
@@ -303,18 +329,29 @@ func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.D
 
 	// 2. 标签条件过滤（严格采用子查询，禁止 JOIN 防止行膨胀破坏分页与计数）
 	if len(req.TagIDs) > 0 {
-		if strings.EqualFold(req.TagLogic, "all") {
-			// 全部满足：GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = len(tag_ids)
-			query = query.Where(
-				"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?) GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = ?)",
-				req.TagIDs, len(req.TagIDs),
-			)
-		} else {
-			// 任意满足 (any)
-			query = query.Where(
-				"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?))",
-				req.TagIDs,
-			)
+		// 对 tag_ids 规范化去重，防止重复 ID 破坏 HAVING COUNT(DISTINCT tag_id) 断言
+		uniqueTagIDs := make([]uint, 0, len(req.TagIDs))
+		seen := make(map[uint]bool, len(req.TagIDs))
+		for _, id := range req.TagIDs {
+			if id > 0 && !seen[id] {
+				seen[id] = true
+				uniqueTagIDs = append(uniqueTagIDs, id)
+			}
+		}
+		if len(uniqueTagIDs) > 0 {
+			if strings.EqualFold(req.TagLogic, "all") {
+				// 全部满足：GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = len(uniqueTagIDs)
+				query = query.Where(
+					"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?) GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = ?)",
+					uniqueTagIDs, len(uniqueTagIDs),
+				)
+			} else {
+				// 任意满足 (any)
+				query = query.Where(
+					"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?))",
+					uniqueTagIDs,
+				)
+			}
 		}
 	}
 

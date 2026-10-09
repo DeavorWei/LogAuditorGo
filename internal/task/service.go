@@ -781,24 +781,51 @@ func (s *Service) StreamTaskLogsUnified(taskID string, req model.LogQueryRequest
 		return err
 	}
 
-	// 预加载所有有标签的映射（导出时用）
-	var tagRows []struct {
-		LogID uint   `gorm:"column:log_id"`
-		TagID uint   `gorm:"column:tag_id"`
-		Name  string `gorm:"column:name"`
-		Color string `gorm:"column:color"`
-	}
-	_ = taskDB.Table("log_tag_relations r").
-		Select("r.log_id, t.id as tag_id, t.name, t.color").
-		Joins("JOIN log_tags t ON r.tag_id = t.id").
-		Scan(&tagRows).Error
-	tagMap := make(map[uint][]model.LogTag, len(tagRows))
-	for _, tr := range tagRows {
-		tagMap[tr.LogID] = append(tagMap[tr.LogID], model.LogTag{
-			ID:    tr.TagID,
-			Name:  tr.Name,
-			Color: tr.Color,
-		})
+	// 采用定长批次缓冲读取，仅按批次查询标签关系，保证流式导出的内存恒定（< 2MB）
+	const streamBatchSize = 1000
+	buf := make([]model.LogRecord, 0, streamBatchSize)
+	bufIDs := make([]uint, 0, streamBatchSize)
+
+	flushBatch := func() error {
+		if len(buf) == 0 {
+			return nil
+		}
+		// 按当前批次 ID 查询关联标签
+		var tagRows []struct {
+			LogID uint   `gorm:"column:log_id"`
+			TagID uint   `gorm:"column:tag_id"`
+			Name  string `gorm:"column:name"`
+			Color string `gorm:"column:color"`
+		}
+		if err := taskDB.Table("log_tag_relations r").
+			Select("r.log_id, t.id as tag_id, t.name, t.color").
+			Joins("JOIN log_tags t ON r.tag_id = t.id").
+			Where("r.log_id IN (?)", bufIDs).
+			Scan(&tagRows).Error; err == nil && len(tagRows) > 0 {
+			tagMap := make(map[uint][]model.LogTag, len(tagRows))
+			for _, tr := range tagRows {
+				tagMap[tr.LogID] = append(tagMap[tr.LogID], model.LogTag{
+					ID:    tr.TagID,
+					Name:  tr.Name,
+					Color: tr.Color,
+				})
+			}
+			for i := range buf {
+				if tags, ok := tagMap[buf[i].ID]; ok {
+					buf[i].Tags = tags
+				}
+			}
+		}
+
+		for i := range buf {
+			if err := emit(buf[i]); err != nil {
+				return err
+			}
+		}
+
+		buf = buf[:0]
+		bufIDs = bufIDs[:0]
+		return nil
 	}
 
 	rows, err := applyLogOrderBySortAndOrder(query, req.SortBy, req.Order).Rows()
@@ -812,15 +839,19 @@ func (s *Service) StreamTaskLogsUnified(taskID string, req model.LogQueryRequest
 		if err := taskDB.ScanRows(rows, &rec); err != nil {
 			return fmt.Errorf("scan log row failed: %w", err)
 		}
-		if tags, ok := tagMap[rec.ID]; ok {
-			rec.Tags = tags
-		}
-		if err := emit(rec); err != nil {
-			return err
+		buf = append(buf, rec)
+		bufIDs = append(bufIDs, rec.ID)
+		if len(buf) >= streamBatchSize {
+			if err := flushBatch(); err != nil {
+				return err
+			}
 		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate log rows failed: %w", err)
+	}
+	if err := flushBatch(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1048,8 +1079,8 @@ func (s *Service) GetEnrichedRCAEvents(taskID string) ([]model.EnrichedRCAEvent,
 	return enrichedList, nil
 }
 
-// ExportTaskHTML 导出任务 HTML 报告
-func (s *Service) ExportTaskHTML(taskID string) (string, error) {
+// ExportTaskHTMLUnified 协同导出 HTML 报告（支持高级筛选与标签圈选子集，EXP-01）
+func (s *Service) ExportTaskHTMLUnified(taskID string, req model.LogQueryRequestBody) (string, error) {
 	if !isValidTaskID(taskID) {
 		return "", fmt.Errorf("invalid task id: %s", taskID)
 	}
@@ -1064,18 +1095,19 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 	}
 	defer storage.ReleaseTaskDB(taskID)
 
-	// DEV-03: 原实现硬编码 Limit(100)，且 exporter 内部还会再截一次 100 条。
-	// 用户以为导出的是"完整报告"，实际只有前 100 条，RCA 引用的日志可能根本不在其中，
-	// 对审计留痕是致命的。改为按可配置上限导出，并把总数回填进报告头部显式说明。
+	baseQuery := taskDB.Model(&model.LogRecord{})
+	filteredQuery, err := BuildLogFilterScope(baseQuery, req)
+	if err != nil {
+		return "", fmt.Errorf("build filter scope for html export failed: %w", err)
+	}
+
 	var totalLogs int64
-	if err := taskDB.Model(&model.LogRecord{}).Count(&totalLogs).Error; err != nil {
+	if err := filteredQuery.Count(&totalLogs).Error; err != nil {
 		return "", fmt.Errorf("count log records for html export failed: %w", err)
 	}
 
 	var records []model.LogRecord
-	// 排序定位：HTML 诊断报告专用于离线事故复盘取证，刻意保持按严重级别升序（数值越小越紧急）+ 时间排序，
-	// 确保在条数截断时保留最有诊断价值的高危日志，与工作台/结构化导出的全量时序定位区分。
-	q := taskDB.Order("severity asc, timestamp asc, id asc")
+	q := filteredQuery.Order("severity asc, timestamp asc, id asc")
 	if totalLogs > int64(exportHTMLMaxRecords) {
 		q = q.Limit(exportHTMLMaxRecords)
 	}
@@ -1083,14 +1115,44 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 		return "", fmt.Errorf("load log records for html export failed: %w", err)
 	}
 
+	// 回填标签信息
+	if len(records) > 0 {
+		logIDs := make([]uint, len(records))
+		for i, r := range records {
+			logIDs[i] = r.ID
+		}
+		var tagRows []struct {
+			LogID uint   `gorm:"column:log_id"`
+			TagID uint   `gorm:"column:tag_id"`
+			Name  string `gorm:"column:name"`
+			Color string `gorm:"column:color"`
+		}
+		if err := taskDB.Table("log_tag_relations r").
+			Select("r.log_id, t.id as tag_id, t.name, t.color").
+			Joins("JOIN log_tags t ON r.tag_id = t.id").
+			Where("r.log_id IN (?)", logIDs).
+			Scan(&tagRows).Error; err == nil && len(tagRows) > 0 {
+			tagMap := make(map[uint][]model.LogTag, len(tagRows))
+			for _, tr := range tagRows {
+				tagMap[tr.LogID] = append(tagMap[tr.LogID], model.LogTag{
+					ID:    tr.TagID,
+					Name:  tr.Name,
+					Color: tr.Color,
+				})
+			}
+			for i := range records {
+				if tags, ok := tagMap[records[i].ID]; ok {
+					records[i].Tags = tags
+				}
+			}
+		}
+	}
+
 	var rcas []model.RCAEvent
 	if err := taskDB.Find(&rcas).Error; err != nil {
 		return "", fmt.Errorf("load rca events for html export failed: %w", err)
 	}
 
-	// REANA-13: 补充设备维度与命中知识的官方释义。
-	// 原报告只有一张日志明细表，看不出"涉及哪些设备""命中了什么知识、该怎么处理"，
-	// 作为离线留痕文档价值有限。
 	var devices []model.Device
 	if err := taskDB.Order("id asc").Find(&devices).Error; err != nil {
 		logger.Log.Warnf("[Task Service] load devices for html export failed: %v", err)
@@ -1106,6 +1168,11 @@ func (s *Service) ExportTaskHTML(taskID string) (string, error) {
 
 	html := GenerateHTMLReport(task, records, rcas, int(totalLogs), opts...)
 	return html, nil
+}
+
+// ExportTaskHTML 导出全量任务 HTML 报告（向前兼容）
+func (s *Service) ExportTaskHTML(taskID string) (string, error) {
+	return s.ExportTaskHTMLUnified(taskID, model.LogQueryRequestBody{})
 }
 
 // loadKnowledgeBriefs 批量加载报告中命中知识的简要信息 (REANA-13)。

@@ -125,6 +125,8 @@ func (h *TaskHandler) BatchTagLogs(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+
 	var req model.LogQueryRequestBody
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -137,6 +139,10 @@ func (h *TaskHandler) BatchTagLogs(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, task.ErrTagNotFound) {
 			ErrorResponse(c, http.StatusNotFound, -1, "Tag not found")
+			return
+		}
+		if errors.Is(err, task.ErrBatchLimitExceeded) {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
 			return
 		}
 		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
@@ -162,6 +168,8 @@ func (h *TaskHandler) BatchUntagLogs(c *gin.Context) {
 		return
 	}
 
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+
 	var req model.LogQueryRequestBody
 	if c.Request.ContentLength > 0 {
 		if err := c.ShouldBindJSON(&req); err != nil {
@@ -174,6 +182,10 @@ func (h *TaskHandler) BatchUntagLogs(c *gin.Context) {
 	if err != nil {
 		if errors.Is(err, task.ErrTagNotFound) {
 			ErrorResponse(c, http.StatusNotFound, -1, "Tag not found")
+			return
+		}
+		if errors.Is(err, task.ErrBatchLimitExceeded) {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
 			return
 		}
 		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
@@ -197,6 +209,8 @@ func (h *TaskHandler) AddLogTag(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid log ID")
 		return
 	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req model.SingleTagRequestBody
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -239,6 +253,18 @@ func (h *TaskHandler) RemoveLogTag(c *gin.Context) {
 	}
 
 	if err := h.taskSvc.RemoveLogTag(taskID, uint(logID), uint(tagID)); err != nil {
+		if errors.Is(err, task.ErrTagNotFound) {
+			ErrorResponse(c, http.StatusNotFound, -1, "Tag not found")
+			return
+		}
+		if errors.Is(err, task.ErrLogNotFound) {
+			ErrorResponse(c, http.StatusNotFound, -1, "Log record not found")
+			return
+		}
+		if errors.Is(err, task.ErrRelationNotFound) {
+			ErrorResponse(c, http.StatusNotFound, -1, "Tag relation not found")
+			return
+		}
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
 	}
