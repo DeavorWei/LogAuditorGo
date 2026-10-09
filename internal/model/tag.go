@@ -9,7 +9,7 @@ type LogTag struct {
 	Color     string    `gorm:"size:16" json:"color"` // 预设色板十六进制或主题标识 (如 #409EFF)
 	Remark    string    `gorm:"size:255" json:"remark"`
 	CreatedAt time.Time `json:"created_at"`
-	LogCount  int64     `gorm:"-" json:"log_count,omitempty"` // 动态聚合的关联日志计数
+	LogCount  int64     `gorm:"->" json:"log_count"`          // 动态聚合的关联日志计数（只读映射）
 }
 
 func (LogTag) TableName() string { return "log_tags" }

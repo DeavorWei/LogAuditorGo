@@ -161,6 +161,16 @@ func SetupRouter(
 		v1.POST("/tasks/:id/export", taskHandler.ExportReportUnified)
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
 
+		// 标签系统 (Phase 1C)
+		v1.GET("/tasks/:id/tags", taskHandler.ListTags)
+		v1.POST("/tasks/:id/tags", taskHandler.CreateTag)
+		v1.PUT("/tasks/:id/tags/:tag_id", taskHandler.UpdateTag)
+		v1.DELETE("/tasks/:id/tags/:tag_id", taskHandler.DeleteTag)
+		v1.POST("/tasks/:id/tags/:tag_id/logs", taskHandler.BatchTagLogs)
+		v1.DELETE("/tasks/:id/tags/:tag_id/logs", taskHandler.BatchUntagLogs)
+		v1.POST("/tasks/:id/logs/:log_id/tags", taskHandler.AddLogTag)
+		v1.DELETE("/tasks/:id/logs/:log_id/tags/:tag_id", taskHandler.RemoveLogTag)
+
 		// 设备管理
 		v1.POST("/tasks/:id/devices", taskHandler.CreateDevice)
 		v1.GET("/tasks/:id/devices", taskHandler.ListDevices)

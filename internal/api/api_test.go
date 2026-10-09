@@ -180,6 +180,76 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for POST /tasks/:id/export, got %d: %s", w4Export.Code, w4Export.Body.String())
 	}
 
+	// 4.0.2 测试标签系统 API (Phase 1C)
+	// 创建标签
+	createTagBody := `{"name":"关键故障","color":"#F56C6C","remark":"API测试标签"}`
+	reqTagCreate, _ := http.NewRequest("POST", "/api/v1/tasks/"+taskID+"/tags", strings.NewReader(createTagBody))
+	reqTagCreate.Header.Set("Content-Type", "application/json")
+	wTagCreate := httptest.NewRecorder()
+	router.ServeHTTP(wTagCreate, reqTagCreate)
+	if wTagCreate.Code != http.StatusOK {
+		t.Fatalf("expected 200 for POST /tasks/:id/tags, got %d: %s", wTagCreate.Code, wTagCreate.Body.String())
+	}
+	var tagResp struct {
+		Code int          `json:"code"`
+		Data model.LogTag `json:"data"`
+	}
+	_ = json.Unmarshal(wTagCreate.Body.Bytes(), &tagResp)
+	createdTagID := tagResp.Data.ID
+
+	// 获取标签列表
+	reqTagList, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/tags", nil)
+	wTagList := httptest.NewRecorder()
+	router.ServeHTTP(wTagList, reqTagList)
+	if wTagList.Code != http.StatusOK {
+		t.Errorf("expected 200 for GET /tasks/:id/tags, got %d", wTagList.Code)
+	}
+
+	// 修改标签
+	updateTagBody := `{"name":"关键故障-改","color":"#E6A23C"}`
+	reqTagUpdate, _ := http.NewRequest("PUT", fmt.Sprintf("/api/v1/tasks/%s/tags/%d", taskID, createdTagID), strings.NewReader(updateTagBody))
+	reqTagUpdate.Header.Set("Content-Type", "application/json")
+	wTagUpdate := httptest.NewRecorder()
+	router.ServeHTTP(wTagUpdate, reqTagUpdate)
+	if wTagUpdate.Code != http.StatusOK {
+		t.Errorf("expected 200 for PUT /tasks/:id/tags/:tag_id, got %d", wTagUpdate.Code)
+	}
+
+	// 单条打标与摘标
+	reqSingleTag, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/tasks/%s/logs/1/tags", taskID), strings.NewReader(fmt.Sprintf(`{"tag_id":%d}`, createdTagID)))
+	reqSingleTag.Header.Set("Content-Type", "application/json")
+	wSingleTag := httptest.NewRecorder()
+	router.ServeHTTP(wSingleTag, reqSingleTag)
+	if wSingleTag.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/logs/:log_id/tags, got %d", wSingleTag.Code)
+	}
+
+	// 批量打标
+	reqBatchTag, _ := http.NewRequest("POST", fmt.Sprintf("/api/v1/tasks/%s/tags/%d/logs", taskID, createdTagID), strings.NewReader(`{}`))
+	reqBatchTag.Header.Set("Content-Type", "application/json")
+	wBatchTag := httptest.NewRecorder()
+	router.ServeHTTP(wBatchTag, reqBatchTag)
+	if wBatchTag.Code != http.StatusOK {
+		t.Errorf("expected 200 for POST /tasks/:id/tags/:tag_id/logs, got %d", wBatchTag.Code)
+	}
+
+	// 批量摘标
+	reqBatchUntag, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/tasks/%s/tags/%d/logs", taskID, createdTagID), strings.NewReader(`{}`))
+	reqBatchUntag.Header.Set("Content-Type", "application/json")
+	wBatchUntag := httptest.NewRecorder()
+	router.ServeHTTP(wBatchUntag, reqBatchUntag)
+	if wBatchUntag.Code != http.StatusOK {
+		t.Errorf("expected 200 for DELETE /tasks/:id/tags/:tag_id/logs, got %d", wBatchUntag.Code)
+	}
+
+	// 删除标签
+	reqTagDelete, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/tasks/%s/tags/%d", taskID, createdTagID), nil)
+	wTagDelete := httptest.NewRecorder()
+	router.ServeHTTP(wTagDelete, reqTagDelete)
+	if wTagDelete.Code != http.StatusOK {
+		t.Errorf("expected 200 for DELETE /tasks/:id/tags/:tag_id, got %d", wTagDelete.Code)
+	}
+
 	// 4.1 审计问题 1：验证未传 sort_by 时携带 after_id 的 keyset 向后兼容性（应为 200 OK，而非被默认 time 拦截导致 500）
 	req4Keyset, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?after_id=1", nil)
 	w4Keyset := httptest.NewRecorder()
