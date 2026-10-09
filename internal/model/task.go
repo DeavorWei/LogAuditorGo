@@ -93,6 +93,11 @@ type LogQueryFilter struct {
 	// `WHERE id > AfterID ORDER BY id ASC LIMIT n`，代价恒定。
 	// 为 0 时回退到传统的 offset 分页，保证既有调用不受影响。
 	AfterID uint `form:"after_id" json:"after_id"`
+
+	// SortBy 排序维度："time"（默认，真实日志发生时间）或 "id"（入库原始物理序号）
+	SortBy string `form:"sort_by" json:"sort_by"`
+	// Order 排序方向："asc"（默认，升序）或 "desc"（降序）
+	Order string `form:"order" json:"order"`
 }
 
 

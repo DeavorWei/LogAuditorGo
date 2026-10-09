@@ -2019,6 +2019,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 	matchedCount := 0
 	var processedCount int64 = 0
 	var lastID uint = 0
+	var reanalyzeLastTS time.Time
 
 	for {
 		var records []model.LogRecord
@@ -2045,6 +2046,8 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 			parsed.SourceFile = rec.SourceFile
 			records[i] = parsed
 		}
+
+		alignChunkTimestamps(records, &reanalyzeLastTS)
 
 		if err := batchUpdateLogRecords(taskDB, records); err != nil {
 			return s.failTask(taskDB, &taskInfo, tr,

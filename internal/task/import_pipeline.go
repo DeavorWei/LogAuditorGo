@@ -309,6 +309,55 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 	}
 }
 
+// alignChunkTimestamps 对一个批次解析产出的日志记录进行上下文时间戳继承 (Contextual Timestamp Alignment)。
+//
+// 业务背景：文件头注释行（# This logfile is generated at...）、Digest 校验行、以及无法提取时间戳的残缺/注释行，
+// 其解析产出的 Timestamp 均为零值（0001-01-01）。
+// 若直接以零值落库，在 ORDER BY timestamp ASC 时会导致这些非正常日志全部堆积在第 1 页最前方，破坏审计体验。
+// 这里对单文件流式处理维护 lastValidTS 状态：
+// 1. 若当前批次尚未确立有效时间戳（如文件开头的多行注释），向前探测借用本批次内首条有效日志的时间；
+// 2. 后续若遇到无时间戳行，继承当前最新的有效时间戳；
+// 3. 依靠二级排序键 id asc，同一时间戳下的文件头行（id 较小）依然严格排在首条有效日志之前。
+func alignChunkTimestamps(records []model.LogRecord, lastValidTS *time.Time) {
+	if len(records) == 0 {
+		return
+	}
+
+	// 1. 若此前尚未确立有效时间戳，先向前寻找本批次内的首个有效时间戳
+	if lastValidTS == nil || lastValidTS.IsZero() {
+		var firstValid time.Time
+		for i := range records {
+			if !records[i].Timestamp.IsZero() && records[i].Timestamp.Year() > 1970 {
+				firstValid = records[i].Timestamp
+				break
+			}
+		}
+		if !firstValid.IsZero() {
+			for i := range records {
+				if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
+					records[i].Timestamp = firstValid
+				} else {
+					break
+				}
+			}
+			if lastValidTS != nil {
+				*lastValidTS = firstValid
+			}
+		}
+	}
+
+	// 2. 依次向后扫描：有效行更新 lastValidTS，无时间行继承当前最新的 lastValidTS
+	for i := range records {
+		if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
+			if lastValidTS != nil && !lastValidTS.IsZero() {
+				records[i].Timestamp = *lastValidTS
+			}
+		} else if lastValidTS != nil {
+			*lastValidTS = records[i].Timestamp
+		}
+	}
+}
+
 // persistFileBundle 以"单文件"为单位完成日志落库。
 //
 // TASK-02 / TASK-05: 旧实现把"删旧数据"和"插入新日志"拆成两个独立事务，
@@ -336,6 +385,7 @@ func (s *Service) persistFileBundle(
 
 	first := true
 	processed := 0
+	var lastValidTS time.Time
 
 	// 补偿清理：删掉该文件已入库的碎片与 TaskFile 空壳，避免留下"幽灵文件记录"
 	cleanup := func() {
@@ -370,6 +420,7 @@ func (s *Service) persistFileBundle(
 
 	ingestChunk := func(chunk []string) error {
 		records := s.parseAndMatchChunk(chunk, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
+		alignChunkTimestamps(records, &lastValidTS)
 		if err := commit(records); err != nil {
 			cleanup()
 			return err
