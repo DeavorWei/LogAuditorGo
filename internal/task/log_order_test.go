@@ -3,6 +3,7 @@ package task_test
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -191,7 +192,7 @@ func TestLogOrderingPaginationDeterminism(t *testing.T) {
 	var sb strings.Builder
 	for i := 1; i <= 10; i++ {
 		sb.WriteString("May 19 2026 12:00:00 CE-01 %%01IFNET/4/IF_DOWN(l)[")
-		sb.WriteString(string(rune('0' + i)))
+		sb.WriteString(strconv.Itoa(i))
 		sb.WriteString("]: IF identical timestamp line.\n")
 	}
 	content := sb.String()

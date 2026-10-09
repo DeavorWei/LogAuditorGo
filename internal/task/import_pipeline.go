@@ -329,11 +329,11 @@ func alignChunkTimestamps(records []model.LogRecord, lastFile *string, lastValid
 		curFile := records[start].SourceFile
 		// 寻找当前连续属于同一个 SourceFile 的切片区间 [start, end)
 		end := start + 1
-		for end < len(records) && (lastFile == nil || records[end].SourceFile == curFile) {
+		for end < len(records) && records[end].SourceFile == curFile {
 			end++
 		}
 
-		// 若存在文件跟踪指针且发生跨文件切换
+		// 跨批次/跨分块维护文件归属状态：当进入新文件时重置时钟
 		if lastFile != nil {
 			if *lastFile == "" {
 				*lastFile = curFile
