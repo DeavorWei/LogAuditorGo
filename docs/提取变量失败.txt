@@ -1,0 +1,329 @@
+📄 日志报文结构化解析 (#2)
+知识库已匹配 (100%)
+🏷 标签:
+
++ 打标签
+原始 Syslog 报文
+Oct 9 2026 11:52:00+08:00 Longan-1 %%01FWD/4/hwEntityExtCpuUsageNotfication_clear(l):CID=0x0-alarmID=0x00f103b4-clearType=service_resume;The CPU usage fell below the threshold value. The lower threshold is 0.9 times the upper threshold. (forwarding type=1, slot id=0, CPU id=0, current CPU usage=55, threshold=81)
+事件语义解析摘要
+[告警] CPU利用率恢复阈值下限以下
+核心结构化字段
+设备主机名	Longan-1	时间戳	2026-10-09 11:52:00
+所属模块	FWD	事件简名	hwEntityExtCpuUsageNotfication_clear
+日志级别	Level 4	来源文件	[Longan-1]_manual_input.txt
+槽位/序列号	-
+动态提取变量与文档说明 (Parameters & Documentation)
+已提取 5 个变量
+CID
+0x0-alarmID=0x00f103b4-clearType=service_resume
+id
+0
+threshold
+81
+type
+1
+usage
+55
+📋 官方日志消息模板实例化 (Template Instantiation)
+变量已注入
+FWD/4/hwEntityExtCpuUsageNotfication_clear: The cpu usage fell below the threshold value. The lower threshold is 0.9 times the upper threshold. (forwarding type = [hwCpuUsageTrapType], slot id = [hwCpuUsageTrapSlot], cpu id = [hwCpuUsageTrapCpu], current cpu usage = [hwCpuUsageCurrentUsage], threashold = [hwCpuUsageThreashold])
+官方原始模板:FWD/4/hwEntityExtCpuUsageNotfication_clear: The cpu usage fell below the threshold value. The lower threshold is 0.9 times the upper threshold. (forwarding type = [hwCpuUsageTrapType], slot id = [hwCpuUsageTrapSlot], cpu id = [hwCpuUsageTrapCpu], current cpu usage = [hwCpuUsageCurrentUsage], threashold = [hwCpuUsageThreashold])
+官方知识与处理步骤
+根因传播拓扑 (RCA)
+FWD/hwEntityExtCpuUsageNotfication_clear
+
+原始文档
+现场参数注入
+匹配层级: EXACT
+置信度: 100%
+📖 日志/告警含义解释
+CPU利用率恢复阈值下限以下。其中阈值下限为阈值上限的0.9。
+🔍 官方可能原因
+转发的流量降低到CPU处理性能以内
+🛠️ 官方处理排错步骤
+正常运行信息，无需处理。
+📚 官方参数字典与现场实际值对照
+共 5 项参数定义
+参数名称
+官方含义说明
+现场实际值
+hwCpuUsageTrapType
+转发类型
+未捕获
+hwCpuUsageTrapSlot
+槽位号
+未捕获
+hwCpuUsageTrapCpu
+CPU号
+未捕获
+hwCpuUsageCurrentUsage
+CPU当前利用率
+未捕获
+hwCpuUsageThreashold
+CPU利用率告警阈值
+未捕获
+
+
+
+📄 日志报文结构化解析 (#1)
+知识库已匹配 (100%)
+🏷 标签:
+
++ 打标签
+原始 Syslog 报文
+Oct 9 2026 11:51:48+08:00 Longan-1 %%01FWD/4/hwEntityExtCpuUsageNotfication_active(l):CID=0x0-alarmID=0x00f103b4;The CPU usage exceeds the threshold value. (forwarding type=1, slot id=0, CPU id=0, current CPU usage=97, threshold=90)
+事件语义解析摘要
+[告警] CPU使用率超过告警阈值
+核心结构化字段
+设备主机名	Longan-1	时间戳	2026-10-09 11:51:48
+所属模块	FWD	事件简名	hwEntityExtCpuUsageNotfication_active
+日志级别	Level 4	来源文件	[Longan-1]_manual_input.txt
+槽位/序列号	-
+动态提取变量与文档说明 (Parameters & Documentation)
+已提取 5 个变量
+CID
+0x0-alarmID=0x00f103b4
+id
+0
+threshold
+90
+type
+1
+usage
+97
+📋 官方日志消息模板实例化 (Template Instantiation)
+变量已注入
+FWD/4/hwEntityExtCpuUsageNotfication_active: The cpu usage exceeds the threshold value. (forwarding type = [hwCpuUsageTrapType], slot id = [hwCpuUsageTrapSlot], cpu id = [hwCpuUsageTrapCpu], current cpu usage = [hwCpuUsageCurrentUsage], threashold = [hwCpuUsageThreashold])
+官方原始模板:FWD/4/hwEntityExtCpuUsageNotfication_active: The cpu usage exceeds the threshold value. (forwarding type = [hwCpuUsageTrapType], slot id = [hwCpuUsageTrapSlot], cpu id = [hwCpuUsageTrapCpu], current cpu usage = [hwCpuUsageCurrentUsage], threashold = [hwCpuUsageThreashold])
+官方知识与处理步骤
+根因传播拓扑 (RCA)
+FWD/hwEntityExtCpuUsageNotfication_active
+
+原始文档
+现场参数注入
+匹配层级: EXACT
+置信度: 100%
+📖 日志/告警含义解释
+CPU使用率超过告警阈值。
+🔍 官方可能原因
+单板上CPU芯片的转发CPU使用率超过告警阈值，转发流量较多，超过转发性能。
+🛠️ 官方处理排错步骤
+1、查看告警单板所有接口进出流量是否达到转发性能；
+2、检查告警阈值是否设置过低。
+📚 官方参数字典与现场实际值对照
+共 5 项参数定义
+参数名称
+官方含义说明
+现场实际值
+hwCpuUsageTrapType
+转发类型
+未捕获
+hwCpuUsageTrapSlot
+槽位号
+未捕获
+hwCpuUsageTrapCpu
+CPU号
+未捕获
+hwCpuUsageCurrentUsage
+CPU当前利用率
+未捕获
+hwCpuUsageThreashold
+CPU利用率告警阈值
+未捕获
+
+
+
+📄 日志报文结构化解析 (#3)
+知识库已匹配 (100%)
+🏷 标签:
+
++ 打标签
+原始 Syslog 报文
+Oct 9 2026 11:52:11+08:00 Longan-1 %%01FWD/4/SYS_STAT_DROP_LOG(l):Service=hppd[10177]0;The forwarding engine detects packet loss. (Slot=0, CPU=0, Drop reason=TTL exceed packets discarded, Drop count=28298)
+事件语义解析摘要
+[告警] 1分钟内同一种丢包原因的报文丢弃数量超过1000个，则记录该丢包信息 [原因: TTL exceed packets discarded]
+核心结构化字段
+设备主机名	Longan-1	时间戳	2026-10-09 11:52:11
+所属模块	FWD	事件简名	SYS_STAT_DROP_LOG
+日志级别	Level 4	来源文件	[Longan-1]_manual_input.txt
+槽位/序列号	-
+动态提取变量与文档说明 (Parameters & Documentation)
+已提取 5 个变量 （已匹配 1 条文档说明）
+CPU
+0
+Service
+hppd[10177]0
+Slot
+📖 生成日志文件的业务板卡或主控板槽位编号
+0
+count
+28298
+reason
+TTL exceed packets discarded
+📋 官方日志消息模板实例化 (Template Instantiation)
+变量已注入
+FWD/4/SYS_STAT_DROP_LOG: The forwarding engine detects packet loss. (Slot=[slotId], CPU=0, Drop reason=[dropReason], Drop count=[dropCount])
+官方原始模板:FWD/4/SYS_STAT_DROP_LOG: The forwarding engine detects packet loss. (Slot=[slotId], CPU=[cpuId], Drop reason=[dropReason], Drop count=[dropCount])
+官方知识与处理步骤
+根因传播拓扑 (RCA)
+FWD/SYS_STAT_DROP_LOG
+
+原始文档
+现场参数注入
+匹配层级: EXACT
+置信度: 100%
+✨ 已将现场 1 个参数动态注入至排查步骤
+📖 日志/告警含义解释
+1分钟内同一种丢包原因的报文丢弃数量超过1000个，则记录该丢包信息。
+🔍 官方可能原因
+1分钟内同一种丢包原因的报文丢弃数量超过1000个。
+🛠️ 官方处理排错步骤
+该告警用于记录系统丢包信息，如果同时出现业务异常，请联系技术支持工程师。
+📚 官方参数字典与现场实际值对照
+共 4 项参数定义
+参数名称
+官方含义说明
+现场实际值
+slotId
+槽位号。
+未捕获
+cpuId
+CPU号。
+未捕获
+dropReason
+丢弃原因。
+未捕获
+dropCount
+丢弃数量。
+未捕获
+
+
+
+📄 日志报文结构化解析 (#4)
+知识库已匹配 (100%)
+🏷 标签:
+
++ 打标签
+原始 Syslog 报文
+Oct 9 2026 11:52:18+08:00 Longan-1 %%01FWD/4/SESSCTRLEND(l):Service=hppd[10177]0;Session creation control ended, SLOT 0,CPU 0,The CPU usage was 100. In the process, 0 packets were permitted and 0 packets were blocked.
+事件语义解析摘要
+[告警] 记录会话抑制结束事件
+核心结构化字段
+设备主机名	Longan-1	时间戳	2026-10-09 11:52:18
+所属模块	FWD	事件简名	SESSCTRLEND
+日志级别	Level 4	来源文件	[Longan-1]_manual_input.txt
+槽位/序列号	-
+动态提取变量与文档说明 (Parameters & Documentation)
+已提取 1 个变量
+Service
+hppd[10177]0
+📋 官方日志消息模板实例化 (Template Instantiation)
+变量已注入
+FWD/4/SESSCTRLEND: Session creation control ended, SLOT [slot-id],CPU [cpu-id],The CPU usage was [cpu-usage]. In the process, [permitted-packets-num] packets were permitted and [blocked-packets-num] packets were blocked.
+官方原始模板:FWD/4/SESSCTRLEND: Session creation control ended, SLOT [slot-id],CPU [cpu-id],The CPU usage was [cpu-usage]. In the process, [permitted-packets-num] packets were permitted and [blocked-packets-num] packets were blocked.
+官方知识与处理步骤
+根因传播拓扑 (RCA)
+FWD/SESSCTRLEND
+
+原始文档
+现场参数注入
+匹配层级: EXACT
+置信度: 100%
+📖 日志/告警含义解释
+记录会话抑制结束事件。
+🔍 官方可能原因
+CPU使用率降到会话抑制设置的CPU使用率，会话抑制周期结束。
+🛠️ 官方处理排错步骤
+正常运行信息，无需处理。
+📚 官方参数字典与现场实际值对照
+共 5 项参数定义
+参数名称
+官方含义说明
+现场实际值
+slot-id
+槽位号。
+未捕获
+cpu-id
+CPU号。
+未捕获
+cpu-usage
+CPU使用率。
+未捕获
+permitted-packets-num
+会话抑制周期通过的报文包的个数。
+未捕获
+blocked-packets-num
+会话抑制周期阻断的报文包的个数。
+未捕获
+
+
+
+📄 日志报文结构化解析 (#5)
+知识库已匹配 (100%)
+🏷 标签:
+
++ 打标签
+原始 Syslog 报文
+Oct 9 2026 11:52:31+08:00 Longan-1 %%01ENTEXT/4/hwEntityExtCpuUsageSuddenChangeNotification_active(l):CID=0x814f042e-alarmID=0x00f10334;The CPU usage on SPU 0 CPU 0 is suddenly changed from 98% to 1%, and the change value is 97%, exceeding threshold value 40%.
+事件语义解析摘要
+[告警] CPU使用率发生突变
+核心结构化字段
+设备主机名	Longan-1	时间戳	2026-10-09 11:52:31
+所属模块	ENTEXT	事件简名	hwEntityExtCpuUsageSuddenChangeNotification_active
+日志级别	Level 4	来源文件	[Longan-1]_manual_input.txt
+槽位/序列号	-
+动态提取变量与文档说明 (Parameters & Documentation)
+已提取 1 个变量
+CID
+0x814f042e-alarmID=0x00f10334
+📋 官方日志消息模板实例化 (Template Instantiation)
+变量已注入
+ENTEXT/4/hwEntityExtCpuUsageSuddenChangeNotification_active: The CPU usage on SPU [hwEntitySlotID] CPU [hwEntityCpuID] is suddenly changed from [hwEntityPreviousValue]% to [hwEntityCurrentValue]%, and the change value is [hwEntityChangeValue]%, exceeding threshold value [hwEntityChangeValueThreshold]%.
+官方原始模板:ENTEXT/4/hwEntityExtCpuUsageSuddenChangeNotification_active: The CPU usage on SPU [hwEntitySlotID] CPU [hwEntityCpuID] is suddenly changed from [hwEntityPreviousValue]% to [hwEntityCurrentValue]%, and the change value is [hwEntityChangeValue]%, exceeding threshold value [hwEntityChangeValueThreshold]%.
+官方知识与处理步骤
+根因传播拓扑 (RCA)
+ENTEXT/hwEntityExtCpuUsageSuddenChangeNotification_active
+
+原始文档
+现场参数注入
+匹配层级: EXACT
+置信度: 100%
+📖 日志/告警含义解释
+CPU使用率发生突变。
+🔍 官方可能原因
+原因1：网络中存在攻击。
+原因2：业务处理异常。
+原因3：网络中存在环路。
+🛠️ 官方处理排错步骤
+1.display firewall traffic-trace-source micro-burst查看微突发流量触发的流量溯源结果。
+2.分析排名靠前的IP地址是否是正常业务地址，不是则对这些IP地址进行处理，例如，将IP地址加入黑名单或者使用安全策略阻断。
+3.收集告警信息和LOG日志文件，并联系华为技术支持工程师。
+1.display firewall traffic-trace-source micro-burst查看微突发流量触发的流量溯源结果。
+2.分析排名靠前的IP地址是否是正常业务地址，不是则对这些IP地址进行处理，例如，将IP地址加入黑名单或者使用安全策略阻断。
+3.收集告警信息和LOG日志文件，并联系华为技术支持工程师。
+1.display firewall statistics system discard查看设备上是否存在大量因TTL超时而丢的包。
+2.若存在大量TTL超时的丢包，则可能是设备存在环路。
+3.收集告警信息和LOG日志文件，并联系华为技术支持工程师。
+📚 官方参数字典与现场实际值对照
+共 6 项参数定义
+参数名称
+官方含义说明
+现场实际值
+hwEntitySlotID
+槽位号。
+未捕获
+hwEntityCpuID
+CPU号。
+未捕获
+hwEntityPreviousValue
+上一个时间点的CPU使用率。
+未捕获
+hwEntityCurrentValue
+当前时间点的CPU使用率。
+未捕获
+hwEntityChangeValue
+上一个时间点和当前时间点CPU使用率的变化值。
+未捕获
+hwEntityChangeValueThreshold
+CPU使用率的突变告警阈值。
+未捕获
