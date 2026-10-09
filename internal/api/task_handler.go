@@ -440,6 +440,9 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		}
 	}
 
+	sortBy := c.DefaultQuery("sort_by", "time")
+	order := c.DefaultQuery("order", "asc")
+
 	filter := model.LogQueryFilter{
 		Page:       page,
 		PageSize:   pageSize,
@@ -453,6 +456,8 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 		Matched:    matchedPtr,
 		TimeStart:  timeStart,
 		TimeEnd:    timeEnd,
+		SortBy:     sortBy,
+		Order:      order,
 	}
 
 	records, total, err := h.taskSvc.QueryTaskLogs(taskID, filter)
@@ -559,7 +564,13 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Load task failed: "+err.Error())
 		return
 	}
-	records, _, err := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{PageSize: 0})
+	sortBy := c.DefaultQuery("sort_by", "time")
+	order := c.DefaultQuery("order", "asc")
+	records, _, err := h.taskSvc.QueryTaskLogs(taskID, model.LogQueryFilter{
+		PageSize: 0,
+		SortBy:   sortBy,
+		Order:    order,
+	})
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Load log records failed: "+err.Error())
 		return
@@ -595,7 +606,14 @@ func (h *TaskHandler) streamCSVExport(c *gin.Context, taskID string) {
 		return
 	}
 
-	err := h.taskSvc.StreamTaskLogs(taskID, model.LogQueryFilter{}, func(rec model.LogRecord) error {
+	sortBy := c.DefaultQuery("sort_by", "time")
+	order := c.DefaultQuery("order", "asc")
+	filter := model.LogQueryFilter{
+		SortBy: sortBy,
+		Order:  order,
+	}
+
+	err := h.taskSvc.StreamTaskLogs(taskID, filter, func(rec model.LogRecord) error {
 		row := buildCSVRow(rec)
 		if _, err := c.Writer.WriteString(row); err != nil {
 			return err

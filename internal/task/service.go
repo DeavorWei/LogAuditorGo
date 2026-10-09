@@ -573,6 +573,26 @@ func (s *Service) SetTaskDeviceVersion(taskID string, deviceVersion string) erro
 	return nil
 }
 
+// applyLogOrder 根据 LogQueryFilter 配置统一构建安全、确定性的排序子句。
+// 默认规则为时间优先 (timestamp asc, id asc)，支持根据需求切换为时间降序或物理行序 (id asc/desc)。
+func applyLogOrder(query *gorm.DB, filter model.LogQueryFilter) *gorm.DB {
+	sortBy := strings.ToLower(strings.TrimSpace(filter.SortBy))
+	order := strings.ToLower(strings.TrimSpace(filter.Order))
+	if order != "desc" {
+		order = "asc"
+	}
+
+	if sortBy == "id" {
+		return query.Order(fmt.Sprintf("id %s", order))
+	}
+
+	// 默认按时间戳排序 (time)
+	if order == "desc" {
+		return query.Order("timestamp desc, id desc")
+	}
+	return query.Order("timestamp asc, id asc")
+}
+
 // QueryTaskLogs 分页及多维度过滤查询任务内日志
 func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]model.LogRecord, int64, error) {
 	if !isValidTaskID(taskID) {
@@ -630,6 +650,24 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 		return nil, 0, err
 	}
 
+	// TASK-13: 提供了游标锚点时改走 keyset 分页，避免深翻页的 offset 线性开销。
+	// 游标仅支持物理序号 id asc 排序。一期明确：若显式指定 sort_by=time，报错拦截杜绝非预期混合语义。
+	if filter.AfterID > 0 {
+		if strings.ToLower(strings.TrimSpace(filter.SortBy)) == "time" {
+			return nil, total, fmt.Errorf("cursor pagination (after_id) is only supported with sort_by=id")
+		}
+		pageSize := filter.PageSize
+		if pageSize <= 0 {
+			pageSize = 50
+		} else if pageSize > MaxPageSize {
+			pageSize = MaxPageSize
+		}
+		var records []model.LogRecord
+		err = query.Where("id > ?", filter.AfterID).
+			Order("id asc").Limit(pageSize).Find(&records).Error
+		return records, total, err
+	}
+
 	// 导出模式 (PageSize <= 0)
 	//
 	// TASK-09: 原实现 `PageSize: -1` 一次性把整表（含 raw_log / message_body 大文本）
@@ -641,7 +679,7 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 				total, maxExportRows)
 		}
 		var records []model.LogRecord
-		if err := query.Order("id asc").Limit(maxExportRows).Find(&records).Error; err != nil {
+		if err := applyLogOrder(query, filter).Limit(maxExportRows).Find(&records).Error; err != nil {
 			return nil, total, err
 		}
 		return records, total, nil
@@ -659,16 +697,8 @@ func (s *Service) QueryTaskLogs(taskID string, filter model.LogQueryFilter) ([]m
 	}
 
 	var records []model.LogRecord
-	// TASK-13: 提供了游标锚点时改走 keyset 分页，避免深翻页的 offset 线性开销。
-	// 排序固定为 id asc，与 offset 分支一致，保证两种模式结果可拼接。
-	if filter.AfterID > 0 {
-		err = query.Where("id > ?", filter.AfterID).
-			Order("id asc").Limit(pageSize).Find(&records).Error
-		return records, total, err
-	}
-
 	offset := (page - 1) * pageSize
-	err = query.Order("id asc").Offset(offset).Limit(pageSize).Find(&records).Error
+	err = applyLogOrder(query, filter).Offset(offset).Limit(pageSize).Find(&records).Error
 	return records, total, err
 }
 
@@ -730,7 +760,7 @@ func (s *Service) StreamTaskLogs(taskID string, filter model.LogQueryFilter, emi
 		query = query.Where("timestamp <= ?", filter.TimeEnd.Time)
 	}
 
-	rows, err := query.Order("id asc").Rows()
+	rows, err := applyLogOrder(query, filter).Rows()
 	if err != nil {
 		return fmt.Errorf("open log rows for stream export failed: %w", err)
 	}
