@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -26,6 +27,36 @@ import (
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
 )
+
+// localTime 按测试进程本地时区构造时间。
+//
+// 之所以刻意对齐 time.Local：日志文件里不带时区的时间戳是由
+// logparser.ParseHuaweiTimestamp 以 time.Local 解析的（PARSE-11 已锁定该语义），
+// 因此这里构造查询边界时也必须使用同一个 Location。
+func localTime(year int, month time.Month, day, hour, min, sec int) time.Time {
+	return time.Date(year, month, day, hour, min, sec, 0, time.Local)
+}
+
+// timeRangeQuery 拼装 time_start / time_end 查询串；start / end 为 nil 表示不限制该侧。
+//
+// 两个易错点：
+//  1. 不能写死 "+08:00"。日志时间戳按 time.Local 解析，查询边界却固定 +08:00 的话，
+//     在非 UTC+8 的 CI runner（GitHub Actions 默认为 UTC）上查询区间会与日志实际
+//     时刻整体错位，断言随之失败。
+//  2. '+' 在 query string 中代表空格，必须转义成 %2B，否则后端收到的是错的字符串。
+func timeRangeQuery(start, end *time.Time) string {
+	parts := make([]string, 0, 2)
+	appendPart := func(key string, t time.Time) {
+		parts = append(parts, key+"="+strings.ReplaceAll(t.Format(time.RFC3339), "+", "%2B"))
+	}
+	if start != nil {
+		appendPart("time_start", *start)
+	}
+	if end != nil {
+		appendPart("time_end", *end)
+	}
+	return strings.Join(parts, "&")
+}
 
 func TestAPIEndpoints(t *testing.T) {
 	logger.Init("debug", "console")
@@ -161,9 +192,17 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 200 for /tasks/:id/logs?sort_by=time&order=desc, got %d", w4Desc.Code)
 	}
 
-	// 4.5 验证工作台基于时间区间（time_start / time_end）的严格断言与反例
-	// 反例：明显排除零值时间（2026 年区间不应包含 0001 年的日志）
-	req4Exclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-01-01T00:00:00%2B08:00&time_end=2026-12-31T23:59:59%2B08:00", nil)
+	// 4.5 验证时间区间（time_start / time_end）过滤确实下推到查询层，而不是被静默忽略
+	//     （后端 ParseCustomTime 解析失败时会静默丢弃该条件，只断言 HTTP 200 是测不出来的）。
+	//
+	// 前置条件（改动前务必知晓）：本用例前面通过 POST /tasks 导入的 logPayload 不带时间戳
+	// 前缀，因此这两条日志的 timestamp 是零值 0001-01-01，下述断言正建立在此之上——
+	// 2026 年区间必然排除零值日志，而 0001~2099 的宽区间必然命中。
+	// 一旦有人给 logPayload 补上时间戳，本段断言需同步调整；时间区间的严格业务语义
+	// 由 TestTaskLogs_TimeRangeFilterStrict 覆盖。
+	excludeStart := localTime(2026, 1, 1, 0, 0, 0)
+	excludeEnd := localTime(2026, 12, 31, 23, 59, 59)
+	req4Exclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(&excludeStart, &excludeEnd), nil)
 	w4Exclude := httptest.NewRecorder()
 	router.ServeHTTP(w4Exclude, req4Exclude)
 	if w4Exclude.Code != http.StatusOK {
@@ -180,8 +219,11 @@ func TestAPIEndpoints(t *testing.T) {
 		t.Errorf("expected 0 logs for out-of-range filter, got %d (body: %s)", res4Exclude.Data.Total, w4Exclude.Body.String())
 	}
 
-	// 正例：宽区间覆盖零值时间（0001-01-01 开始）应命中全部 2 条日志
-	req4Include, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=0001-01-01T00:00:00Z&time_end=2099-12-31T23:59:59Z", nil)
+	// 正例：宽区间覆盖零值时间（自 0001-01-01 UTC 起）应命中全部 2 条日志。
+	// 零值时间本身即为 UTC，这里显式按 UTC 构造，无需跟随 time.Local。
+	includeStart := time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC)
+	includeEnd := time.Date(2099, 12, 31, 23, 59, 59, 0, time.UTC)
+	req4Include, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(&includeStart, &includeEnd), nil)
 	w4Include := httptest.NewRecorder()
 	router.ServeHTTP(w4Include, req4Include)
 	var res4Include struct {
@@ -1502,8 +1544,10 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Fatalf("expected non-empty task_id")
 	}
 
-	// 1. 宽区间应命中全部 2 条日志 (RFC3339 带时区偏移)
-	reqBroad, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-08-08T18:00:00%2B08:00&time_end=2026-08-08T20:00:00%2B08:00", nil)
+	// 1. 宽区间应命中全部 2 条日志（RFC3339 带时区偏移）
+	broadStart := localTime(2026, 8, 8, 18, 0, 0)
+	broadEnd := localTime(2026, 8, 8, 20, 0, 0)
+	reqBroad, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(&broadStart, &broadEnd), nil)
 	wBroad := httptest.NewRecorder()
 	router.ServeHTTP(wBroad, reqBroad)
 	if wBroad.Code != http.StatusOK {
@@ -1520,8 +1564,9 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Errorf("broad range expected total=2, got %d (len=%d)", resBroad.Data.Total, len(resBroad.Data.Records))
 	}
 
-	// 2. 单边开区间过滤 (仅指定起始时间 >= 19:00:00)，应仅命中第二条日志 (BFD)
-	reqStartOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2026-08-08T19:00:00%2B08:00", nil)
+	// 2. 单边开区间过滤（仅指定起始时间 >= 19:00:00），应仅命中第二条日志 (BFD)
+	startOnly := localTime(2026, 8, 8, 19, 0, 0)
+	reqStartOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(&startOnly, nil), nil)
 	wStartOnly := httptest.NewRecorder()
 	router.ServeHTTP(wStartOnly, reqStartOnly)
 	var resStartOnly struct {
@@ -1535,8 +1580,9 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Errorf("start-only filter expected 1 BFD log, got total=%d, records=%+v", resStartOnly.Data.Total, resStartOnly.Data.Records)
 	}
 
-	// 3. 单边开区间过滤 (仅指定截止时间 <= 19:00:00)，应仅命中第一条日志 (IFNET)
-	reqEndOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_end=2026-08-08T19:00:00%2B08:00", nil)
+	// 3. 单边开区间过滤（仅指定截止时间 <= 19:00:00），应仅命中第一条日志 (IFNET)
+	endOnly := localTime(2026, 8, 8, 19, 0, 0)
+	reqEndOnly, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(nil, &endOnly), nil)
 	wEndOnly := httptest.NewRecorder()
 	router.ServeHTTP(wEndOnly, reqEndOnly)
 	var resEndOnly struct {
@@ -1550,8 +1596,11 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Errorf("end-only filter expected 1 IFNET log, got total=%d, records=%+v", resEndOnly.Data.Total, resEndOnly.Data.Records)
 	}
 
-	// 4. 关键反例：区间完全排除所有日志 (2000 年区间)，断言 total == 0
-	reqExclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?time_start=2000-01-01T00:00:00%2B08:00&time_end=2000-12-31T23:59:59%2B08:00", nil)
+	// 4. 关键反例：区间完全排除所有日志（2000 年区间），断言 total == 0。
+	//    本用例是唯一能证明 WHERE 子句真的生效、而非参数被静默忽略的守卫。
+	excludeStart := localTime(2000, 1, 1, 0, 0, 0)
+	excludeEnd := localTime(2000, 12, 31, 23, 59, 59)
+	reqExclude, _ := http.NewRequest("GET", "/api/v1/tasks/"+taskID+"/logs?"+timeRangeQuery(&excludeStart, &excludeEnd), nil)
 	wExclude := httptest.NewRecorder()
 	router.ServeHTTP(wExclude, reqExclude)
 	var resExclude struct {
@@ -1565,6 +1614,3 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Errorf("critical counter-example expected total=0, got %d (len=%d)", resExclude.Data.Total, len(resExclude.Data.Records))
 	}
 }
-
-
-
