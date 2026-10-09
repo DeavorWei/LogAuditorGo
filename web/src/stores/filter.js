@@ -20,7 +20,6 @@ export const useFilterStore = defineStore('filter', () => {
     matched: null,
     deviceId: null,
     module: '',
-    sourceFile: '',
     timeStart: null,
     timeEnd: null,
     viewMode: 'workbench',
@@ -45,7 +44,9 @@ export const useFilterStore = defineStore('filter', () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return defaults()
-      return sanitizeSort({ ...defaults(), ...JSON.parse(raw) })
+      const parsed = JSON.parse(raw)
+      delete parsed.sourceFile
+      return sanitizeSort({ ...defaults(), ...parsed })
     } catch (e) {
       return defaults()
     }
@@ -89,7 +90,6 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.matched !== null && f.matched !== undefined) params.matched = f.matched ? 'true' : 'false'
     if (f.deviceId) params.device_id = f.deviceId
     if (f.module) params.module = f.module
-    if (f.sourceFile) params.source_file = f.sourceFile
     if (f.timeStart) params.time_start = f.timeStart
     if (f.timeEnd) params.time_end = f.timeEnd
     if (f.sortBy) params.sort_by = f.sortBy
@@ -105,7 +105,6 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.matched !== null && f.matched !== undefined) n++
     if (f.deviceId) n++
     if (f.module) n++
-    if (f.sourceFile) n++
     if (f.timeStart || f.timeEnd) n++
     return n
   }
