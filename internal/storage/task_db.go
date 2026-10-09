@@ -447,6 +447,23 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	sqlDB.SetMaxIdleConns(4)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
+	// 迁移前防御处理：
+	// 1. 解决历史孤儿数据导致的 FOREIGN KEY 约束校验失败 (P0)：
+	// 若已存在 log_tag_relations 表，在 AutoMigrate 重建表前先执行一次性孤儿自愈清理，
+	// 避免 GORM 在 SQLite 下重建表做外键校验时触发 `FOREIGN KEY constraint failed (787)` 导致迁移回滚。
+	if db.Migrator().HasTable("log_tag_relations") {
+		_ = db.Exec("DELETE FROM log_tag_relations WHERE log_id NOT IN (SELECT id FROM log_records)").Error
+		_ = db.Exec("DELETE FROM log_tag_relations WHERE tag_id NOT IN (SELECT id FROM log_tags)").Error
+	}
+
+	// 2. 避免级联删除触发器与表结构重建冲突 (P1)：
+	// trg_cascade_delete_log_tag_rel 挂在 log_records 上但引用 log_tag_relations，
+	// GORM 在对 log_tag_relations 执行整表重建（rename/drop）时会因触发器引用校验报错：
+	// `SQL logic error: error in trigger trg_cascade_delete_log_tag_rel: no such table: main.log_tag_relations`。
+	// 因此在迁移前先 DROP 触发器，迁移完成后再由 ensureTaskTriggers 重建。
+	_ = db.Exec("DROP TRIGGER IF EXISTS trg_cascade_delete_log_tag_rel").Error
+	_ = db.Exec("DROP TRIGGER IF EXISTS trg_cascade_delete_tag_tag_rel").Error
+
 	// 自动迁移任务专属表
 	if err := db.AutoMigrate(
 		&model.TaskInfo{},
@@ -459,6 +476,24 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	); err != nil {
 		if strings.Contains(err.Error(), "duplicate column name") {
 			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered duplicate column, safely ignored: %v", taskID, err)
+		} else if strings.Contains(err.Error(), "constraint failed") || strings.Contains(err.Error(), "FOREIGN KEY") {
+			// 若极端情况下仍触发约束错误，记录警告并在关闭外键校验下尝试兼容降级迁移，绝不阻断任务访问
+			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered constraint warning: %v, attempting tolerant migration", taskID, err)
+			_ = db.Exec("PRAGMA foreign_keys = OFF").Error
+			retryErr := db.AutoMigrate(
+				&model.TaskInfo{},
+				&model.TaskFile{},
+				&model.LogRecord{},
+				&model.RCAEvent{},
+				&model.Device{},
+				&model.LogTag{},
+				&model.LogTagRelation{},
+			)
+			_ = db.Exec("PRAGMA foreign_keys = ON").Error
+			if retryErr != nil && !strings.Contains(retryErr.Error(), "duplicate column name") {
+				_ = sqlDB.Close()
+				return nil, fmt.Errorf("auto migrate task tables failed: %w", retryErr)
+			}
 		} else {
 			_ = sqlDB.Close()
 			return nil, fmt.Errorf("auto migrate task tables failed: %w", err)

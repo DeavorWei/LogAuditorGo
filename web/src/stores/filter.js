@@ -63,6 +63,8 @@ export const useFilterStore = defineStore('filter', () => {
       if (!raw) return defaults()
       const parsed = JSON.parse(raw)
       delete parsed.sourceFile
+      delete parsed.tagIds
+      delete parsed.deviceId
       return sanitizeSort({ ...defaults(), ...parsed })
     } catch (e) {
       return defaults()
@@ -78,7 +80,7 @@ export const useFilterStore = defineStore('filter', () => {
     filters,
     (val) => {
       try {
-        const { page, pageSize, tagIds, ...persisted } = val
+        const { page, pageSize, tagIds, deviceId, ...persisted } = val
         localStorage.setItem(STORAGE_KEY, JSON.stringify(persisted))
       } catch (e) {
         // 隐私模式下 localStorage 可能不可写，忽略即可，不影响功能

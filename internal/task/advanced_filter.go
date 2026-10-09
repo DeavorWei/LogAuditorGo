@@ -157,40 +157,68 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 
 	// 2. 正则类操作符前置校验与编译
 	if op == "regex" || op == "not_regex" {
-		if _, err := regexp.Compile(val); err != nil {
+		pat := val
+		if colName == "module" && !strings.HasPrefix(pat, "(?i)") {
+			pat = "(?i)" + pat
+		}
+		if _, err := regexp.Compile(pat); err != nil {
 			return nil, fmt.Errorf("condition #%d: invalid regex pattern '%s': %w", idx+1, val, err)
 		}
 		if op == "regex" {
 			return &conditionSQL{
 				SQL:  colName + " REGEXP ?",
-				Args: []any{val},
+				Args: []any{pat},
 			}, nil
 		}
 		// not_regex: 三值逻辑防御
 		return &conditionSQL{
 			SQL:  "COALESCE(" + colName + ", '') NOT REGEXP ?",
-			Args: []any{val},
+			Args: []any{pat},
 		}, nil
 	}
 
 	// 3. 通用文本与数值操作符
 	switch op {
 	case "contains":
+		if colName == "module" {
+			return &conditionSQL{
+				SQL:  "UPPER(" + colName + ") LIKE ? ESCAPE '\\'",
+				Args: []any{"%" + strings.ToUpper(escapeLikePattern(val)) + "%"},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  colName + " LIKE ? ESCAPE '\\'",
 			Args: []any{"%" + escapeLikePattern(val) + "%"},
 		}, nil
 	case "not_contains":
+		if colName == "module" {
+			return &conditionSQL{
+				SQL:  "COALESCE(UPPER(" + colName + "), '') NOT LIKE ? ESCAPE '\\'",
+				Args: []any{"%" + strings.ToUpper(escapeLikePattern(val)) + "%"},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  "COALESCE(" + colName + ", '') NOT LIKE ? ESCAPE '\\'",
 			Args: []any{"%" + escapeLikePattern(val) + "%"},
 		}, nil
 	case "prefix":
+		if colName == "module" {
+			return &conditionSQL{
+				SQL:  "UPPER(" + colName + ") LIKE ? ESCAPE '\\'",
+				Args: []any{strings.ToUpper(escapeLikePattern(val)) + "%"},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  colName + " LIKE ? ESCAPE '\\'",
 			Args: []any{escapeLikePattern(val) + "%"},
 		}, nil
 	case "suffix":
+		if colName == "module" {
+			return &conditionSQL{
+				SQL:  "UPPER(" + colName + ") LIKE ? ESCAPE '\\'",
+				Args: []any{"%" + strings.ToUpper(escapeLikePattern(val))},
+			}, nil
+		}
 		return &conditionSQL{
 			SQL:  colName + " LIKE ? ESCAPE '\\'",
 			Args: []any{"%" + escapeLikePattern(val)},
