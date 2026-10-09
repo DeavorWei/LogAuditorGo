@@ -267,6 +267,7 @@
               style="width: 48%;"
               format="YYYY-MM-DD HH:mm:ss"
               value-format="YYYY-MM-DDTHH:mm:ssZ"
+              :shortcuts="startTimeShortcuts"
               clearable
               @change="onFilterChange"
             />
@@ -278,6 +279,7 @@
               style="width: 48%;"
               format="YYYY-MM-DD HH:mm:ss"
               value-format="YYYY-MM-DDTHH:mm:ssZ"
+              :shortcuts="endTimeShortcuts"
               clearable
               @change="onFilterChange"
             />
@@ -1402,6 +1404,40 @@ const onSortChange = async (val) => {
   await fetchLogs()
 }
 
+const startTimeShortcuts = [
+  {
+    text: '1小时前',
+    value: () => new Date(Date.now() - 3600 * 1000)
+  },
+  {
+    text: '24小时前',
+    value: () => new Date(Date.now() - 24 * 3600 * 1000)
+  },
+  {
+    text: '3天前',
+    value: () => new Date(Date.now() - 3 * 24 * 3600 * 1000)
+  },
+  {
+    text: '7天前',
+    value: () => new Date(Date.now() - 7 * 24 * 3600 * 1000)
+  }
+]
+
+const endTimeShortcuts = [
+  {
+    text: '现在',
+    value: () => new Date()
+  },
+  {
+    text: '今天结束',
+    value: () => {
+      const d = new Date()
+      d.setHours(23, 59, 59, 999)
+      return d
+    }
+  }
+]
+
 const onFilterChange = async () => {
   filter.value.page = 1
   await fetchLogs()
@@ -1862,6 +1898,16 @@ watch(
 .filter-row {
   display: flex;
   justify-content: space-between;
+}
+.filter-panel :deep(.el-date-editor.el-input) {
+  --el-date-editor-width: 48%;
+}
+.filter-panel :deep(.el-date-editor .el-input__wrapper) {
+  padding-left: 6px;
+  padding-right: 6px;
+}
+.filter-panel :deep(.el-date-editor .el-input__inner) {
+  font-size: 11px;
 }
 .log-stream-list {
   flex: 1;
