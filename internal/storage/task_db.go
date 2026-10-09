@@ -21,7 +21,15 @@ import (
 	"logauditorgo/pkg/logger"
 )
 
-var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
+var (
+	taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
+
+	// migrationDegradedCount 记录降级迁移触发次数（包级别可见，用于监控与测试断言）
+	migrationDegradedCount int64
+
+	// skipPreMigrationPurgeForTest 仅用于测试：跳过迁移前孤儿清理以强制触发降级分支
+	skipPreMigrationPurgeForTest bool
+)
 
 // ErrTaskDBClosed 任务库连接已被驱逐/关闭的哨兵错误。
 //
@@ -443,17 +451,22 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		return nil, fmt.Errorf("get sql.DB failed: %w", err)
 	}
 
-	sqlDB.SetMaxOpenConns(4) // WAL 模式下多读单写安全，前后台并发隔离杜绝排队
-	sqlDB.SetMaxIdleConns(4)
+	// 迁移期间强制单连接 (SetMaxOpenConns=1)：
+	// 1. 避免迁移期间并发连接竞争 SQLite 写锁；
+	// 2. 保证 PRAGMA foreign_keys = OFF 等连接级设置在所有迁移操作与降级重试中 100% 作用于同条连接，
+	//    杜绝连接池多连接导致连接参数分叉、降级重试失效的风险。
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
 	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	// 迁移前防御处理：
 	// 1. 解决历史孤儿数据导致的 FOREIGN KEY 约束校验失败 (P0)：
 	// 若已存在 log_tag_relations 表，在 AutoMigrate 重建表前先执行一次性孤儿自愈清理，
 	// 避免 GORM 在 SQLite 下重建表做外键校验时触发 `FOREIGN KEY constraint failed (787)` 导致迁移回滚。
-	if db.Migrator().HasTable("log_tag_relations") {
-		_ = db.Exec("DELETE FROM log_tag_relations WHERE log_id NOT IN (SELECT id FROM log_records)").Error
-		_ = db.Exec("DELETE FROM log_tag_relations WHERE tag_id NOT IN (SELECT id FROM log_tags)").Error
+	if !skipPreMigrationPurgeForTest {
+		if _, err := purgeOrphanTagRelations(db, taskID); err != nil {
+			logger.Log.Warnf("[openTaskDB] task %s pre-migration orphan purge warning: %v", taskID, err)
+		}
 	}
 
 	// 2. 避免级联删除触发器与表结构重建冲突 (P1)：
@@ -461,8 +474,11 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 	// GORM 在对 log_tag_relations 执行整表重建（rename/drop）时会因触发器引用校验报错：
 	// `SQL logic error: error in trigger trg_cascade_delete_log_tag_rel: no such table: main.log_tag_relations`。
 	// 因此在迁移前先 DROP 触发器，迁移完成后再由 ensureTaskTriggers 重建。
-	_ = db.Exec("DROP TRIGGER IF EXISTS trg_cascade_delete_log_tag_rel").Error
-	_ = db.Exec("DROP TRIGGER IF EXISTS trg_cascade_delete_tag_tag_rel").Error
+	for _, trgName := range []string{"trg_cascade_delete_log_tag_rel", "trg_cascade_delete_tag_tag_rel"} {
+		if err := db.Exec("DROP TRIGGER IF EXISTS " + trgName).Error; err != nil {
+			logger.Log.Warnf("[openTaskDB] task %s drop trigger %s failed: %v", taskID, trgName, err)
+		}
+	}
 
 	// 自动迁移任务专属表
 	if err := db.AutoMigrate(
@@ -478,8 +494,11 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered duplicate column, safely ignored: %v", taskID, err)
 		} else if strings.Contains(err.Error(), "constraint failed") || strings.Contains(err.Error(), "FOREIGN KEY") {
 			// 若极端情况下仍触发约束错误，记录警告并在关闭外键校验下尝试兼容降级迁移，绝不阻断任务访问
+			atomic.AddInt64(&migrationDegradedCount, 1)
 			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered constraint warning: %v, attempting tolerant migration", taskID, err)
-			_ = db.Exec("PRAGMA foreign_keys = OFF").Error
+			if err := db.Exec("PRAGMA foreign_keys = OFF").Error; err != nil {
+				logger.Log.Warnf("[openTaskDB] task %s set PRAGMA foreign_keys = OFF failed: %v", taskID, err)
+			}
 			retryErr := db.AutoMigrate(
 				&model.TaskInfo{},
 				&model.TaskFile{},
@@ -489,7 +508,13 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 				&model.LogTag{},
 				&model.LogTagRelation{},
 			)
-			_ = db.Exec("PRAGMA foreign_keys = ON").Error
+			// 降级迁移完成后立即补跑孤儿清理，确保数据自洽 (PRAGMA foreign_key_check 零违规)
+			if _, purgeErr := purgeOrphanTagRelations(db, taskID); purgeErr != nil {
+				logger.Log.Warnf("[openTaskDB] task %s post-migration orphan purge failed: %v", taskID, purgeErr)
+			}
+			if err := db.Exec("PRAGMA foreign_keys = ON").Error; err != nil {
+				logger.Log.Warnf("[openTaskDB] task %s restore PRAGMA foreign_keys = ON failed: %v", taskID, err)
+			}
 			if retryErr != nil && !strings.Contains(retryErr.Error(), "duplicate column name") {
 				_ = sqlDB.Close()
 				return nil, fmt.Errorf("auto migrate task tables failed: %w", retryErr)
@@ -513,7 +538,47 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		logger.Log.Warnf("[TaskDBPool] ensure task cascade triggers failed: %v", err)
 	}
 
+	// 迁移与触发器初始化全部成功完成，恢复 WAL 模式下的前后台并发连接池配置
+	sqlDB.SetMaxOpenConns(4)
+	sqlDB.SetMaxIdleConns(4)
+
 	return db, nil
+}
+
+// purgeOrphanTagRelations 幂等清理 log_tag_relations 中的孤儿关联数据
+func purgeOrphanTagRelations(db *gorm.DB, taskID string) (int64, error) {
+	if !db.Migrator().HasTable("log_tag_relations") {
+		return 0, nil
+	}
+	var totalPurged int64
+
+	// 清理指向已删除 log_records 的孤儿记录
+	if db.Migrator().HasTable("log_records") {
+		res := db.Exec("DELETE FROM log_tag_relations WHERE log_id NOT IN (SELECT id FROM log_records)")
+		if res.Error != nil {
+			logger.Log.Warnf("[openTaskDB] task %s purge orphan log_id failed: %v", taskID, res.Error)
+			return totalPurged, res.Error
+		}
+		if res.RowsAffected > 0 {
+			logger.Log.Infof("[openTaskDB] task %s purged %d orphan relations (invalid log_id)", taskID, res.RowsAffected)
+			totalPurged += res.RowsAffected
+		}
+	}
+
+	// 清理指向已删除 log_tags 的孤儿记录
+	if db.Migrator().HasTable("log_tags") {
+		res := db.Exec("DELETE FROM log_tag_relations WHERE tag_id NOT IN (SELECT id FROM log_tags)")
+		if res.Error != nil {
+			logger.Log.Warnf("[openTaskDB] task %s purge orphan tag_id failed: %v", taskID, res.Error)
+			return totalPurged, res.Error
+		}
+		if res.RowsAffected > 0 {
+			logger.Log.Infof("[openTaskDB] task %s purged %d orphan relations (invalid tag_id)", taskID, res.RowsAffected)
+			totalPurged += res.RowsAffected
+		}
+	}
+
+	return totalPurged, nil
 }
 
 // ensureTaskIndexes 为任务库补齐复合索引（幂等）

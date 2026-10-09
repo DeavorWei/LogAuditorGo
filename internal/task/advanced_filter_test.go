@@ -492,3 +492,45 @@ func TestStreamExportWithTags(t *testing.T) {
 		t.Fatalf("expected exported row with tag name, got:\n%s", output)
 	}
 }
+
+// 验证 module 字段在所有支持操作符下的大小写不敏感语义
+func TestModuleFilterCaseInsensitivity(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	tests := []struct {
+		name     string
+		op       string
+		val      string
+		expected int64
+	}{
+		{name: "eq lower", op: "eq", val: "bfd", expected: 1},
+		{name: "contains lower", op: "contains", val: "fd", expected: 1},
+		{name: "prefix lower", op: "prefix", val: "bf", expected: 1},
+		{name: "suffix lower", op: "suffix", val: "fd", expected: 1},
+		{name: "regex lower", op: "regex", val: "bf[dD]", expected: 1},
+		{name: "in lower", op: "in", val: "bfd,devm", expected: 2},
+		{name: "not_contains lower", op: "not_contains", val: "bfd", expected: 3},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := model.LogQueryRequestBody{
+				PageSize: 10,
+				Advanced: &model.AdvancedFilter{
+					Logic: "AND",
+					Conditions: []model.AdvancedCondition{
+						{Field: "module", Op: tc.op, Value: tc.val},
+					},
+				},
+			}
+			_, total, err := svc.QueryTaskLogsUnified(taskID, req)
+			if err != nil {
+				t.Fatalf("query failed for op %s: %v", tc.op, err)
+			}
+			if total != tc.expected {
+				t.Fatalf("expected total %d for op %s with val '%s', got %d", tc.expected, tc.op, tc.val, total)
+			}
+		})
+	}
+}

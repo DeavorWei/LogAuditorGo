@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 
@@ -9,6 +10,8 @@ import (
 
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/task"
+	"logauditorgo/pkg/logger"
+	"logauditorgo/pkg/progress"
 )
 
 // ListTags 获取任务所有标签及计数
@@ -34,6 +37,8 @@ func (h *TaskHandler) CreateTag(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req model.TagCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -65,6 +70,8 @@ func (h *TaskHandler) UpdateTag(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid tag ID")
 		return
 	}
+
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req model.TagUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -135,7 +142,37 @@ func (h *TaskHandler) BatchTagLogs(c *gin.Context) {
 		}
 	}
 
-	taggedCount, matchedTotal, err := h.taskSvc.BatchTagLogs(taskID, uint(tagID), req)
+	matchedTotal, err := h.taskSvc.CountMatchingLogs(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+	if matchedTotal > 500000 {
+		ErrorResponse(c, http.StatusBadRequest, -1, task.ErrBatchLimitExceeded.Error())
+		return
+	}
+
+	// 设计 5.6：> 5 万行走现有 progress.JobTracker 异步 job + SSE
+	if matchedTotal > 50000 {
+		tracker := progress.GetHub().NewJob("batch_tag", taskID, task.BatchTagStages)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Log.Errorf("[BatchTagLogs] panic recovered: %v", r)
+					tracker.Fail(fmt.Errorf("panic in batch tag: %v", r))
+				}
+			}()
+			_, _, _ = h.taskSvc.BatchTagLogs(taskID, uint(tagID), req, matchedTotal, tracker)
+		}()
+		SuccessResponse(c, gin.H{
+			"job_id":        tracker.JobID(),
+			"async":         true,
+			"matched_total": matchedTotal,
+		})
+		return
+	}
+
+	taggedCount, matchedTotal, err := h.taskSvc.BatchTagLogs(taskID, uint(tagID), req, matchedTotal, nil)
 	if err != nil {
 		if errors.Is(err, task.ErrTagNotFound) {
 			ErrorResponse(c, http.StatusNotFound, -1, "Tag not found")
@@ -178,7 +215,37 @@ func (h *TaskHandler) BatchUntagLogs(c *gin.Context) {
 		}
 	}
 
-	untaggedCount, err := h.taskSvc.BatchUntagLogs(taskID, uint(tagID), req)
+	matchedTotal, err := h.taskSvc.CountMatchingLogs(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+	if matchedTotal > 500000 {
+		ErrorResponse(c, http.StatusBadRequest, -1, task.ErrBatchLimitExceeded.Error())
+		return
+	}
+
+	// 设计 5.6：> 5 万行走现有 progress.JobTracker 异步 job + SSE
+	if matchedTotal > 50000 {
+		tracker := progress.GetHub().NewJob("batch_untag", taskID, task.BatchUntagStages)
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					logger.Log.Errorf("[BatchUntagLogs] panic recovered: %v", r)
+					tracker.Fail(fmt.Errorf("panic in batch untag: %v", r))
+				}
+			}()
+			_, _ = h.taskSvc.BatchUntagLogs(taskID, uint(tagID), req, matchedTotal, tracker)
+		}()
+		SuccessResponse(c, gin.H{
+			"job_id":        tracker.JobID(),
+			"async":         true,
+			"matched_total": matchedTotal,
+		})
+		return
+	}
+
+	untaggedCount, err := h.taskSvc.BatchUntagLogs(taskID, uint(tagID), req, matchedTotal, nil)
 	if err != nil {
 		if errors.Is(err, task.ErrTagNotFound) {
 			ErrorResponse(c, http.StatusNotFound, -1, "Tag not found")

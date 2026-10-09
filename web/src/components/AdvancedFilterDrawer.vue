@@ -317,6 +317,14 @@
         </el-button>
       </template>
     </el-dialog>
+
+    <!-- 批量打标与摘标异步处理进度弹窗 -->
+    <ImportProgressModal
+      v-model="showProgressModal"
+      :job-id="progressJobId"
+      title="批量标签处理流水线"
+      @completed="handleBatchCompleted"
+    />
   </el-drawer>
 </template>
 
@@ -328,6 +336,7 @@ import api from '@/api'
 import useFilterStore from '@/stores/filter'
 import useTagStore from '@/stores/tag'
 import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const props = defineProps({
   taskId: {
@@ -618,6 +627,22 @@ const applyFilters = () => {
   emit('apply')
 }
 
+// 批量处理异步进度追踪
+const showProgressModal = ref(false)
+const progressJobId = ref('')
+const pendingTagId = ref(null)
+
+const handleBatchCompleted = async () => {
+  showProgressModal.value = false
+  ElMessage.success('批量标签处理完成')
+  if (pendingTagId.value && !filterStore.filters.tagIds.includes(pendingTagId.value)) {
+    filterStore.filters.tagIds.push(pendingTagId.value)
+  }
+  pendingTagId.value = null
+  await tagStore.fetchTags(props.taskId)
+  applyFilters()
+}
+
 // 批量打标
 const batchTagDialogVisible = ref(false)
 const selectedTagId = ref(null)
@@ -665,14 +690,21 @@ const confirmBatchTag = async () => {
 
     const res = await api.batchTagLogs(props.taskId, targetTagId, baseBody)
     if (res.code === 0) {
-      ElMessage.success(`成功为 ${res.data.tagged_count} 条日志添加标签`)
-      batchTagDialogVisible.value = false
-      // 自动把该标签加入当前筛选勾选，形成闭环
-      if (!filterStore.filters.tagIds.includes(targetTagId)) {
-        filterStore.filters.tagIds.push(targetTagId)
+      if (res.data?.job_id) {
+        batchTagDialogVisible.value = false
+        progressJobId.value = res.data.job_id
+        pendingTagId.value = targetTagId
+        showProgressModal.value = true
+      } else {
+        ElMessage.success(`成功为 ${res.data.tagged_count} 条日志添加标签`)
+        batchTagDialogVisible.value = false
+        // 自动把该标签加入当前筛选勾选，形成闭环
+        if (!filterStore.filters.tagIds.includes(targetTagId)) {
+          filterStore.filters.tagIds.push(targetTagId)
+        }
+        await tagStore.fetchTags(props.taskId)
+        applyFilters()
       }
-      await tagStore.fetchTags(props.taskId)
-      applyFilters()
     }
   } catch (e) {
     ElMessage.error(e.message || '批量打标失败')
@@ -713,10 +745,17 @@ const confirmBatchUntag = async () => {
 
     const res = await api.batchUntagLogs(props.taskId, selectedUntagId.value, baseBody)
     if (res.code === 0) {
-      ElMessage.success(`成功从 ${res.data.untagged_count} 条日志中移除标签`)
-      batchUntagDialogVisible.value = false
-      await tagStore.fetchTags(props.taskId)
-      applyFilters()
+      if (res.data?.job_id) {
+        batchUntagDialogVisible.value = false
+        progressJobId.value = res.data.job_id
+        pendingTagId.value = null
+        showProgressModal.value = true
+      } else {
+        ElMessage.success(`成功从 ${res.data.untagged_count} 条日志中移除标签`)
+        batchUntagDialogVisible.value = false
+        await tagStore.fetchTags(props.taskId)
+        applyFilters()
+      }
     }
   } catch (e) {
     ElMessage.error(e.message || '批量摘标失败')

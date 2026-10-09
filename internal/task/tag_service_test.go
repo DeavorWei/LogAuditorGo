@@ -10,6 +10,7 @@ import (
 
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
+	"logauditorgo/pkg/progress"
 )
 
 func setupTagTestEnv(t *testing.T) (*Service, string, func()) {
@@ -120,7 +121,7 @@ func TestBatchTagConsistencyWithQuery(t *testing.T) {
 	}
 
 	// 3. 用完全相同的 filterReq 批量打标
-	taggedCount, matchedTotal, err := svc.BatchTagLogs(taskID, tag.ID, filterReq)
+	taggedCount, matchedTotal, err := svc.BatchTagLogs(taskID, tag.ID, filterReq, 0, nil)
 	if err != nil {
 		t.Fatalf("batch tag logs failed: %v", err)
 	}
@@ -172,13 +173,13 @@ func TestBatchTagIdempotency(t *testing.T) {
 	}
 
 	// 第一次打标
-	firstTagged, _, err := svc.BatchTagLogs(taskID, tag.ID, req)
+	firstTagged, _, err := svc.BatchTagLogs(taskID, tag.ID, req, 0, nil)
 	if err != nil || firstTagged != 1 {
 		t.Fatalf("first batch tag expected 1, got %d, err: %v", firstTagged, err)
 	}
 
 	// 第二次重复打标相同条件
-	secondTagged, _, err := svc.BatchTagLogs(taskID, tag.ID, req)
+	secondTagged, _, err := svc.BatchTagLogs(taskID, tag.ID, req, 0, nil)
 	if err != nil {
 		t.Fatalf("second batch tag failed: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestOrphanTagCleanupOnOverwrite(t *testing.T) {
 	}
 
 	// 全部打标
-	_, _, err = svc.BatchTagLogs(taskID, tag.ID, model.LogQueryRequestBody{PageSize: 10})
+	_, _, err = svc.BatchTagLogs(taskID, tag.ID, model.LogQueryRequestBody{PageSize: 10}, 0, nil)
 	if err != nil {
 		t.Fatalf("batch tag failed: %v", err)
 	}
@@ -305,13 +306,13 @@ func TestTagRelationLogIDIndexUsage(t *testing.T) {
 
 	hasIndexUsage := false
 	for _, p := range plans {
-		if strings.Contains(p.Detail, "idx_tag_rel_log_id") || strings.Contains(p.Detail, "USING INDEX") {
+		if strings.Contains(p.Detail, "idx_tag_rel_log_id") {
 			hasIndexUsage = true
 			break
 		}
 	}
 	if !hasIndexUsage {
-		t.Fatalf("expected query plan to use index (idx_tag_rel_log_id or USING INDEX), got plans: %+v", plans)
+		t.Fatalf("expected query plan to specifically use idx_tag_rel_log_id, got plans: %+v", plans)
 	}
 }
 
@@ -370,5 +371,44 @@ func TestTagCRUDAndSingleTagging(t *testing.T) {
 	tags, err := svc.ListTaskTags(taskID)
 	if err != nil || len(tags) != 0 {
 		t.Fatalf("expected 0 tags after delete, got %d", len(tags))
+	}
+}
+
+// TAG-07: 批量打标与摘标支持 JobTracker 进度追踪与生命周期
+func TestBatchTagWithJobTracker(t *testing.T) {
+	svc, taskID, cleanup := setupTagTestEnv(t)
+	defer cleanup()
+
+	tag, err := svc.CreateTaskTag(taskID, model.TagCreateRequest{Name: "进度测试标签"})
+	if err != nil {
+		t.Fatalf("create tag failed: %v", err)
+	}
+
+	tracker := progress.NewJobTracker("test_job_tag_01", taskID, "batch_tag", BatchTagStages)
+	tagged, total, err := svc.BatchTagLogs(taskID, tag.ID, model.LogQueryRequestBody{PageSize: 10}, 0, tracker)
+	if err != nil {
+		t.Fatalf("batch tag with tracker failed: %v", err)
+	}
+	if tagged == 0 || total == 0 {
+		t.Fatalf("expected non-zero tagged and total, got tagged=%d, total=%d", tagged, total)
+	}
+
+	snap := tracker.GetSnapshot()
+	if snap.Status != progress.JobCompleted {
+		t.Fatalf("expected JobCompleted status, got %s", snap.Status)
+	}
+
+	// 测试批量摘标带 JobTracker
+	untagTracker := progress.NewJobTracker("test_job_untag_01", taskID, "batch_untag", BatchUntagStages)
+	untagged, err := svc.BatchUntagLogs(taskID, tag.ID, model.LogQueryRequestBody{PageSize: 10}, 0, untagTracker)
+	if err != nil {
+		t.Fatalf("batch untag with tracker failed: %v", err)
+	}
+	if untagged != tagged {
+		t.Fatalf("expected untagged count %d, got %d", tagged, untagged)
+	}
+	untagSnap := untagTracker.GetSnapshot()
+	if untagSnap.Status != progress.JobCompleted {
+		t.Fatalf("expected JobCompleted status for untag, got %s", untagSnap.Status)
 	}
 }
