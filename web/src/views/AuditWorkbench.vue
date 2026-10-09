@@ -258,16 +258,29 @@
               />
             </el-select>
           </div>
-          <div v-if="taskFiles.length > 1" class="filter-row">
-            <el-select v-model="filter.sourceFile" placeholder="按来源文件筛选" clearable size="small" style="width: 100%;" @change="onFilterChange">
-              <el-option label="全部文件来源" value="" />
-              <el-option
-                v-for="f in taskFiles"
-                :key="f.id"
-                :label="`${f.file_name} (${f.line_count}行)`"
-                :value="f.file_name"
-              />
-            </el-select>
+          <div class="filter-row">
+            <el-date-picker
+              v-model="filter.timeStart"
+              type="datetime"
+              placeholder="起始时间"
+              size="small"
+              style="width: 48%;"
+              format="YYYY-MM-DD HH:mm:ss"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              clearable
+              @change="onFilterChange"
+            />
+            <el-date-picker
+              v-model="filter.timeEnd"
+              type="datetime"
+              placeholder="截止时间"
+              size="small"
+              style="width: 48%;"
+              format="YYYY-MM-DD HH:mm:ss"
+              value-format="YYYY-MM-DDTHH:mm:ssZ"
+              clearable
+              @change="onFilterChange"
+            />
           </div>
         </div>
 
@@ -1304,8 +1317,9 @@ const handleTaskChange = async (taskId) => {
   currentTask.value = taskList.value.find(t => t.task_id === taskId)
   checkAndPollRcaStatus()
   filter.value.page = 1
-  filter.value.sourceFile = ''
   filter.value.deviceId = null
+  filter.value.timeStart = null
+  filter.value.timeEnd = null
   selectedLog.value = null
 
   /**
