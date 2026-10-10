@@ -270,6 +270,7 @@ import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { ElMessage } from 'element-plus'
+import { ArrowDown, ArrowUp, FullScreen, Monitor } from '@element-plus/icons-vue'
 
 const props = defineProps({
   taskDevices: {

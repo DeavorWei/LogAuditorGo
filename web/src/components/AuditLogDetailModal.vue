@@ -297,6 +297,7 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { formatTime } from '@/utils/format'
+import { ArrowUp, ArrowDown, Close, InfoFilled } from '@element-plus/icons-vue'
 import RcaGraph from '@/components/RcaGraph.vue'
 
 const props = defineProps({
