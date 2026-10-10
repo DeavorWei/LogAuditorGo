@@ -210,8 +210,7 @@
 
       <!-- 核心三栏交互工作台 (任务就绪时展示) -->
       <div v-else class="workbench-body">
-        <!-- 左栏：日志流与动态筛选过滤 (28%) -->
-        <div class="col-left">
+        <div class="col-left" :class="{ 'zen-mode': workbenchUIStore.ui.isZenMode }">
           <AuditFilterBar
             :task-devices="taskDevices"
             :task-meta="currentTask"
@@ -240,51 +239,16 @@
           </el-badge>
         </div>
 
-        <div class="log-stream-list" v-loading="loadingLogs">
-          <div
+        <div class="log-stream-list" :class="{ 'is-zen-grid': workbenchUIStore.ui.isZenMode }" v-loading="loadingLogs">
+          <AuditLogCard
             v-for="rec in logRecords"
             :key="rec.id"
-            :class="['log-card', { active: selectedLog && selectedLog.id === rec.id }]"
-            @click="selectLog(rec)"
-          >
-            <div class="log-card-header">
-              <span :class="['sev-tag', getSevClass(rec.severity)]">Lv.{{ rec.severity }}</span>
-              <span class="log-mod">{{ rec.module }}/{{ rec.brief }}</span>
-              <span v-if="rec.knowledge_id > 0" class="match-tag">{{ rec.match_tier }}</span>
-              <span v-else-if="rec.module === 'COMMENT'" class="comment-tag">注释</span>
-            </div>
-            <div v-if="rec.event_summary" class="log-card-msg" :title="rec.event_summary">
-              {{ rec.event_summary }}
-            </div>
-            <div class="log-card-footer">
-              <span class="log-time">{{ formatLogTime(rec) }}</span>
-              <span v-if="rec.hostname" class="host-tag">{{ rec.hostname }}</span>
-              <span v-if="rec.source_file" class="file-tag" :title="`来源文件: ${rec.source_file}`">
-                📄 {{ rec.source_file }}
-              </span>
-              <span v-if="rec.slot_info" class="slot-tag">{{ rec.slot_info }}</span>
-            </div>
-            <!-- 卡片标签色块 -->
-            <div v-if="rec.tags && rec.tags.length > 0" class="log-card-tags">
-              <el-tag
-                v-for="tag in rec.tags.slice(0, 3)"
-                :key="tag.id"
-                size="small"
-                effect="dark"
-                :color="tag.color || '#409EFF'"
-                class="card-tag-pill"
-              >
-                {{ tag.name }}
-              </el-tag>
-              <el-tooltip
-                v-if="rec.tags.length > 3"
-                :content="rec.tags.slice(3).map(t => t.name).join(', ')"
-                placement="top"
-              >
-                <el-tag size="small" type="info" class="card-tag-pill">+{{ rec.tags.length - 3 }}</el-tag>
-              </el-tooltip>
-            </div>
-          </div>
+            :record="rec"
+            :active="selectedLog && selectedLog.id === rec.id"
+            @click="handleLogCardClick(rec)"
+            @hover-enter="handleLogHoverEnter(rec)"
+            @hover-leave="handleLogHoverLeave(rec)"
+          />
           <el-empty
             v-if="!loadingLogs && logRecords.length === 0"
             :description="hasActiveFilter ? '未找到符合条件的日志' : '暂无匹配日志'"
@@ -308,7 +272,7 @@
       </div>
 
       <!-- 中栏：结构化报文与动态参数解析 (36%) -->
-      <div class="col-middle">
+      <div v-show="!workbenchUIStore.ui.isZenMode" class="col-middle">
         <!-- RCA 联动告警全局提示条 -->
         <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
           <div class="banner-left">
@@ -467,7 +431,7 @@
       </div>
 
       <!-- 右栏：华为官方知识库排查指导与 RCA 拓扑 (36%) -->
-      <div class="col-right">
+      <div v-show="!workbenchUIStore.ui.isZenMode" class="col-right">
         <div v-if="selectedLog" class="knowledge-container">
           <el-tabs v-model="activeTab" class="custom-tabs">
             <el-tab-pane label="官方知识与处理步骤" name="knowledge">
@@ -597,8 +561,32 @@
           <el-empty description="请选择日志查看官方故障知识库与排查建议" />
         </div>
       </div>
+      <!-- 全屏沉浸模式下居中双栏深度解析弹窗 (需求 5) -->
+      <AuditLogDetailModal
+        v-model:visible="showLogDetailModal"
+        :log="selectedLog"
+        :current-index="currentLogIndex"
+        :total-count="logRecords.length"
+        :matched-r-c-a="matchedRCA"
+        :rendered-template-html="renderedTemplateHtml"
+        :rendered-knowledge-html="renderedKnowledgeHtml"
+        :enriched-parameters="enrichedParameters"
+        :matched-param-count="matchedParamCount"
+        :kb-param-defs="kbParamDefs"
+        :available-tags="availableTagsForSelected"
+        @prev="handlePrevLog"
+        @next="handleNextLog"
+        @add-tag="handleAddLogTag"
+        @remove-tag="handleRemoveLogTag"
+      />
+
+      <!-- 网格模式下空格键快速预览单例浮层 (建议 3) -->
+      <LogQuickLookPopover
+        :visible="quickLookVisible"
+        :log="hoveredLog"
+      />
     </div>
-    </div>
+  </div>
 
     <!-- 已导入日志文件抽屉 -->
     <el-drawer v-model="showFilesDrawer" title="已导入日志文件清单" size="480px">
@@ -797,6 +785,9 @@ import RcaCenter from '@/components/RcaCenter.vue'
 import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
 import TagManagerModal from '@/components/TagManagerModal.vue'
 import AuditFilterBar from '@/components/AuditFilterBar.vue'
+import AuditLogCard from '@/components/AuditLogCard.vue'
+import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
+import LogQuickLookPopover from '@/components/LogQuickLookPopover.vue'
 import { useFilterStore } from '@/stores/filter'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTaskStore } from '@/stores/task'
@@ -1502,6 +1493,89 @@ const selectLog = (log) => {
   selectedLog.value = log
 }
 
+// 全屏模式下居中双栏深度解析弹窗与 QuickLook 状态 (需求 5 & 建议 3)
+const showLogDetailModal = ref(false)
+const quickLookVisible = ref(false)
+const hoveredLog = ref(null)
+
+const currentLogIndex = computed(() => {
+  if (!selectedLog.value || !logRecords.value.length) return 0
+  const idx = logRecords.value.findIndex(r => r.id === selectedLog.value.id)
+  return idx >= 0 ? idx : 0
+})
+
+const handlePrevLog = () => {
+  if (currentLogIndex.value > 0) {
+    selectLog(logRecords.value[currentLogIndex.value - 1])
+  }
+}
+
+const handleNextLog = () => {
+  if (currentLogIndex.value < logRecords.value.length - 1) {
+    selectLog(logRecords.value[currentLogIndex.value + 1])
+  }
+}
+
+const handleLogCardClick = (rec) => {
+  selectLog(rec)
+  if (workbenchUIStore.ui.isZenMode) {
+    showLogDetailModal.value = true
+  }
+}
+
+const handleLogHoverEnter = (rec) => {
+  hoveredLog.value = rec
+}
+
+const handleLogHoverLeave = (rec) => {
+  if (hoveredLog.value && hoveredLog.value.id === rec.id) {
+    hoveredLog.value = null
+    quickLookVisible.value = false
+  }
+}
+
+// 全局按键守卫分发引擎 (建议 3 & 建议 4)
+const onGlobalKeydown = (e) => {
+  const target = e.target
+  const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+  if (isInput) return
+
+  // 空格键快速预览 QuickLook (建议 3)
+  if (e.code === 'Space' && hoveredLog.value && !showLogDetailModal.value) {
+    e.preventDefault()
+    quickLookVisible.value = true
+    return
+  }
+
+  // f 键切换 Zen Mode (沉浸式全屏)
+  if (e.key === 'f' || e.key === 'F') {
+    if (!e.repeat && !showLogDetailModal.value) {
+      e.preventDefault()
+      workbenchUIStore.toggleZenMode()
+    }
+  }
+
+  // Esc 键分层退出 (优先关闭弹窗，再关闭预览，最后退出 Zen Mode)
+  if (e.key === 'Escape') {
+    if (quickLookVisible.value) {
+      e.preventDefault()
+      quickLookVisible.value = false
+    } else if (showLogDetailModal.value) {
+      e.preventDefault()
+      showLogDetailModal.value = false
+    } else if (workbenchUIStore.ui.isZenMode) {
+      e.preventDefault()
+      workbenchUIStore.setZenMode(false)
+    }
+  }
+}
+
+const onGlobalKeyup = (e) => {
+  if (e.code === 'Space') {
+    quickLookVisible.value = false
+  }
+}
+
 
 const exportingReport = ref(false)
 const handleExportCommand = async (cmd) => {
@@ -1778,12 +1852,19 @@ const getSevClass = (sev) => {
 }
 
 // WEB-06: 首屏显式编排——先拉列表，再按解析出的任务 ID 加载一次详情，
-// 避免"列表内部偷偷加载一次 + 外部再加载一次"的重复请求。
 onMounted(async () => {
+  window.addEventListener('keydown', onGlobalKeydown)
+  window.addEventListener('keyup', onGlobalKeyup)
   await fetchTasks()
   if (currentTaskId.value) {
     await handleTaskChange(currentTaskId.value)
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('keydown', onGlobalKeydown)
+  window.removeEventListener('keyup', onGlobalKeyup)
+  stopRcaPolling()
 })
 
 // WEB-03：/audit 与 /audit/:id 指向同一组件，Vue Router 会复用组件实例。
@@ -1803,6 +1884,21 @@ watch(
 </script>
 
 <style scoped>
+/* Zen 模式：左栏全宽展开与多列自适应网格 (需求 4) */
+.col-left.zen-mode {
+  width: 100% !important;
+  border-right: none;
+  transition: width 0.2s ease;
+}
+
+.log-stream-list.is-zen-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
+  gap: 12px;
+  align-content: start;
+  padding: 12px;
+}
+
 .workbench-container {
   height: calc(100vh - 92px);
   display: flex;
