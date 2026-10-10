@@ -1,6 +1,7 @@
 <template>
   <el-container class="app-layout">
-    <el-header class="app-header">
+    <!-- 沉浸模式/全屏模式下：隐藏 Logauditorgo 顶部标题栏这一行 -->
+    <el-header v-show="!isImmersiveWorkbench" class="app-header">
       <div class="logo-title">
         <el-icon class="logo-icon"><Platform /></el-icon>
         <span class="brand-name">LogAuditorGo</span>
@@ -57,7 +58,7 @@
       </div>
     </el-header>
 
-    <el-main class="app-main">
+    <el-main class="app-main" :class="{ 'is-immersive': isImmersiveWorkbench }">
       <router-view />
     </el-main>
   </el-container>
@@ -68,9 +69,16 @@ import { computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { Loading } from '@element-plus/icons-vue'
 import { useProgressStore } from '@/stores/progress'
+import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 
 const route = useRoute()
 const progressStore = useProgressStore()
+const workbenchUIStore = useWorkbenchUIStore()
+
+// 沉浸或物理全屏模式下，隐藏工作台顶栏
+const isImmersiveWorkbench = computed(() => {
+  return route.path.startsWith('/audit') && workbenchUIStore.isImmersive
+})
 
 const activeRoute = computed(() => {
   if (route.path.startsWith('/audit')) return '/audit'
@@ -194,5 +202,11 @@ html, body, #app {
   flex: 1;
   padding: 16px 20px;
   overflow: auto;
+  transition: padding 0.15s ease;
+}
+
+.app-main.is-immersive {
+  padding: 0 !important;
+  overflow: hidden !important;
 }
 </style>

@@ -1,5 +1,5 @@
 import { defineStore } from 'pinia'
-import { ref, watch } from 'vue'
+import { ref, watch, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const STORAGE_KEY = 'logauditorgo:workbench-ui'
@@ -12,15 +12,18 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
   const load = () => {
     const fallback = {
       isFilterCollapsed: true, // 默认收起筛选面板，仅显示第 1 行
-      isZenMode: false         // 默认关闭沉浸式全屏
+      isZenMode: false,        // 默认关闭沉浸式全屏
+      zenColumns: 3            // 沉浸/全屏模式下默认为 3 栏 (1~5)
     }
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return fallback
       const stored = JSON.parse(raw)
+      const cols = Number(stored?.zenColumns)
       return {
         isFilterCollapsed: typeof stored?.isFilterCollapsed === 'boolean' ? stored.isFilterCollapsed : fallback.isFilterCollapsed,
-        isZenMode: typeof stored?.isZenMode === 'boolean' ? stored.isZenMode : fallback.isZenMode
+        isZenMode: typeof stored?.isZenMode === 'boolean' ? stored.isZenMode : fallback.isZenMode,
+        zenColumns: Number.isInteger(cols) && cols >= 1 && cols <= 5 ? cols : fallback.zenColumns
       }
     } catch (e) {
       return fallback
@@ -28,6 +31,18 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
   }
 
   const ui = ref(load())
+
+  // 浏览器物理全屏响应式状态
+  const isBrowserFullscreen = ref(typeof document !== 'undefined' && !!document.fullscreenElement)
+
+  if (typeof document !== 'undefined') {
+    document.addEventListener('fullscreenchange', () => {
+      isBrowserFullscreen.value = !!document.fullscreenElement
+    })
+  }
+
+  // 统一的沉浸/全屏状态 (沉浸视图或物理全屏模式任一开启即生效)
+  const isImmersive = computed(() => ui.value.isZenMode || isBrowserFullscreen.value)
 
   watch(
     ui,
@@ -57,6 +72,11 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
     ui.value.isZenMode = val
   }
 
+  const setZenColumns = (cols) => {
+    const num = Math.min(Math.max(Number(cols) || 3, 1), 5)
+    ui.value.zenColumns = num
+  }
+
   const toggleBrowserFullscreen = async () => {
     try {
       if (!document.fullscreenElement) {
@@ -69,12 +89,27 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
     }
   }
 
+  const exitImmersive = async () => {
+    ui.value.isZenMode = false
+    if (typeof document !== 'undefined' && document.fullscreenElement) {
+      try {
+        await document.exitFullscreen()
+      } catch (e) {
+        // 忽略非用户手势退出异常
+      }
+    }
+  }
+
   return {
     ui,
+    isBrowserFullscreen,
+    isImmersive,
     toggleFilterCollapse,
     toggleZenMode,
     setFilterCollapsed,
     setZenMode,
-    toggleBrowserFullscreen
+    setZenColumns,
+    toggleBrowserFullscreen,
+    exitImmersive
   }
 })

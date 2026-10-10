@@ -1,17 +1,116 @@
 <template>
   <div class="audit-filter-bar" :class="{ 'is-collapsed': ui.isFilterCollapsed }">
-    <!-- 行 1: 核心检索与操作常驻行 (始终显示) -->
-    <div class="filter-row filter-row-primary">
+    <!-- 行 1: 核心检索与操作常驻行 -->
+    <div class="filter-row filter-row-primary" :class="{ 'is-immersive-row': workbenchUIStore.isImmersive }">
       <el-input
         v-model="filter.keyword"
-        placeholder="搜索报文/模块/简名 (如 RM/ROUTE_DELETE)..."
+        placeholder="搜索报文/模块/简名..."
         prefix-icon="Search"
         clearable
         size="small"
-        class="keyword-input"
+        :class="['keyword-input', { 'zen-fixed-input': workbenchUIStore.isImmersive }]"
         @change="handleKeywordChange"
         @clear="handleKeywordChange"
       />
+
+      <!-- 沉浸/全屏模式下：直接在单行内展开常用核心筛选控件，所见即所得 -->
+      <template v-if="workbenchUIStore.isImmersive">
+        <!-- 排序方式 -->
+        <el-select
+          v-model="currentSortOption"
+          placeholder="排序方式"
+          size="small"
+          class="zen-filter-select zen-sort-select"
+          @change="onSortOptionChange"
+        >
+          <el-option label="⏰ 时间正序" value="time_asc" />
+          <el-option label="⏰ 时间倒序" value="time_desc" />
+          <el-option label="📄 原始入库序" value="id_asc" />
+        </el-select>
+
+        <!-- 设备筛选 -->
+        <el-select
+          v-if="taskDevices.length > 1"
+          v-model="filter.deviceId"
+          placeholder="全部设备"
+          clearable
+          size="small"
+          class="zen-filter-select zen-dev-select"
+          @change="emitFilterChange"
+        >
+          <el-option label="全部设备" :value="null" />
+          <el-option
+            v-for="d in taskDevices"
+            :key="d.id"
+            :label="`${d.device_name} (${d.log_count}条)`"
+            :value="d.id"
+          />
+        </el-select>
+
+        <!-- 级别过滤 -->
+        <el-select
+          v-model="filter.severity"
+          placeholder="全部级别"
+          clearable
+          size="small"
+          class="zen-filter-select zen-sev-select"
+          @change="emitFilterChange"
+        >
+          <el-option label="全部级别" :value="null" />
+          <el-option label="<=2 (紧急/告警)" :value="2" />
+          <el-option label="<=4 (错误及以上)" :value="4" />
+          <el-option label="<=6 (通知及以上)" :value="6" />
+        </el-select>
+
+        <!-- 匹配状态 -->
+        <el-select
+          v-model="filter.matched"
+          placeholder="匹配状态"
+          clearable
+          size="small"
+          class="zen-filter-select zen-match-select"
+          @change="emitFilterChange"
+        >
+          <el-option label="全部状态" :value="null" />
+          <el-option label="已匹配知识库" :value="true" />
+          <el-option label="未匹配" :value="false" />
+        </el-select>
+
+        <!-- 标签筛选 -->
+        <el-select
+          v-model="filter.tagIds"
+          multiple
+          collapse-tags
+          collapse-tags-tooltip
+          clearable
+          placeholder="🏷 标签筛选"
+          size="small"
+          class="zen-filter-select zen-tag-select"
+          @change="emitFilterChange"
+        >
+          <el-option
+            v-for="t in tagStore.tags"
+            :key="t.id"
+            :label="`${t.name} (${t.log_count || 0})`"
+            :value="t.id"
+          >
+            <div style="display: flex; align-items: center; justify-content: space-between">
+              <span>{{ t.name }}</span>
+              <span
+                :style="{
+                  display: 'inline-block',
+                  width: '10px',
+                  height: '10px',
+                  borderRadius: '50%',
+                  backgroundColor: t.color || '#409EFF'
+                }"
+              />
+            </div>
+          </el-option>
+        </el-select>
+      </template>
+
+      <!-- 重置按钮 -->
       <el-button
         v-if="hasActiveFilter"
         size="small"
@@ -24,8 +123,8 @@
         重置
       </el-button>
 
-      <!-- 全屏切换按钮 (拆分下拉菜单，兼顾 Zen Mode 与浏览器物理全屏) -->
-      <el-dropdown trigger="click" @command="handleFullscreenCommand">
+      <!-- 非沉浸/全屏模式下：显示左上角下拉全屏菜单 -->
+      <el-dropdown v-if="!workbenchUIStore.isImmersive" trigger="click" @command="handleFullscreenCommand">
         <el-button-group class="fullscreen-btn-group">
           <el-tooltip :content="ui.isZenMode ? '退出沉浸全屏 (Esc)' : '沉浸式全屏工作台 (F)'" placement="bottom">
             <el-button
@@ -53,15 +152,57 @@
             <el-dropdown-item command="browser_fullscreen">
               <el-icon><FullScreen /></el-icon>
               <span>浏览器物理全屏 (Shift+F)</span>
-              <span v-if="isBrowserFullscreen" class="dropdown-tag">开启</span>
+              <span v-if="workbenchUIStore.isBrowserFullscreen" class="dropdown-tag">开启</span>
             </el-dropdown-item>
           </el-dropdown-menu>
         </template>
       </el-dropdown>
+
+      <!-- 沉浸视图或物理全屏开启后：在右上角新增分栏选择器 (最少1，最多5，默认为3) 与退出选项 -->
+      <div v-else class="zen-top-controls">
+        <div class="zen-columns-selector">
+          <span class="zen-selector-label">分栏:</span>
+          <el-radio-group
+            :model-value="ui.zenColumns || 3"
+            size="small"
+            class="zen-column-radios"
+            @change="handleZenColumnsChange"
+          >
+            <el-radio-button :value="1">1栏</el-radio-button>
+            <el-radio-button :value="2">2栏</el-radio-button>
+            <el-radio-button :value="3">3栏</el-radio-button>
+            <el-radio-button :value="4">4栏</el-radio-button>
+            <el-radio-button :value="5">5栏</el-radio-button>
+          </el-radio-group>
+        </div>
+
+        <el-tooltip :content="workbenchUIStore.isBrowserFullscreen ? '退出物理全屏 (Shift+F)' : '切换为物理全屏 (Shift+F)'" placement="bottom">
+          <el-button
+            size="small"
+            :type="workbenchUIStore.isBrowserFullscreen ? 'primary' : 'default'"
+            icon="FullScreen"
+            class="zen-fs-btn"
+            @click="toggleBrowserFullscreen"
+          />
+        </el-tooltip>
+
+        <el-tooltip content="退出沉浸视图 (Esc)" placement="bottom">
+          <el-button
+            size="small"
+            type="danger"
+            plain
+            icon="Close"
+            class="exit-zen-btn"
+            @click="handleExitImmersive"
+          >
+            退出{{ workbenchUIStore.isBrowserFullscreen ? '全屏' : '沉浸' }}
+          </el-button>
+        </el-tooltip>
+      </div>
     </div>
 
-    <!-- 建议 1: 收起态下的微型过滤胶囊栏 (Active Filter Chips) -->
-    <div v-if="ui.isFilterCollapsed && activeFilterChips.length > 0" class="active-filter-chips-bar">
+    <!-- 非沉浸模式下：收起态下的微型过滤胶囊栏 (Active Filter Chips) -->
+    <div v-if="!workbenchUIStore.isImmersive && ui.isFilterCollapsed && activeFilterChips.length > 0" class="active-filter-chips-bar">
       <span class="chips-label">已生效:</span>
       <div class="chips-scroll-container">
         <el-tooltip
@@ -110,9 +251,9 @@
       </div>
     </div>
 
-    <!-- 折叠内容包裹容器 (由动画控制展开收缩，配合 inert 消除焦点黑洞) -->
-    <div class="filter-collapsible-wrapper" :inert="ui.isFilterCollapsed || undefined">
-      <!-- 行 2: 时间与排序三等分行 (需求 1，平均平分列宽) -->
+    <!-- 非沉浸模式下：折叠内容包裹容器 (由动画控制展开收缩) -->
+    <div v-if="!workbenchUIStore.isImmersive" class="filter-collapsible-wrapper" :inert="ui.isFilterCollapsed || undefined">
+      <!-- 行 2: 时间与排序三等分行 (平均平分列宽) -->
       <div class="filter-row filter-row-time-triplet">
         <el-select
           v-model="currentSortOption"
@@ -151,7 +292,7 @@
         />
       </div>
 
-      <!-- 行 3: 设备/级别/匹配状态属性行 (需求 2) -->
+      <!-- 行 3: 设备/级别/匹配状态属性行 -->
       <div class="filter-row filter-row-attributes">
         <el-select
           v-if="taskDevices.length > 1"
@@ -258,8 +399,8 @@
       </div>
     </div>
 
-    <!-- 需求 3: 底部悬浮展开/收缩控制条 (带生效条件计数角标) -->
-    <div class="filter-toggle-pill-bar" @click="handleToggleCollapse">
+    <!-- 非沉浸模式下：底部悬浮展开/收缩控制条 -->
+    <div v-if="!workbenchUIStore.isImmersive" class="filter-toggle-pill-bar" @click="handleToggleCollapse">
       <div class="pill-handle">
         <el-icon class="pill-icon">
           <ArrowDown v-if="ui.isFilterCollapsed" />
@@ -279,7 +420,7 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
-import { ArrowDown, ArrowUp, FullScreen, Monitor } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, FullScreen, Monitor, Close } from '@element-plus/icons-vue'
 
 const props = defineProps({
   taskDevices: {
@@ -361,9 +502,21 @@ const handleToggleZenMode = () => {
   workbenchUIStore.toggleZenMode()
 }
 
-// 浏览器物理全屏联动支持 (收敛至 workbenchUIStore，修复 N8)
-const isBrowserFullscreen = ref(typeof document !== 'undefined' && !!document.fullscreenElement)
+// 沉浸模式/全屏模式下栏数选择设置 (1~5)
+const handleZenColumnsChange = (val) => {
+  workbenchUIStore.setZenColumns(val)
+}
 
+// 沉浸模式/全屏模式下的物理全屏切换与退出
+const toggleBrowserFullscreen = async () => {
+  await workbenchUIStore.toggleBrowserFullscreen()
+}
+
+const handleExitImmersive = async () => {
+  await workbenchUIStore.exitImmersive()
+}
+
+// 快捷全屏下拉命令
 const handleFullscreenCommand = async (cmd) => {
   if (cmd === 'zen') {
     handleToggleZenMode()
@@ -371,18 +524,6 @@ const handleFullscreenCommand = async (cmd) => {
     await workbenchUIStore.toggleBrowserFullscreen()
   }
 }
-
-const onBrowserFullscreenChange = () => {
-  isBrowserFullscreen.value = !!document.fullscreenElement
-}
-
-onMounted(() => {
-  document.addEventListener('fullscreenchange', onBrowserFullscreenChange)
-})
-
-onBeforeUnmount(() => {
-  document.removeEventListener('fullscreenchange', onBrowserFullscreenChange)
-})
 
 // 计算是否有全局活跃过滤条件 (与 workbench 统一口径)
 const hasActiveFilter = computed(() => {
@@ -627,11 +768,11 @@ const computedEndTimeShortcuts = computed(() => {
 
 <style scoped>
 .audit-filter-bar {
-  padding: 8px 10px;
+  padding: 4px 8px 3px 8px;
   border-bottom: 1px solid #e2e8f0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
   flex-shrink: 0;
   background: #f8fafc;
   transition: all 0.2s ease;
@@ -652,6 +793,35 @@ const computedEndTimeShortcuts = computed(() => {
 
 .keyword-input {
   flex: 1;
+}
+
+.keyword-input.zen-fixed-input {
+  flex: none;
+  width: 200px;
+}
+
+.zen-filter-select {
+  flex: none;
+}
+
+.zen-sort-select {
+  width: 105px;
+}
+
+.zen-dev-select {
+  width: 115px;
+}
+
+.zen-sev-select {
+  width: 105px;
+}
+
+.zen-match-select {
+  width: 100px;
+}
+
+.zen-tag-select {
+  width: 130px;
 }
 
 .reset-filter-btn {
@@ -680,19 +850,67 @@ const computedEndTimeShortcuts = computed(() => {
   border-radius: 2px;
 }
 
-/* 过滤胶囊栏 */
-.active-filter-chips-bar {
+/* 沉浸/全屏模式右上角分栏选择器与操作控件 */
+.zen-top-controls {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 2px 0;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.zen-columns-selector {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  background: #e2e8f0;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+
+.zen-selector-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #475569;
+  white-space: nowrap;
+  padding-left: 2px;
+}
+
+.zen-column-radios :deep(.el-radio-button__inner) {
+  padding: 2px 7px;
+  font-size: 11px;
+  height: 22px;
+  line-height: 16px;
+}
+
+.zen-fs-btn {
+  padding: 0 6px;
+  height: 22px;
+}
+
+.exit-zen-btn {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+/* 过滤胶囊栏 (紧凑化) */
+.active-filter-chips-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  margin: 0;
+  min-height: 20px;
   font-size: 11px;
 }
 
 .chips-label {
   color: #64748b;
   font-size: 11px;
+  font-weight: 500;
   flex-shrink: 0;
+  line-height: 18px;
 }
 
 .chips-scroll-container {
@@ -704,11 +922,17 @@ const computedEndTimeShortcuts = computed(() => {
 }
 
 .filter-chip-item {
-  font-size: 11px;
-  height: 22px;
-  line-height: 20px;
-  padding: 0 6px;
-  max-width: 160px;
+  font-size: 10.5px;
+  height: 18px;
+  line-height: 16px;
+  padding: 0 4px;
+  max-width: 150px;
+  border-radius: 3px;
+}
+
+.filter-chip-item :deep(.el-tag__close) {
+  transform: scale(0.85);
+  margin-left: 2px;
 }
 
 .filter-chip-item .chip-text {
@@ -731,11 +955,11 @@ const computedEndTimeShortcuts = computed(() => {
   max-width: 260px;
 }
 
-/* 折叠容器与各行 (修复 P1-1, N4, N5) */
+/* 折叠容器与各行 (紧凑布局) */
 .filter-collapsible-wrapper {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   max-height: 120px;
   opacity: 1;
   visibility: visible;
@@ -811,12 +1035,13 @@ const computedEndTimeShortcuts = computed(() => {
   flex-shrink: 0;
 }
 
-/* 底部悬浮展开/收缩控制条 */
+/* 底部悬浮展开/收缩控制条 (紧凑化) */
 .filter-toggle-pill-bar {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding-top: 2px;
+  padding: 0;
+  margin: 1px 0 0 0;
   cursor: pointer;
   user-select: none;
 }
@@ -825,13 +1050,15 @@ const computedEndTimeShortcuts = computed(() => {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
-  padding: 2px 14px;
+  gap: 3px;
+  padding: 0 10px;
+  height: 16px;
+  line-height: 14px;
   border-radius: 9999px;
   background: #f1f5f9;
   border: 1px solid #cbd5e1;
-  color: #475569;
-  font-size: 11px;
+  color: #64748b;
+  font-size: 10px;
   transition: all 0.2s ease;
 }
 
@@ -843,14 +1070,15 @@ const computedEndTimeShortcuts = computed(() => {
 }
 
 .pill-icon {
-  font-size: 11px;
+  font-size: 9px;
 }
 
 .pill-badge {
-  font-size: 10px;
+  font-size: 9px;
+  line-height: 12px;
   background: #38bdf8;
   color: #ffffff;
-  padding: 0 5px;
+  padding: 0 4px;
   border-radius: 9999px;
   margin-left: 2px;
   font-weight: 600;

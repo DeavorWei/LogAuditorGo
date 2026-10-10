@@ -1,7 +1,7 @@
 <template>
-  <div class="workbench-container">
-    <!-- 顶部工作台状态栏 -->
-    <div class="workbench-header">
+  <div class="workbench-container" :class="{ 'is-immersive': workbenchUIStore.isImmersive }">
+    <!-- 顶部工作台状态栏 (沉浸模式/物理全屏下隐藏) -->
+    <div v-show="!workbenchUIStore.isImmersive" class="workbench-header">
       <div class="header-left">
         <el-select
           v-model="currentTaskId"
@@ -71,8 +71,8 @@
       </div>
     </div>
 
-    <!-- 功能视图切换导航 -->
-    <div v-if="currentTaskId" class="workbench-nav-bar">
+    <!-- 功能视图切换导航 (沉浸模式/物理全屏下隐藏) -->
+    <div v-if="currentTaskId && !workbenchUIStore.isImmersive" class="workbench-nav-bar">
       <!--
         WEB-16: 视图模式改为由常量驱动。
         原先 label 是 5 个裸字符串，与下面 v-if 的判断条件各写各的，
@@ -210,7 +210,7 @@
 
       <!-- 核心三栏交互工作台 (任务就绪时展示) -->
       <div v-else class="workbench-body">
-        <div class="col-left" :class="{ 'zen-mode': workbenchUIStore.ui.isZenMode }">
+        <div class="col-left" :class="{ 'zen-mode': workbenchUIStore.isImmersive }">
           <AuditFilterBar
             :task-devices="taskDevices"
             :selected-log="selectedLog"
@@ -220,7 +220,7 @@
             @open-tag-manager="openTagManagerModal"
           />
 
-        <!-- 日志流顶部高级筛选操作条 -->
+        <!-- 日志流顶部高级筛选操作条 (纵向紧凑化) -->
         <div class="log-stream-toolbar">
           <span class="log-total-text">共 {{ totalLogs }} 条日志</span>
           <el-badge
@@ -232,6 +232,7 @@
               size="small"
               :type="filterStore.activeAdvancedCount() > 0 ? 'primary' : 'default'"
               plain
+              class="adv-filter-btn"
               @click="openAdvFilterDrawer"
             >
               ⚡ 高级筛选
@@ -239,7 +240,12 @@
           </el-badge>
         </div>
 
-        <div class="log-stream-list" :class="{ 'is-zen-grid': workbenchUIStore.ui.isZenMode }" v-loading="loadingLogs">
+        <div
+          class="log-stream-list"
+          :class="{ 'is-zen-grid': workbenchUIStore.isImmersive }"
+          :style="workbenchUIStore.isImmersive ? { '--zen-cols': workbenchUIStore.ui.zenColumns || 3 } : {}"
+          v-loading="loadingLogs"
+        >
           <AuditLogCard
             v-for="rec in logRecords"
             :key="rec.id"
@@ -272,7 +278,7 @@
       </div>
 
       <!-- 中栏：结构化报文与动态参数解析 (36%) -->
-      <div v-show="!workbenchUIStore.ui.isZenMode" class="col-middle">
+      <div v-show="!workbenchUIStore.isImmersive" class="col-middle">
         <!-- RCA 联动告警全局提示条 -->
         <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
           <div class="banner-left">
@@ -431,7 +437,7 @@
       </div>
 
       <!-- 右栏：华为官方知识库排查指导与 RCA 拓扑 (36%) -->
-      <div v-show="!workbenchUIStore.ui.isZenMode" class="col-right">
+      <div v-show="!workbenchUIStore.isImmersive" class="col-right">
         <div v-if="selectedLog" class="knowledge-container">
           <el-tabs v-model="activeTab" class="custom-tabs">
             <el-tab-pane label="官方知识与处理步骤" name="knowledge">
@@ -1561,7 +1567,7 @@ const handleNextLog = () => {
 
 const handleLogCardClick = (rec) => {
   selectLog(rec)
-  if (workbenchUIStore.ui.isZenMode) {
+  if (workbenchUIStore.isImmersive) {
     showLogDetailModal.value = true
   }
 }
@@ -1617,9 +1623,9 @@ const onGlobalKeydown = (e) => {
   // 4. 长按连发拦截 (修复 P1-4)
   if (e.repeat) return
 
-  // 5. 空格键快速预览 QuickLook (仅在 Zen Mode 全屏网格下生效，普通模式放行原生滚动，修复 P1-6)
+  // 5. 空格键快速预览 QuickLook (仅在沉浸全屏网格下生效，普通模式放行原生滚动，修复 P1-6)
   if (e.code === 'Space') {
-    if (workbenchUIStore.ui.isZenMode && hoveredLog.value && !showLogDetailModal.value) {
+    if (workbenchUIStore.isImmersive && hoveredLog.value && !showLogDetailModal.value) {
       e.preventDefault()
       quickLookVisible.value = true
       return
@@ -1643,7 +1649,7 @@ const onGlobalKeydown = (e) => {
     }
   }
 
-  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出 Zen Mode，修复 P0-2, N9)
+  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出沉浸全屏，修复 P0-2, N9)
   if (e.key === 'Escape') {
     if (quickLookVisible.value) {
       e.preventDefault()
@@ -1652,9 +1658,9 @@ const onGlobalKeydown = (e) => {
       e.preventDefault()
       showLogDetailModal.value = false
       // watch(showLogDetailModal) 在关闭时已单点触发 scrollSelectedLogIntoView，此处避免重复调用 (修复 N9)
-    } else if (workbenchUIStore.ui.isZenMode) {
+    } else if (workbenchUIStore.isImmersive) {
       e.preventDefault()
-      workbenchUIStore.setZenMode(false)
+      workbenchUIStore.exitImmersive()
       scrollSelectedLogIntoView()
     }
   }
@@ -1974,7 +1980,7 @@ watch(
 </script>
 
 <style scoped>
-/* Zen 模式：左栏全宽展开与多列自适应网格 (需求 4) */
+/* Zen 模式：左栏全宽展开与多列自适应网格 (支持 1~5 栏，默认 3 栏) */
 .col-left.zen-mode {
   width: 100% !important;
   border-right: none;
@@ -1983,10 +1989,10 @@ watch(
 
 .log-stream-list.is-zen-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(560px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(var(--zen-cols, 3), minmax(0, 1fr));
+  gap: 8px;
   align-content: start;
-  padding: 12px;
+  padding: 8px;
 }
 
 .workbench-container {
@@ -1997,6 +2003,14 @@ watch(
   border-radius: 8px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   overflow: hidden;
+  transition: all 0.15s ease;
+}
+
+.workbench-container.is-immersive {
+  height: 100vh !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  border: none !important;
 }
 
 .workbench-header {
@@ -2698,15 +2712,26 @@ watch(
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
+  padding: 2px 10px;
+  height: 26px;
+  min-height: 26px;
   background: #f8fafc;
   border-bottom: 1px solid #e2e8f0;
 }
 
 .log-total-text {
-  font-size: 12px;
+  font-size: 11px;
   color: #64748b;
   font-weight: 500;
+  line-height: 1;
+}
+
+.adv-filter-btn {
+  height: 20px !important;
+  padding: 0 6px !important;
+  font-size: 11px !important;
+  line-height: 18px !important;
+  border-radius: 3px !important;
 }
 
 .log-detail-tags-bar {
