@@ -13,7 +13,7 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
     const fallback = {
       isFilterCollapsed: true, // 默认收起筛选面板，仅显示第 1 行
       isZenMode: false,        // 默认关闭沉浸式全屏
-      zenColumns: 3            // 沉浸/全屏模式下默认为 3 栏 (1~5)
+      zenColumns: 3            // 沉浸/全屏模式下默认为 3 栏 (3~7)
     }
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
@@ -23,7 +23,7 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
       return {
         isFilterCollapsed: typeof stored?.isFilterCollapsed === 'boolean' ? stored.isFilterCollapsed : fallback.isFilterCollapsed,
         isZenMode: typeof stored?.isZenMode === 'boolean' ? stored.isZenMode : fallback.isZenMode,
-        zenColumns: Number.isInteger(cols) && cols >= 1 && cols <= 5 ? cols : fallback.zenColumns
+        zenColumns: Number.isInteger(cols) && cols >= 3 && cols <= 7 ? cols : fallback.zenColumns
       }
     } catch (e) {
       return fallback
@@ -73,7 +73,7 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
   }
 
   const setZenColumns = (cols) => {
-    const num = Math.min(Math.max(Number(cols) || 3, 1), 5)
+    const num = Math.min(Math.max(Number(cols) || 3, 3), 7)
     ui.value.zenColumns = num
   }
 

@@ -209,7 +209,7 @@
         </template>
       </el-dropdown>
 
-      <!-- 沉浸视图或物理全屏开启后：在右上角新增分栏选择器 (最少1，最多5，默认为3) 与退出选项 -->
+      <!-- 沉浸视图或物理全屏开启后：在右上角新增分栏选择器 (3~7 栏，默认为 3) 与退出选项 -->
       <div v-else class="zen-top-controls">
         <div class="zen-columns-selector">
           <span class="zen-selector-label">分栏:</span>
@@ -219,11 +219,11 @@
             class="zen-column-radios"
             @change="handleZenColumnsChange"
           >
-            <el-radio-button :value="1">1栏</el-radio-button>
-            <el-radio-button :value="2">2栏</el-radio-button>
             <el-radio-button :value="3">3栏</el-radio-button>
             <el-radio-button :value="4">4栏</el-radio-button>
             <el-radio-button :value="5">5栏</el-radio-button>
+            <el-radio-button :value="6">6栏</el-radio-button>
+            <el-radio-button :value="7">7栏</el-radio-button>
           </el-radio-group>
         </div>
 

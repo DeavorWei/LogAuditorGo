@@ -398,7 +398,7 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 	}
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "60"))
+	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "100"))
 	module := c.Query("module")
 	brief := c.Query("brief")
 	hostname := c.Query("hostname")
@@ -514,7 +514,7 @@ func (h *TaskHandler) QueryLogsUnified(c *gin.Context) {
 	}
 	pageSize := req.PageSize
 	if pageSize <= 0 {
-		pageSize = 60
+		pageSize = 100
 	}
 
 	SuccessResponse(c, gin.H{

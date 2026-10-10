@@ -14,7 +14,7 @@ export const useFilterStore = defineStore('filter', () => {
   const defaults = () => ({
     // 分页状态：随筛选条件一起集中管理，但不参与持久化（见下方 watch）
     page: 1,
-    pageSize: 60, // 优化：取 1~5 栏最小公倍数 LCM(1,2,3,4,5)=60，确保沉浸模式下 1/2/3/4/5 栏全部完美填满整行，解决 3 栏缺 1、4 栏缺 2
+    pageSize: 100, // 默认单页显示 100 条日志 (可选 50, 100, 200, 300, 500)
     keyword: '',
     severity: null,
     matched: null,
@@ -51,8 +51,8 @@ export const useFilterStore = defineStore('filter', () => {
     if (!loaded.tagLogic) {
       loaded.tagLogic = 'any'
     }
-    if (!loaded.pageSize || loaded.pageSize === 50) {
-      loaded.pageSize = 60
+    if (!loaded.pageSize || ![50, 100, 200, 300, 500].includes(loaded.pageSize)) {
+      loaded.pageSize = 100
     }
     return loaded
   }

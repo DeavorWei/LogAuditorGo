@@ -265,14 +265,31 @@
         </div>
 
         <div class="pagination-bar">
-          <el-pagination
-            v-model:current-page="filter.page"
-            :page-size="filter.pageSize"
-            :total="totalLogs"
-            layout="prev, pager, next"
-            small
-            @current-change="fetchLogs"
-          />
+          <div class="pagination-center">
+            <el-pagination
+              v-model:current-page="filter.page"
+              :page-size="filter.pageSize"
+              :total="totalLogs"
+              layout="prev, pager, next"
+              small
+              @current-change="fetchLogs"
+            />
+          </div>
+          <div class="page-size-selector">
+            <el-select
+              v-model="filter.pageSize"
+              size="small"
+              class="page-size-select"
+              title="调整单页显示日志数量"
+              @change="handlePageSizeChange"
+            >
+              <el-option label="50 条/页" :value="50" />
+              <el-option label="100 条/页" :value="100" />
+              <el-option label="200 条/页" :value="200" />
+              <el-option label="300 条/页" :value="300" />
+              <el-option label="500 条/页" :value="500" />
+            </el-select>
+          </div>
         </div>
       </div>
 
@@ -1423,6 +1440,11 @@ const onFilterChange = async () => {
   await fetchLogs()
 }
 
+const handlePageSizeChange = async () => {
+  filter.value.page = 1
+  await fetchLogs()
+}
+
 const fetchLogs = async () => {
   if (!currentTaskId.value) return
   loadingLogs.value = true
@@ -2206,12 +2228,29 @@ watch(
 }
 
 .pagination-bar {
-  padding: 6px;
+  padding: 4px 8px;
   display: flex;
-  justify-content: center;
+  align-items: center;
+  justify-content: space-between;
   border-top: 1px solid #e2e8f0;
   background: #fff;
   flex-shrink: 0;
+}
+
+.pagination-center {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+}
+
+.page-size-selector {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.page-size-select {
+  width: 96px;
 }
 
 /* 中栏 36% */
