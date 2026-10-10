@@ -28,37 +28,18 @@
           <el-option label="📄 原始入库序" value="id_asc" />
         </el-select>
 
-        <!-- 时间区间筛选 (起始时间 ~ 截止时间 及 快捷预设) -->
+        <!-- 时间区间筛选 (起始时间 ~ 截止时间) -->
         <div class="zen-time-range-group">
-          <el-dropdown trigger="click" @command="handleQuickTimePreset">
-            <el-tooltip content="快捷时间范围预设" placement="bottom">
-              <el-button size="small" class="zen-quick-time-btn">
-                <el-icon><Timer /></el-icon>
-              </el-button>
-            </el-tooltip>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="last15m">⚡ 闪断前15分钟 ~ 最新</el-dropdown-item>
-                <el-dropdown-item command="last1h">⏱ 最近1小时 ~ 最新</el-dropdown-item>
-                <el-dropdown-item command="last24h">📅 最近24小时 ~ 最新</el-dropdown-item>
-                <el-dropdown-item command="yesterday_night">🌙 昨夜18:00 ~ 今晨09:00</el-dropdown-item>
-                <el-dropdown-item v-if="selectedLog && selectedLog.timestamp" command="focus30m">
-                  🎯 聚焦选中日志 (前后30分钟)
-                </el-dropdown-item>
-                <el-dropdown-item divided command="clear">❌ 清空时间限制</el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-
           <el-date-picker
             v-model="filter.timeStart"
             type="datetime"
             placeholder="起始时间"
             size="small"
             class="zen-filter-date"
+            popper-class="audit-time-picker-popper"
             format="YYYY-MM-DD HH:mm:ss"
             value-format="YYYY-MM-DDTHH:mm:ssZ"
-            :shortcuts="computedStartTimeShortcuts"
+            :shortcuts="startTimeShortcuts"
             clearable
             @change="emitFilterChange"
             @clear="emitFilterChange"
@@ -70,9 +51,10 @@
             placeholder="截止时间"
             size="small"
             class="zen-filter-date"
+            popper-class="audit-time-picker-popper"
             format="YYYY-MM-DD HH:mm:ss"
             value-format="YYYY-MM-DDTHH:mm:ssZ"
-            :shortcuts="computedEndTimeShortcuts"
+            :shortcuts="endTimeShortcuts"
             clearable
             @change="emitFilterChange"
             @clear="emitFilterChange"
@@ -323,11 +305,13 @@
           placeholder="起始时间"
           size="small"
           class="triplet-item"
+          popper-class="audit-time-picker-popper"
           format="YYYY-MM-DD HH:mm:ss"
           value-format="YYYY-MM-DDTHH:mm:ssZ"
-          :shortcuts="computedStartTimeShortcuts"
+          :shortcuts="startTimeShortcuts"
           clearable
           @change="emitFilterChange"
+          @clear="emitFilterChange"
         />
         <el-date-picker
           v-model="filter.timeEnd"
@@ -335,11 +319,13 @@
           placeholder="截止时间"
           size="small"
           class="triplet-item"
+          popper-class="audit-time-picker-popper"
           format="YYYY-MM-DD HH:mm:ss"
           value-format="YYYY-MM-DDTHH:mm:ssZ"
-          :shortcuts="computedEndTimeShortcuts"
+          :shortcuts="endTimeShortcuts"
           clearable
           @change="emitFilterChange"
+          @clear="emitFilterChange"
         />
       </div>
 
@@ -461,7 +447,7 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
-import { ArrowDown, ArrowUp, FullScreen, Monitor, Close, Timer } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, FullScreen, Monitor, Close } from '@element-plus/icons-vue'
 
 const props = defineProps({
   taskDevices: {
@@ -702,16 +688,16 @@ const removeSingleFilter = (key) => {
   emit('change')
 }
 
-// 动态数据锚点基准计算引擎 (§6.2, 修复 N3)
+// 动态数据锚点基准计算引擎 (聚焦日志优先)
 const getAnchorTimestamp = () => {
-  // 1. 优先使用传入的当前日志流最大/最新有效时戳 (修复 N2/N3)
-  if (props.latestLogTime) {
-    const d = new Date(props.latestLogTime)
-    if (!isNaN(d.getTime())) return d
-  }
-  // 2. 局部选中日志发生时戳兜底
+  // 1. 优先使用当前选中日志的时戳 (实现"聚焦日志")
   if (props.selectedLog && props.selectedLog.timestamp && !String(props.selectedLog.timestamp).startsWith('0001-01-01')) {
     const d = new Date(props.selectedLog.timestamp)
+    if (!isNaN(d.getTime())) return d
+  }
+  // 2. 其次使用传入的当前日志流最大/最新有效时戳兜底
+  if (props.latestLogTime) {
+    const d = new Date(props.latestLogTime)
     if (!isNaN(d.getTime())) return d
   }
   // 3. 系统当前时间兜底
@@ -737,125 +723,47 @@ const formatToPickerValue = (date) => {
   return `${Y}-${M}-${D}T${h}:${m}:${s}${sign}${offH}:${offM}`
 }
 
-// 沉浸模式快捷时间范围预设处理器
-const handleQuickTimePreset = (cmd) => {
-  const anchor = getAnchorTimestamp()
-  if (cmd === 'last15m') {
-    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 15 * 60 * 1000))
-    filterStore.filters.timeEnd = formatToPickerValue(anchor)
-  } else if (cmd === 'last1h') {
-    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 3600 * 1000))
-    filterStore.filters.timeEnd = formatToPickerValue(anchor)
-  } else if (cmd === 'last24h') {
-    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 24 * 3600 * 1000))
-    filterStore.filters.timeEnd = formatToPickerValue(anchor)
-  } else if (cmd === 'yesterday_night') {
-    const start = new Date(anchor)
-    start.setDate(start.getDate() - 1)
-    start.setHours(18, 0, 0, 0)
-    const end = new Date(anchor)
-    end.setHours(9, 0, 0, 0)
-    filterStore.filters.timeStart = formatToPickerValue(start)
-    filterStore.filters.timeEnd = formatToPickerValue(end)
-  } else if (cmd === 'focus30m') {
-    if (props.selectedLog && props.selectedLog.timestamp) {
-      const t = new Date(props.selectedLog.timestamp).getTime()
-      filterStore.filters.timeStart = formatToPickerValue(new Date(t - 30 * 60 * 1000))
-      filterStore.filters.timeEnd = formatToPickerValue(new Date(t + 30 * 60 * 1000))
+// 统一聚焦时间窗口预设 (纯文字、无图标)
+const FOCUS_TIME_PRESETS = [
+  { text: '聚焦日志前后5M', ms: 5 * 60 * 1000 },
+  { text: '聚焦日志前后10M', ms: 10 * 60 * 1000 },
+  { text: '聚焦日志前后15M', ms: 15 * 60 * 1000 },
+  { text: '聚焦日志前后30M', ms: 30 * 60 * 1000 },
+  { text: '聚焦日志前后1H', ms: 60 * 60 * 1000 },
+  { text: '聚焦日志前后2H', ms: 120 * 60 * 1000 }
+]
+
+// 统一快捷选项构造器：点击任一快捷项，自动同时联动选择起始时间与截止时间并立即生效
+const createShortcuts = (target) => {
+  return FOCUS_TIME_PRESETS.map((preset) => ({
+    text: preset.text,
+    value: () => {
+      const anchor = getAnchorTimestamp()
+      const startTime = new Date(anchor.getTime() - preset.ms)
+      const endTime = new Date(anchor.getTime() + preset.ms)
+
+      const startStr = formatToPickerValue(startTime)
+      const endStr = formatToPickerValue(endTime)
+
+      if (target === 'start') {
+        filterStore.filters.timeEnd = endStr
+        nextTick(() => {
+          emit('change')
+        })
+        return startTime
+      } else {
+        filterStore.filters.timeStart = startStr
+        nextTick(() => {
+          emit('change')
+        })
+        return endTime
+      }
     }
-  } else if (cmd === 'clear') {
-    filterStore.filters.timeStart = null
-    filterStore.filters.timeEnd = null
-  }
-  emit('change')
+  }))
 }
 
-const computedStartTimeShortcuts = computed(() => {
-  const anchor = getAnchorTimestamp()
-  const shortcuts = [
-    {
-      text: '⚡ 闪断前15m',
-      value: () => new Date(anchor.getTime() - 15 * 60 * 1000)
-    },
-    {
-      text: '🌙 昨夜18:00',
-      value: () => {
-        const d = new Date(anchor)
-        d.setDate(d.getDate() - 1)
-        d.setHours(18, 0, 0, 0)
-        return d
-      }
-    },
-    {
-      text: '1小时前',
-      value: () => new Date(anchor.getTime() - 3600 * 1000)
-    },
-    {
-      text: '24小时前',
-      value: () => new Date(anchor.getTime() - 24 * 3600 * 1000)
-    },
-    {
-      text: '3天前',
-      value: () => new Date(anchor.getTime() - 3 * 24 * 3600 * 1000)
-    }
-  ]
-
-  // 场景化快捷项：聚焦选中的日志发生时间前 30 分钟 (建议 2)
-  if (props.selectedLog && props.selectedLog.timestamp) {
-    shortcuts.unshift({
-      text: '🎯 聚焦日志前30m',
-      value: () => {
-        const t = new Date(props.selectedLog.timestamp).getTime()
-        return new Date(t - 30 * 60 * 1000)
-      }
-    })
-  }
-
-  return shortcuts
-})
-
-const computedEndTimeShortcuts = computed(() => {
-  const anchor = getAnchorTimestamp()
-  const shortcuts = [
-    {
-      text: '⚡ 任务最新',
-      value: () => new Date(anchor)
-    },
-    {
-      text: '🌙 今晨09:00',
-      value: () => {
-        const d = new Date(anchor)
-        d.setHours(9, 0, 0, 0)
-        return d
-      }
-    },
-    {
-      text: '今天结束',
-      value: () => {
-        const d = new Date(anchor)
-        d.setHours(23, 59, 59, 999)
-        return d
-      }
-    },
-    {
-      text: '现实现在',
-      value: () => new Date()
-    }
-  ]
-
-  // 场景化快捷项：聚焦选中的日志发生时间后 30 分钟 (建议 2)
-  if (props.selectedLog && props.selectedLog.timestamp) {
-    shortcuts.unshift({
-      text: '🎯 聚焦日志后30m',
-      value: () => {
-        const t = new Date(props.selectedLog.timestamp).getTime()
-        return new Date(t + 30 * 60 * 1000)
-      }
-    })
-  }
-
-  return shortcuts
-})
+const startTimeShortcuts = computed(() => createShortcuts('start'))
+const endTimeShortcuts = computed(() => createShortcuts('end'))
 </script>
 
 <style scoped>
@@ -917,22 +825,6 @@ const computedEndTimeShortcuts = computed(() => {
   align-items: center;
   gap: 3px;
   flex-shrink: 0;
-}
-
-.zen-quick-time-btn {
-  height: 24px;
-  padding: 0 5px;
-  font-size: 12px;
-  color: #64748b;
-  border: 1px solid #dcdfe6;
-  background: #fff;
-  border-radius: 4px;
-}
-
-.zen-quick-time-btn:hover {
-  color: #3b82f6;
-  border-color: #bfdbfe;
-  background: #eff6ff;
 }
 
 .zen-filter-date {
@@ -1230,5 +1122,19 @@ const computedEndTimeShortcuts = computed(() => {
   border-radius: 9999px;
   margin-left: 2px;
   font-weight: 600;
+}
+
+:global(.audit-time-picker-popper .el-picker-panel__sidebar) {
+  min-width: 140px;
+  width: auto;
+  padding: 6px 0;
+}
+
+:global(.audit-time-picker-popper .el-picker-panel__shortcut) {
+  white-space: nowrap;
+  font-size: 11.5px;
+  line-height: 28px;
+  padding: 0 10px;
+  text-align: left;
 }
 </style>
