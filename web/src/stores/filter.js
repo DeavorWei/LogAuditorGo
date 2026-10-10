@@ -19,7 +19,6 @@ export const useFilterStore = defineStore('filter', () => {
     severity: null,
     matched: null,
     deviceId: null,
-    module: '',
     timeStart: null,
     timeEnd: null,
     viewMode: 'workbench',
@@ -63,6 +62,7 @@ export const useFilterStore = defineStore('filter', () => {
       delete parsed.sourceFile
       delete parsed.tagIds
       delete parsed.deviceId
+      delete parsed.module
       return sanitizeSort({ ...defaults(), ...parsed })
     } catch (e) {
       return defaults()
@@ -118,7 +118,6 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.severity !== null && f.severity !== undefined) body.severity = f.severity
     if (f.matched !== null && f.matched !== undefined) body.matched = !!f.matched
     if (f.deviceId) body.device_id = f.deviceId
-    if (f.module) body.module = f.module
     if (f.timeStart) body.time_start = f.timeStart
     if (f.timeEnd) body.time_end = f.timeEnd
 
@@ -152,7 +151,6 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.severity !== null && f.severity !== undefined) params.severity = f.severity
     if (f.matched !== null && f.matched !== undefined) params.matched = f.matched ? 'true' : 'false'
     if (f.deviceId) params.device_id = f.deviceId
-    if (f.module) params.module = f.module
     if (f.timeStart) params.time_start = f.timeStart
     if (f.timeEnd) params.time_end = f.timeEnd
     if (f.sortBy) params.sort_by = f.sortBy
@@ -173,7 +171,6 @@ export const useFilterStore = defineStore('filter', () => {
     if (f.severity !== null && f.severity !== undefined) n++
     if (f.matched !== null && f.matched !== undefined) n++
     if (f.deviceId) n++
-    if (f.module) n++
     if (f.timeStart || f.timeEnd) n++
     if (Array.isArray(f.tagIds) && f.tagIds.length > 0) n++
     n += activeAdvancedCount()

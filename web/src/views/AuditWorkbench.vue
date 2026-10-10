@@ -213,7 +213,6 @@
         <div class="col-left" :class="{ 'zen-mode': workbenchUIStore.ui.isZenMode }">
           <AuditFilterBar
             :task-devices="taskDevices"
-            :task-meta="currentTask"
             :selected-log="selectedLog"
             :latest-log-time="latestLogTimestamp"
             @change="onFilterChange"
