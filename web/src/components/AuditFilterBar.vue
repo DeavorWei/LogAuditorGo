@@ -28,6 +28,57 @@
           <el-option label="📄 原始入库序" value="id_asc" />
         </el-select>
 
+        <!-- 时间区间筛选 (起始时间 ~ 截止时间 及 快捷预设) -->
+        <div class="zen-time-range-group">
+          <el-dropdown trigger="click" @command="handleQuickTimePreset">
+            <el-tooltip content="快捷时间范围预设" placement="bottom">
+              <el-button size="small" class="zen-quick-time-btn">
+                <el-icon><Timer /></el-icon>
+              </el-button>
+            </el-tooltip>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="last15m">⚡ 闪断前15分钟 ~ 最新</el-dropdown-item>
+                <el-dropdown-item command="last1h">⏱ 最近1小时 ~ 最新</el-dropdown-item>
+                <el-dropdown-item command="last24h">📅 最近24小时 ~ 最新</el-dropdown-item>
+                <el-dropdown-item command="yesterday_night">🌙 昨夜18:00 ~ 今晨09:00</el-dropdown-item>
+                <el-dropdown-item v-if="selectedLog && selectedLog.timestamp" command="focus30m">
+                  🎯 聚焦选中日志 (前后30分钟)
+                </el-dropdown-item>
+                <el-dropdown-item divided command="clear">❌ 清空时间限制</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+
+          <el-date-picker
+            v-model="filter.timeStart"
+            type="datetime"
+            placeholder="起始时间"
+            size="small"
+            class="zen-filter-date"
+            format="YYYY-MM-DD HH:mm:ss"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            :shortcuts="computedStartTimeShortcuts"
+            clearable
+            @change="emitFilterChange"
+            @clear="emitFilterChange"
+          />
+          <span class="zen-time-separator">~</span>
+          <el-date-picker
+            v-model="filter.timeEnd"
+            type="datetime"
+            placeholder="截止时间"
+            size="small"
+            class="zen-filter-date"
+            format="YYYY-MM-DD HH:mm:ss"
+            value-format="YYYY-MM-DDTHH:mm:ssZ"
+            :shortcuts="computedEndTimeShortcuts"
+            clearable
+            @change="emitFilterChange"
+            @clear="emitFilterChange"
+          />
+        </div>
+
         <!-- 设备筛选 -->
         <el-select
           v-if="taskDevices.length > 1"
@@ -410,7 +461,7 @@ import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
-import { ArrowDown, ArrowUp, FullScreen, Monitor, Close } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, FullScreen, Monitor, Close, Timer } from '@element-plus/icons-vue'
 
 const props = defineProps({
   taskDevices: {
@@ -667,6 +718,58 @@ const getAnchorTimestamp = () => {
   return new Date()
 }
 
+// ISO 格式化辅助 (带本地时区偏移，匹配后端与 el-date-picker 的 value-format="YYYY-MM-DDTHH:mm:ssZ")
+const formatToPickerValue = (date) => {
+  if (!date) return null
+  const d = new Date(date)
+  if (isNaN(d.getTime())) return null
+  const pad = (n) => String(n).padStart(2, '0')
+  const Y = d.getFullYear()
+  const M = pad(d.getMonth() + 1)
+  const D = pad(d.getDate())
+  const h = pad(d.getHours())
+  const m = pad(d.getMinutes())
+  const s = pad(d.getSeconds())
+  const offset = -d.getTimezoneOffset()
+  const sign = offset >= 0 ? '+' : '-'
+  const offH = pad(Math.floor(Math.abs(offset) / 60))
+  const offM = pad(Math.abs(offset) % 60)
+  return `${Y}-${M}-${D}T${h}:${m}:${s}${sign}${offH}:${offM}`
+}
+
+// 沉浸模式快捷时间范围预设处理器
+const handleQuickTimePreset = (cmd) => {
+  const anchor = getAnchorTimestamp()
+  if (cmd === 'last15m') {
+    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 15 * 60 * 1000))
+    filterStore.filters.timeEnd = formatToPickerValue(anchor)
+  } else if (cmd === 'last1h') {
+    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 3600 * 1000))
+    filterStore.filters.timeEnd = formatToPickerValue(anchor)
+  } else if (cmd === 'last24h') {
+    filterStore.filters.timeStart = formatToPickerValue(new Date(anchor.getTime() - 24 * 3600 * 1000))
+    filterStore.filters.timeEnd = formatToPickerValue(anchor)
+  } else if (cmd === 'yesterday_night') {
+    const start = new Date(anchor)
+    start.setDate(start.getDate() - 1)
+    start.setHours(18, 0, 0, 0)
+    const end = new Date(anchor)
+    end.setHours(9, 0, 0, 0)
+    filterStore.filters.timeStart = formatToPickerValue(start)
+    filterStore.filters.timeEnd = formatToPickerValue(end)
+  } else if (cmd === 'focus30m') {
+    if (props.selectedLog && props.selectedLog.timestamp) {
+      const t = new Date(props.selectedLog.timestamp).getTime()
+      filterStore.filters.timeStart = formatToPickerValue(new Date(t - 30 * 60 * 1000))
+      filterStore.filters.timeEnd = formatToPickerValue(new Date(t + 30 * 60 * 1000))
+    }
+  } else if (cmd === 'clear') {
+    filterStore.filters.timeStart = null
+    filterStore.filters.timeEnd = null
+  }
+  emit('change')
+}
+
 const computedStartTimeShortcuts = computed(() => {
   const anchor = getAnchorTimestamp()
   const shortcuts = [
@@ -780,13 +883,24 @@ const computedEndTimeShortcuts = computed(() => {
   gap: 6px;
 }
 
+/* 沉浸单行模式容器保护 (严格不折行、支持横向平滑滚动) */
+.filter-row-primary.is-immersive-row {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.filter-row-primary.is-immersive-row::-webkit-scrollbar {
+  display: none;
+}
+
 .keyword-input {
   flex: 1;
 }
 
 .keyword-input.zen-fixed-input {
   flex: none;
-  width: 200px;
+  width: 180px;
 }
 
 .zen-filter-select {
@@ -795,6 +909,56 @@ const computedEndTimeShortcuts = computed(() => {
 
 .zen-sort-select {
   width: 105px;
+}
+
+/* 沉浸单行时间区间控件组 */
+.zen-time-range-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.zen-quick-time-btn {
+  height: 24px;
+  padding: 0 5px;
+  font-size: 12px;
+  color: #64748b;
+  border: 1px solid #dcdfe6;
+  background: #fff;
+  border-radius: 4px;
+}
+
+.zen-quick-time-btn:hover {
+  color: #3b82f6;
+  border-color: #bfdbfe;
+  background: #eff6ff;
+}
+
+.zen-filter-date {
+  width: 146px;
+  flex: none;
+}
+
+:deep(.zen-filter-date.el-date-editor) {
+  --el-date-editor-width: 146px;
+  width: 146px !important;
+}
+
+:deep(.zen-filter-date .el-input__wrapper) {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+:deep(.zen-filter-date .el-input__inner) {
+  font-size: 11px;
+}
+
+.zen-time-separator {
+  color: #94a3b8;
+  font-size: 11px;
+  user-select: none;
+  flex-shrink: 0;
 }
 
 .zen-dev-select {
