@@ -2370,6 +2370,25 @@ watch(
   word-break: break-all;
   line-height: 1.5;
 }
+
+.event-summary-box-wb {
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
+}
+
+.event-summary-highlight-wb {
+  display: flex;
+  align-items: flex-start;
+  font-size: 13px;
+  font-weight: 500;
+  color: #0369a1;
+  line-height: 1.5;
+  padding: 4px 0;
+}
+
+.summary-text-wb {
+  word-break: break-word;
+}
 .param-grid-enhanced {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
