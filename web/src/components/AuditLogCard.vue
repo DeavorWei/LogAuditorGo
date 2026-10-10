@@ -6,7 +6,7 @@
       { active: active }
     ]"
     @click="$emit('click', record)"
-    @mouseenter="$emit('hover-enter', record)"
+    @mouseenter="$emit('hover-enter', record, $event)"
     @mouseleave="$emit('hover-leave', record)"
   >
     <!-- 头部: 级别徽标 + 模块/简名 + 匹配标签 -->

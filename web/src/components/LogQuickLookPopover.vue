@@ -13,17 +13,28 @@
             <span v-if="log.hostname" class="host-pill">{{ log.hostname }}</span>
           </div>
           <div class="header-right">
-            <span class="tip-text">按住空格预览 · 单击打开深度解析</span>
+            <span class="tip-text">松开空格关闭 · 单击打开深度双栏解析</span>
           </div>
         </div>
 
-        <!-- 原始报文 -->
+        <!-- 原始报文 (300 字符安全截断，§6.3) -->
         <div class="quicklook-body">
-          <div class="section-label">原始 Syslog 报文:</div>
-          <div class="raw-code-box">{{ log.raw_log }}</div>
+          <div class="section-label">原始 Syslog 报文 (前 300 字符):</div>
+          <div class="raw-code-box">{{ truncatedRawLog }}</div>
 
-          <!-- 摘要或提取参数预览 -->
-          <div v-if="log.event_summary" class="summary-box">
+          <!-- 提取关键变量胶囊 (§6.3) -->
+          <div v-if="keyParams.length > 0" class="quicklook-params-row">
+            <span class="params-label">关键变量:</span>
+            <div class="params-pills">
+              <span v-for="p in keyParams" :key="p.key" class="param-pill">
+                <span class="p-key">{{ p.key }}:</span>
+                <span class="p-val">{{ p.value }}</span>
+              </span>
+            </div>
+          </div>
+
+          <!-- 语义摘要预览 -->
+          <div v-else-if="log.event_summary" class="summary-box">
             <span class="summary-label">语义摘要:</span>
             <span class="summary-text">{{ log.event_summary }}</span>
           </div>
@@ -52,7 +63,7 @@ const props = defineProps({
   },
   anchorPos: {
     type: Object,
-    default: () => ({ x: 0, y: 0 })
+    default: () => null
   }
 })
 
@@ -65,8 +76,57 @@ const sevClass = computed(() => {
   return 'sev-info'
 })
 
+// 原始报文前 300 字符截断
+const truncatedRawLog = computed(() => {
+  if (!props.log?.raw_log) return ''
+  const text = props.log.raw_log
+  if (text.length <= 300) return text
+  return text.slice(0, 300) + '... (已截断，单击卡片查看完整解析)'
+})
+
+// 提取关键变量胶囊 (§6.3)
+const keyParams = computed(() => {
+  if (!props.log) return []
+  let raw = props.log.parameters_json
+  if (!raw && props.log.params) raw = props.log.params
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw)
+    } catch (e) {
+      return []
+    }
+  }
+  if (!raw || typeof raw !== 'object') return []
+  return Object.entries(raw).slice(0, 6).map(([key, value]) => ({ key, value }))
+})
+
+// 动态悬浮定位算法 (鼠标上方 12px + 边界碰撞检测)
 const positionStyle = computed(() => {
-  // 视口边界安全检测居中
+  const cardW = 640
+  const cardH = 260
+
+  if (props.anchorPos && typeof props.anchorPos.x === 'number' && typeof props.anchorPos.y === 'number') {
+    const { x, y } = props.anchorPos
+    let left = x - cardW / 2
+    if (left < 16) left = 16
+    if (left + cardW > (window.innerWidth - 16)) {
+      left = Math.max(16, window.innerWidth - cardW - 16)
+    }
+
+    let top = y - cardH - 12
+    if (top < 16) {
+      top = y + 16
+    }
+
+    return {
+      position: 'fixed',
+      left: `${left}px`,
+      top: `${top}px`,
+      zIndex: 3500
+    }
+  }
+
+  // 兜底居中
   return {
     position: 'fixed',
     top: '50%',
@@ -84,12 +144,12 @@ const positionStyle = computed(() => {
 }
 
 @keyframes ql-fade-in {
-  from { opacity: 0; transform: translate(-50%, -48%) scale(0.98); }
-  to { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: scale(1); }
 }
 
 .quicklook-card {
-  width: 660px;
+  width: 640px;
   max-width: 90vw;
   background: #0f172a;
   color: #f8fafc;
@@ -164,6 +224,45 @@ const positionStyle = computed(() => {
   word-break: break-all;
   max-height: 180px;
   overflow-y: auto;
+}
+
+.quicklook-params-row {
+  margin-top: 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.params-label {
+  font-size: 11px;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.params-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.param-pill {
+  font-size: 11px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 4px;
+  padding: 2px 6px;
+  display: inline-flex;
+  gap: 4px;
+}
+
+.param-pill .p-key {
+  color: #38bdf8;
+  font-weight: 600;
+}
+
+.param-pill .p-val {
+  color: #34d399;
+  font-family: monospace;
 }
 
 .summary-box {

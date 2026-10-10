@@ -2,6 +2,7 @@
   <el-dialog
     v-model="dialogVisible"
     :show-close="false"
+    :close-on-press-escape="false"
     append-to-body
     destroy-on-close
     class="audit-detail-modal-dialog"
@@ -27,6 +28,7 @@
             <el-button
               size="small"
               icon="ArrowUp"
+              :class="{ 'is-shaking': isPrevShaking }"
               :disabled="currentIndex <= 0"
               @click="handlePrev"
             >
@@ -40,6 +42,7 @@
             <el-button
               size="small"
               icon="ArrowDown"
+              :class="{ 'is-shaking': isNextShaking }"
               :disabled="currentIndex >= totalCount - 1"
               @click="handleNext"
             >
@@ -196,11 +199,12 @@
                 <div class="kb-header-top">
                   <div class="kb-title">{{ log.knowledge.module }}/{{ log.knowledge.brief }}</div>
                   <el-switch
-                    v-model="contextualizeMode"
+                    :model-value="contextualizeMode"
                     size="small"
                     active-text="现场参数注入"
                     inactive-text="原始文档"
                     style="--el-switch-on-color: #10b981;"
+                    @update:model-value="$emit('update:contextualizeMode', $event)"
                   />
                 </div>
                 <div class="kb-meta">
@@ -277,11 +281,11 @@
           </el-tab-pane>
 
           <el-tab-pane label="根因传播拓扑 (RCA)" name="rca">
-            <div v-if="matchedRCA" class="rca-tab-content">
-              <RcaGraph :rcaEvent="matchedRCA" />
+            <div v-if="currentRca" class="rca-tab-content">
+              <RcaGraph :rcaEvent="currentRca" />
               <div class="rca-guide">
                 <div class="guide-title">💡 根因处置指南</div>
-                <div>{{ matchedRCA.recommended_action }}</div>
+                <div>{{ currentRca.recommended_action }}</div>
               </div>
             </div>
             <div v-else class="empty-kb">
@@ -321,6 +325,10 @@ const props = defineProps({
     type: Object,
     default: () => null
   },
+  matchedRca: {
+    type: Object,
+    default: () => null
+  },
   renderedTemplateHtml: {
     type: String,
     default: ''
@@ -337,6 +345,10 @@ const props = defineProps({
     type: Number,
     default: 0
   },
+  contextualizeMode: {
+    type: Boolean,
+    default: true
+  },
   kbParamDefs: {
     type: Array,
     default: () => []
@@ -349,6 +361,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'update:visible',
+  'update:contextualizeMode',
   'prev',
   'next',
   'add-tag',
@@ -356,7 +369,10 @@ const emit = defineEmits([
 ])
 
 const activeTab = ref('knowledge')
-const contextualizeMode = ref(true)
+const isPrevShaking = ref(false)
+const isNextShaking = ref(false)
+
+const currentRca = computed(() => props.matchedRca || props.matchedRCA)
 
 const dialogVisible = computed({
   get() {
@@ -367,15 +383,33 @@ const dialogVisible = computed({
   }
 })
 
+const triggerShake = (direction) => {
+  if (direction === 'prev') {
+    isPrevShaking.value = true
+    setTimeout(() => {
+      isPrevShaking.value = false
+    }, 400)
+  } else {
+    isNextShaking.value = true
+    setTimeout(() => {
+      isNextShaking.value = false
+    }, 400)
+  }
+}
+
 const handlePrev = () => {
   if (props.currentIndex > 0) {
     emit('prev')
+  } else {
+    triggerShake('prev')
   }
 }
 
 const handleNext = () => {
   if (props.currentIndex < props.totalCount - 1) {
     emit('next')
+  } else {
+    triggerShake('next')
   }
 }
 
@@ -415,6 +449,9 @@ const formatTooltipHtml = (desc) => {
 const onKeydown = (e) => {
   if (!props.visible) return
 
+  // P1-4: 拦截按键长按连发
+  if (e.repeat) return
+
   // 快捷键守卫：输入控件内输入时不触发
   const target = e.target
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) {
@@ -427,10 +464,8 @@ const onKeydown = (e) => {
   } else if (e.key === 'ArrowDown' || e.key === 'j') {
     e.preventDefault()
     handleNext()
-  } else if (e.key === 'Escape') {
-    e.preventDefault()
-    handleClose()
   }
+  // P0-2: Esc 按键全部交由 AuditWorkbench 单一入口统一分发，此处不再监听
 }
 
 onMounted(() => {
@@ -443,27 +478,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-:deep(.audit-detail-modal-dialog) {
-  border-radius: 10px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  max-height: 90vh;
-}
-
-:deep(.audit-detail-modal-dialog .el-dialog__header) {
-  padding: 12px 18px;
-  margin-right: 0;
-  border-bottom: 1px solid #e2e8f0;
-  background: #f8fafc;
-}
-
-:deep(.audit-detail-modal-dialog .el-dialog__body) {
-  padding: 0;
-  flex: 1;
-  overflow: hidden;
-  height: 78vh;
-}
 
 .modal-custom-header {
   display: flex;
@@ -805,3 +819,68 @@ onBeforeUnmount(() => {
   padding: 30px 0;
 }
 </style>
+
+<style>
+/* 保证 Teleport 到 body 后的 AuditLogDetailModal 尺寸与独立滚动生效 (修复 P0-1) */
+.audit-detail-modal-dialog {
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex !important;
+  flex-direction: column !important;
+  height: 82vh !important;
+  max-height: 90vh !important;
+}
+
+.audit-detail-modal-dialog .el-dialog__header {
+  padding: 12px 18px !important;
+  margin-right: 0 !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  background: #f8fafc !important;
+  flex-shrink: 0 !important;
+}
+
+.audit-detail-modal-dialog .el-dialog__body {
+  padding: 0 !important;
+  flex: 1 !important;
+  overflow: hidden !important;
+  height: calc(82vh - 55px) !important;
+}
+
+/* 边界轻抖反馈动效 (修复 P2) */
+@keyframes shake-anim {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+.is-shaking {
+  animation: shake-anim 0.35s ease-in-out;
+}
+
+/* 窄视口双栏自动堆叠 (修复 P2 / §4.4.2) */
+@media (max-width: 1000px) {
+  .audit-detail-modal-dialog {
+    width: 95vw !important;
+    height: 90vh !important;
+  }
+  .audit-detail-modal-dialog .el-dialog__body {
+    height: calc(90vh - 55px) !important;
+    overflow-y: auto !important;
+  }
+  .audit-detail-modal-dialog .modal-dual-container {
+    flex-direction: column !important;
+    height: auto !important;
+  }
+  .audit-detail-modal-dialog .modal-pane-left,
+  .audit-detail-modal-dialog .modal-pane-right {
+    width: 100% !important;
+    height: auto !important;
+    overflow-y: visible !important;
+  }
+  .audit-detail-modal-dialog .modal-pane-left {
+    border-right: none !important;
+    border-bottom: 1px solid #e2e8f0;
+  }
+}
+</style>
+

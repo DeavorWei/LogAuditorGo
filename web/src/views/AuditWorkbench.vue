@@ -564,10 +564,11 @@
       <!-- 全屏沉浸模式下居中双栏深度解析弹窗 (需求 5) -->
       <AuditLogDetailModal
         v-model:visible="showLogDetailModal"
+        v-model:contextualize-mode="contextualizeMode"
         :log="selectedLog"
         :current-index="currentLogIndex"
         :total-count="logRecords.length"
-        :matched-r-c-a="matchedRCA"
+        :matched-rca="matchedRCA"
         :rendered-template-html="renderedTemplateHtml"
         :rendered-knowledge-html="renderedKnowledgeHtml"
         :enriched-parameters="enrichedParameters"
@@ -584,6 +585,7 @@
       <LogQuickLookPopover
         :visible="quickLookVisible"
         :log="hoveredLog"
+        :anchor-pos="quickLookAnchorPos"
       />
     </div>
   </div>
@@ -843,7 +845,6 @@ watch(currentViewMode, (mode) => {
 })
 const taskFiles = ref([])
 const showFilesDrawer = ref(false)
-const refreshTrigger = ref(0)
 const deviceManagerRef = ref(null)
 const timelineRef = ref(null)
 const rcaCenterRef = ref(null)
@@ -1384,7 +1385,7 @@ const isTaskEmpty = computed(() => {
 })
 
 const hasActiveFilter = computed(() => {
-  return filterStore.activeFilterCount() > 0
+  return filterStore.activeFilterCount() > 0 || filterStore.filters.sortBy !== 'time' || filterStore.filters.order !== 'asc'
 })
 
 const handleResetFilters = async () => {
@@ -1497,6 +1498,7 @@ const selectLog = (log) => {
 const showLogDetailModal = ref(false)
 const quickLookVisible = ref(false)
 const hoveredLog = ref(null)
+const quickLookAnchorPos = ref(null)
 
 const currentLogIndex = computed(() => {
   if (!selectedLog.value || !logRecords.value.length) return 0
@@ -1504,15 +1506,35 @@ const currentLogIndex = computed(() => {
   return idx >= 0 ? idx : 0
 })
 
+// 滚动对齐当前选中日志至视口居中 (§4.4.4 / P2)
+const scrollSelectedLogIntoView = () => {
+  nextTick(() => {
+    if (!selectedLog.value) return
+    const el = document.querySelector('.audit-log-card.active')
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    }
+  })
+}
+
+// 弹窗关闭时自动回显视口滚动
+watch(showLogDetailModal, (val) => {
+  if (!val) {
+    scrollSelectedLogIntoView()
+  }
+})
+
 const handlePrevLog = () => {
   if (currentLogIndex.value > 0) {
     selectLog(logRecords.value[currentLogIndex.value - 1])
+    scrollSelectedLogIntoView()
   }
 }
 
 const handleNextLog = () => {
   if (currentLogIndex.value < logRecords.value.length - 1) {
     selectLog(logRecords.value[currentLogIndex.value + 1])
+    scrollSelectedLogIntoView()
   }
 }
 
@@ -1523,39 +1545,92 @@ const handleLogCardClick = (rec) => {
   }
 }
 
-const handleLogHoverEnter = (rec) => {
+const handleLogHoverEnter = (rec, e) => {
   hoveredLog.value = rec
+  if (e && typeof e.clientX === 'number') {
+    quickLookAnchorPos.value = { x: e.clientX, y: e.clientY }
+  } else {
+    const el = document.querySelector(`.audit-log-card.active`)
+    if (el) {
+      const rect = el.getBoundingClientRect()
+      quickLookAnchorPos.value = { x: rect.left + rect.width / 2, y: rect.top }
+    }
+  }
 }
 
 const handleLogHoverLeave = (rec) => {
   if (hoveredLog.value && hoveredLog.value.id === rec.id) {
     hoveredLog.value = null
     quickLookVisible.value = false
+    quickLookAnchorPos.value = null
   }
 }
 
-// 全局按键守卫分发引擎 (建议 3 & 建议 4)
+// 浏览器物理全屏联动支持 (修复 P0-4)
+const toggleBrowserFullscreen = async () => {
+  try {
+    if (!document.fullscreenElement) {
+      await document.documentElement.requestFullscreen()
+    } else {
+      await document.exitFullscreen()
+    }
+  } catch (e) {
+    ElMessage.info('当前浏览器限制全屏操作，您可直接按键盘 F11 开启物理全屏')
+  }
+}
+
+// 全局按键守卫分发引擎 (修复 P0-2, P0-4, P1-3, P1-4, P1-6)
 const onGlobalKeydown = (e) => {
+  // 1. 视图与空任务守卫：非工作台主审计视图或无有效任务时不响应快捷键
+  if (currentViewMode.value !== VIEW_MODE.WORKBENCH || !currentTaskId.value) return
+
+  // 2. 输入框控件焦点守卫
   const target = e.target
   const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
   if (isInput) return
 
-  // 空格键快速预览 QuickLook (建议 3)
-  if (e.code === 'Space' && hoveredLog.value && !showLogDetailModal.value) {
-    e.preventDefault()
-    quickLookVisible.value = true
-    return
-  }
+  // 3. 浮层/抽屉层级守卫 (修复 P1-3)：其他弹窗或抽屉打开时不劫持快捷键
+  const hasActiveOverlay =
+    showAdvancedDrawer.value ||
+    showTagManageDialog.value ||
+    showNewTaskDialog.value ||
+    showImportDialog.value ||
+    showProgressModal.value ||
+    showExportDialog.value ||
+    showFilesDrawer.value ||
+    showConflictDialog.value
+  if (hasActiveOverlay) return
 
-  // f 键切换 Zen Mode (沉浸式全屏)
-  if (e.key === 'f' || e.key === 'F') {
-    if (!e.repeat && !showLogDetailModal.value) {
+  // 4. 长按连发拦截 (修复 P1-4)
+  if (e.repeat) return
+
+  // 5. 空格键快速预览 QuickLook (仅在 Zen Mode 全屏网格下生效，普通模式放行原生滚动，修复 P1-6)
+  if (e.code === 'Space') {
+    if (workbenchUIStore.ui.isZenMode && hoveredLog.value && !showLogDetailModal.value) {
       e.preventDefault()
-      workbenchUIStore.toggleZenMode()
+      quickLookVisible.value = true
+      return
     }
   }
 
-  // Esc 键分层退出 (优先关闭弹窗，再关闭预览，最后退出 Zen Mode)
+  // 6. Shift + F: 浏览器物理全屏 (修复 P0-4)
+  if (e.shiftKey && (e.key === 'F' || e.key === 'f')) {
+    e.preventDefault()
+    toggleBrowserFullscreen()
+    return
+  }
+
+  // 7. f 键: 应用内 Zen Mode 沉浸全屏切换 (无 Shift 且未打开弹窗)
+  if (!e.shiftKey && (e.key === 'f' || e.key === 'F')) {
+    if (!showLogDetailModal.value) {
+      e.preventDefault()
+      workbenchUIStore.toggleZenMode()
+      scrollSelectedLogIntoView()
+      return
+    }
+  }
+
+  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出 Zen Mode，修复 P0-2)
   if (e.key === 'Escape') {
     if (quickLookVisible.value) {
       e.preventDefault()
@@ -1563,9 +1638,11 @@ const onGlobalKeydown = (e) => {
     } else if (showLogDetailModal.value) {
       e.preventDefault()
       showLogDetailModal.value = false
+      scrollSelectedLogIntoView()
     } else if (workbenchUIStore.ui.isZenMode) {
       e.preventDefault()
       workbenchUIStore.setZenMode(false)
+      scrollSelectedLogIntoView()
     }
   }
 }
@@ -2016,6 +2093,7 @@ watch(
   height: 100%;
   min-height: 0;
   background: #f8fafc;
+  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .log-stream-list {
@@ -2027,118 +2105,7 @@ watch(
   flex-direction: column;
   gap: 6px;
 }
-.log-card {
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px 10px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-.log-card:hover {
-  border-color: #94a3b8;
-  background: #f1f5f9;
-}
-.log-card.active {
-  border-color: #38bdf8;
-  background: #f0f9ff;
-  box-shadow: 0 0 0 1px #38bdf8;
-}
-.log-card-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-}
-.log-mod {
-  font-weight: 600;
-  color: #0f172a;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.match-tag {
-  background: #dcfce7;
-  color: #166534;
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.comment-tag {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.log-card-msg {
-  font-size: 11px;
-  color: #475569;
-  margin: 4px 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  line-height: 1.4;
-}
-.event-summary-box-wb {
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  border-radius: 6px;
-}
-.event-summary-highlight-wb {
-  display: flex;
-  align-items: flex-start;
-  font-size: 13px;
-  font-weight: 500;
-  color: #0369a1;
-  line-height: 1.5;
-  padding: 4px 0;
-}
-.summary-text-wb {
-  word-break: break-word;
-}
-.log-card-footer {
-  font-size: 10px;
-  color: #94a3b8;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-}
-.log-time {
-  font-family: monospace;
-  color: #64748b;
-}
-.host-tag {
-  background: #e0f2fe;
-  color: #0369a1;
-  padding: 0 4px;
-  border-radius: 2px;
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.file-tag {
-  background: #f1f5f9;
-  color: #475569;
-  padding: 0 4px;
-  border-radius: 2px;
-  max-width: 110px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.slot-tag {
-  background: #e2e8f0;
-  padding: 0 4px;
-  border-radius: 2px;
-}
+
 .pagination-bar {
   padding: 6px;
   display: flex;
@@ -2714,13 +2681,6 @@ watch(
   color: #9a3412;
 }
 
-/* 标签与高级筛选相关样式 */
-.tag-filter-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
 .log-stream-toolbar {
   display: flex;
   justify-content: space-between;
@@ -2734,22 +2694,6 @@ watch(
   font-size: 12px;
   color: #64748b;
   font-weight: 500;
-}
-
-.log-card-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-top: 6px;
-}
-
-.card-tag-pill {
-  font-size: 11px;
-  height: 20px;
-  line-height: 20px;
-  padding: 0 6px;
-  border-radius: 4px;
-  border: none;
 }
 
 .log-detail-tags-bar {

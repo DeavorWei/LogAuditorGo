@@ -666,7 +666,7 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.import-progress-dialog :deep(.el-dialog__body) {
+:global(.import-progress-dialog .el-dialog__body) {
   padding: 16px 20px;
 }
 

@@ -64,17 +64,22 @@
     <div v-if="ui.isFilterCollapsed && activeFilterChips.length > 0" class="active-filter-chips-bar">
       <span class="chips-label">已生效:</span>
       <div class="chips-scroll-container">
-        <el-tag
+        <el-tooltip
           v-for="chip in visibleChips"
           :key="chip.key"
-          size="small"
-          closable
-          :type="chip.tagType || 'info'"
-          class="filter-chip-item"
-          @close="removeSingleFilter(chip.key)"
+          :content="chip.tooltip"
+          placement="top"
         >
-          <span class="chip-text">{{ chip.label }}</span>
-        </el-tag>
+          <el-tag
+            size="small"
+            closable
+            :type="chip.tagType || 'info'"
+            class="filter-chip-item"
+            @close="removeSingleFilter(chip.key)"
+          >
+            <span class="chip-text">{{ chip.label }}</span>
+          </el-tag>
+        </el-tooltip>
 
         <!-- 溢出项汇总 Popover -->
         <el-popover v-if="overflowChips.length > 0" trigger="hover" placement="bottom-start" width="auto">
@@ -84,24 +89,29 @@
             </el-tag>
           </template>
           <div class="overflow-chips-popover">
-            <el-tag
+            <el-tooltip
               v-for="chip in overflowChips"
               :key="chip.key"
-              size="small"
-              closable
-              :type="chip.tagType || 'info'"
-              class="filter-chip-item in-popover"
-              @close="removeSingleFilter(chip.key)"
+              :content="chip.tooltip"
+              placement="top"
             >
-              {{ chip.label }}
-            </el-tag>
+              <el-tag
+                size="small"
+                closable
+                :type="chip.tagType || 'info'"
+                class="filter-chip-item in-popover"
+                @close="removeSingleFilter(chip.key)"
+              >
+                {{ chip.label }}
+              </el-tag>
+            </el-tooltip>
           </div>
         </el-popover>
       </div>
     </div>
 
-    <!-- 折叠内容包裹容器 (由动画控制展开收缩) -->
-    <div v-show="!ui.isFilterCollapsed" class="filter-collapsible-wrapper">
+    <!-- 折叠内容包裹容器 (由动画控制展开收缩，移除 v-show 保证贝塞尔过渡) -->
+    <div class="filter-collapsible-wrapper">
       <!-- 行 2: 时间与排序三等分行 (需求 1，平均平分列宽) -->
       <div class="filter-row filter-row-time-triplet">
         <el-select
@@ -290,8 +300,7 @@ const props = defineProps({
 const emit = defineEmits([
   'change',
   'reset',
-  'open-tag-manager',
-  'toggle-zen'
+  'open-tag-manager'
 ])
 
 const filterStore = useFilterStore()
@@ -352,7 +361,6 @@ const handleToggleCollapse = () => {
 
 const handleToggleZenMode = () => {
   workbenchUIStore.toggleZenMode()
-  emit('toggle-zen', workbenchUIStore.ui.isZenMode)
 }
 
 // 浏览器物理全屏联动支持 (建议 4)
@@ -388,19 +396,9 @@ onBeforeUnmount(() => {
   document.removeEventListener('fullscreenchange', onBrowserFullscreenChange)
 })
 
-// 计算是否有全局活跃过滤条件
+// 计算是否有全局活跃过滤条件 (与 workbench 统一口径)
 const hasActiveFilter = computed(() => {
-  const f = filterStore.filters
-  return !!(
-    (f.keyword && f.keyword.trim()) ||
-    f.severity !== null ||
-    f.matched !== null ||
-    f.deviceId !== null ||
-    f.timeStart ||
-    f.timeEnd ||
-    (f.tagIds && f.tagIds.length > 0) ||
-    currentSortOption.value !== 'time_asc'
-  )
+  return filterStore.activeFilterCount() > 0 || currentSortOption.value !== 'time_asc'
 })
 
 // 计算收起状态下隐藏行 (行 2 ~ 行 4) 的活跃条件数
@@ -424,18 +422,23 @@ const activeFilterChips = computed(() => {
   // 时间区间
   if (f.timeStart || f.timeEnd) {
     let timeLabel = '时间区间'
+    let tooltip = ''
     if (f.timeStart && f.timeEnd) {
       const s = f.timeStart.substring(5, 16).replace('T', ' ')
       const e = f.timeEnd.substring(5, 16).replace('T', ' ')
       timeLabel = `⏰ ${s} ~ ${e}`
+      tooltip = `时间区间: ${f.timeStart} 至 ${f.timeEnd}`
     } else if (f.timeStart) {
       timeLabel = `⏰ 从 ${f.timeStart.substring(5, 16).replace('T', ' ')}`
+      tooltip = `起始时间: ${f.timeStart} 之后`
     } else if (f.timeEnd) {
       timeLabel = `⏰ 至 ${f.timeEnd.substring(5, 16).replace('T', ' ')}`
+      tooltip = `截止时间: ${f.timeEnd} 之前`
     }
     chips.push({
       key: 'time',
       label: timeLabel,
+      tooltip,
       tagType: 'primary'
     })
   }
@@ -445,6 +448,7 @@ const activeFilterChips = computed(() => {
     chips.push({
       key: 'severity',
       label: `⚠️ 级别≤${f.severity}`,
+      tooltip: `严重度过滤: Level ${f.severity} 及以上紧急告警`,
       tagType: f.severity <= 2 ? 'danger' : 'warning'
     })
   }
@@ -454,6 +458,7 @@ const activeFilterChips = computed(() => {
     chips.push({
       key: 'matched',
       label: f.matched ? '📚 已匹配' : '未匹配',
+      tooltip: f.matched ? '知识库匹配状态: 仅显示已命中官方知识库日志' : '知识库匹配状态: 仅显示未命中知识库日志',
       tagType: f.matched ? 'success' : 'info'
     })
   }
@@ -461,9 +466,11 @@ const activeFilterChips = computed(() => {
   // 设备筛选
   if (f.deviceId !== null && props.taskDevices.length > 1) {
     const dev = props.taskDevices.find(d => d.id === f.deviceId)
+    const name = dev ? dev.device_name : '指定设备'
     chips.push({
       key: 'deviceId',
-      label: `🖥 ${dev ? dev.device_name : '指定设备'}`,
+      label: `🖥 ${name}`,
+      tooltip: `设备过滤: ${name}`,
       tagType: 'info'
     })
   }
@@ -472,15 +479,19 @@ const activeFilterChips = computed(() => {
   if (f.tagIds && f.tagIds.length > 0) {
     if (f.tagIds.length === 1) {
       const tag = tagStore.tags.find(t => t.id === f.tagIds[0])
+      const tagName = tag ? tag.name : '标签'
       chips.push({
         key: 'tagIds',
-        label: `🏷 ${tag ? tag.name : '标签'}`,
+        label: `🏷 ${tagName}`,
+        tooltip: `标签过滤: ${tagName}`,
         tagType: 'info'
       })
     } else {
+      const tagNames = f.tagIds.map(id => tagStore.tags.find(t => t.id === id)?.name || id).join(', ')
       chips.push({
         key: 'tagIds',
         label: `🏷 ${f.tagIds.length}个标签 (${f.tagLogic === 'all' ? '全部' : '任一'})`,
+        tooltip: `标签过滤 (${f.tagLogic === 'all' ? 'AND 与逻辑' : 'OR 或逻辑'}): ${tagNames}`,
         tagType: 'info'
       })
     }
@@ -491,6 +502,7 @@ const activeFilterChips = computed(() => {
     chips.push({
       key: 'sort',
       label: currentSortOption.value === 'time_desc' ? '↕ 时间倒序' : '📄 物理入库序',
+      tooltip: `排序方式: ${currentSortOption.value === 'time_desc' ? '按时间倒序排查最新事件' : '按物理文件入库顺序'}`,
       tagType: 'info'
     })
   }
@@ -521,21 +533,45 @@ const removeSingleFilter = (key) => {
   emit('change')
 }
 
-// 建议 2: 动态数据锚点时间快捷项计算引擎
+// 建议 2: 动态数据锚点基准计算引擎 (§6.2)
+const getAnchorTimestamp = () => {
+  // 1. 优先使用 taskMeta 中的最新日志时间戳
+  const metaTime = props.taskMeta?.latest_timestamp || props.taskMeta?.end_time || props.taskMeta?.max_time
+  if (metaTime) {
+    const d = new Date(metaTime)
+    if (!isNaN(d.getTime())) return d
+  }
+  // 2. 降级为当前系统时间
+  return new Date()
+}
+
 const computedStartTimeShortcuts = computed(() => {
-  // 基础快捷项 (相对当前时间)
+  const anchor = getAnchorTimestamp()
   const shortcuts = [
     {
+      text: '⚡ 闪断前15m',
+      value: () => new Date(anchor.getTime() - 15 * 60 * 1000)
+    },
+    {
+      text: '🌙 昨夜18:00',
+      value: () => {
+        const d = new Date(anchor)
+        d.setDate(d.getDate() - 1)
+        d.setHours(18, 0, 0, 0)
+        return d
+      }
+    },
+    {
       text: '1小时前',
-      value: () => new Date(Date.now() - 3600 * 1000)
+      value: () => new Date(anchor.getTime() - 3600 * 1000)
     },
     {
       text: '24小时前',
-      value: () => new Date(Date.now() - 24 * 3600 * 1000)
+      value: () => new Date(anchor.getTime() - 24 * 3600 * 1000)
     },
     {
       text: '3天前',
-      value: () => new Date(Date.now() - 3 * 24 * 3600 * 1000)
+      value: () => new Date(anchor.getTime() - 3 * 24 * 3600 * 1000)
     }
   ]
 
@@ -554,18 +590,31 @@ const computedStartTimeShortcuts = computed(() => {
 })
 
 const computedEndTimeShortcuts = computed(() => {
+  const anchor = getAnchorTimestamp()
   const shortcuts = [
     {
-      text: '现在',
-      value: () => new Date()
+      text: '⚡ 任务最新',
+      value: () => new Date(anchor)
+    },
+    {
+      text: '🌙 今晨09:00',
+      value: () => {
+        const d = new Date(anchor)
+        d.setHours(9, 0, 0, 0)
+        return d
+      }
     },
     {
       text: '今天结束',
       value: () => {
-        const d = new Date()
+        const d = new Date(anchor)
         d.setHours(23, 59, 59, 999)
         return d
       }
+    },
+    {
+      text: '现实现在',
+      value: () => new Date()
     }
   ]
 
@@ -667,6 +716,16 @@ const computedEndTimeShortcuts = computed(() => {
   height: 22px;
   line-height: 20px;
   padding: 0 6px;
+  max-width: 160px;
+}
+
+.filter-chip-item .chip-text {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: inline-block;
+  vertical-align: middle;
 }
 
 .overflow-tag {
@@ -680,12 +739,23 @@ const computedEndTimeShortcuts = computed(() => {
   max-width: 260px;
 }
 
-/* 折叠容器与各行 */
+/* 折叠容器与各行 (修复 P1-1) */
 .filter-collapsible-wrapper {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease;
+  max-height: 240px;
+  opacity: 1;
+  overflow: hidden;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin 0.2s ease;
+}
+
+.audit-filter-bar.is-collapsed .filter-collapsible-wrapper {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  margin-bottom: 0;
+  pointer-events: none;
 }
 
 /* 行 2: 时间与排序三等分行 */

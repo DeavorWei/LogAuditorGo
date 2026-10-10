@@ -14,8 +14,13 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
       isZenMode: false         // 默认关闭沉浸式全屏
     }
     try {
-      const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}')
-      return { ...fallback, ...stored }
+      const raw = localStorage.getItem(STORAGE_KEY)
+      if (!raw) return fallback
+      const stored = JSON.parse(raw)
+      return {
+        isFilterCollapsed: typeof stored?.isFilterCollapsed === 'boolean' ? stored.isFilterCollapsed : fallback.isFilterCollapsed,
+        isZenMode: typeof stored?.isZenMode === 'boolean' ? stored.isZenMode : fallback.isZenMode
+      }
     } catch (e) {
       return fallback
     }
