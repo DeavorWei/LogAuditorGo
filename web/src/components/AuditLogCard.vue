@@ -10,9 +10,10 @@
     @mouseenter="$emit('hover-enter', record, $event)"
     @mouseleave="$emit('hover-leave', record)"
   >
-    <!-- 头部: 级别徽标 + 模块/简名 + 匹配标签 -->
+    <!-- 头部: 级别徽标 + 日志序号 + 模块/简名 + 匹配标签 -->
     <div class="log-card-header">
       <span :class="['sev-tag', sevClass]">Lv.{{ record.severity }}</span>
+      <span class="log-seq" :title="`日志序号: #${record.id}`">#{{ record.id }}</span>
       <span class="log-mod" :title="`${record.module}/${record.brief}`">
         {{ record.module }}/{{ record.brief }}
       </span>
@@ -199,6 +200,23 @@ const displayTime = computed(() => {
 .sev-err  { background: #ffedd5; color: #9a3412; }
 .sev-warn { background: #fef9c3; color: #854d0e; }
 .sev-info { background: #f1f5f9; color: #475569; }
+
+.log-seq {
+  font-size: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: #64748b;
+  background: #f1f5f9;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-weight: 600;
+  flex-shrink: 0;
+  line-height: 14px;
+}
+
+.audit-log-card.active .log-seq {
+  color: #0369a1;
+  background: #e0f2fe;
+}
 
 .log-mod {
   font-weight: 600;
