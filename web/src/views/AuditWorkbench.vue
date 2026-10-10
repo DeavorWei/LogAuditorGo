@@ -1202,60 +1202,18 @@ const renderedTemplateHtml = computed(() => {
     normParams.set(normalizeParamKey(k), v)
   }
 
-  // 3. 构建华为常见变量别名同义词映射表 (双向匹配)
-  const aliasGroups = [
-    ['bgppeerremoteaddr', 'peerid', 'peeraddr', 'neighbor', 'remoteaddr', 'peerip', 'peeraddress', 'peer'],
-    ['bgppeerlocaladdr', 'localaddr', 'localaddress', 'localip', 'local'],
-    ['bgppeerlasterror', 'errorcode', 'errorsubcode', 'notifyreason', 'reason', 'lasterror'],
-    ['bgppeerstate', 'state', 'laststate', 'currentstate', 'peerstate'],
-    ['interfacename', 'interface', 'ifname', 'port', 'portname', 'ifnet'],
-    ['nbrrouterid', 'routerid', 'neighborrouterid', 'neighbor', 'nbrip', 'nbr'],
-    ['bfddiag', 'diag', 'diagnostic', 'reason', 'diagcode'],
-    ['sessid', 'sessionid', 'session']
-  ]
-
+  // 后端作为单一事实源：enrichedParameters 已融合官方捕获与三级角色别名匹配，
+  // 前端无需硬拷贝 aliasGroups，更不应使用易产生误配的双向描述子串模糊匹配
   const findActualVal = (keyName) => {
     if (!keyName) return undefined
     // 优先精确匹配
     if (params[keyName] !== undefined) return params[keyName]
     const normK = normalizeParamKey(keyName)
     if (normParams.has(normK)) return normParams.get(normK)
-
-    // 尝试别名群组匹配
-    for (const group of aliasGroups) {
-      if (group.includes(normK)) {
-        for (const alias of group) {
-          if (normParams.has(alias)) {
-            return normParams.get(alias)
-          }
-        }
-      }
-    }
-
-    // 尝试在官方参数定义中寻找关联描述
-    if (log.knowledge && log.knowledge.parameters) {
-      try {
-        const defs = typeof log.knowledge.parameters === 'string' ? JSON.parse(log.knowledge.parameters) : log.knowledge.parameters
-        if (Array.isArray(defs)) {
-          for (const d of defs) {
-            const dName = normalizeParamKey(d.name || d.Name || '')
-            const dDesc = normalizeParamKey(d.description || d.Description || '')
-            if (dName === normK || dDesc.includes(normK)) {
-              for (const [pk, pv] of normParams.entries()) {
-                if (dDesc.includes(pk) || dName === pk) {
-                  return pv
-                }
-              }
-            }
-          }
-        }
-      } catch (e) {}
-    }
-
     return undefined
   }
 
-  // 4. 允许括号内包含空格的占位符正则，支持 [Var], <Var>, {Var}, %Var%, $Var
+  // 3. 允许括号内包含空格的占位符正则，支持 [Var], <Var>, {Var}, %Var%, $Var
   const placeholderRegex = /(\[\s*([a-zA-Z0-9_\-\s]+?)\s*\]|<\s*([a-zA-Z0-9_\-\s]+?)\s*>|\{\s*([a-zA-Z0-9_\-\s]+?)\s*\}|%\s*([a-zA-Z0-9_\-\s]+?)\s*%|\$\s*([a-zA-Z0-9_\-]+))/g
 
   let lastIdx = 0
@@ -1399,16 +1357,25 @@ const kbParamDefs = computed(() => {
     return []
   }
 
-  const rawParams = parsedParameters.value || {}
+  // 统一数据源：融合 parsedParameters 与后端富化下发的 enrichedParameters（包含官方捕获参数）
+  const params = { ...(parsedParameters.value || {}) }
+  if (Array.isArray(enrichedParameters.value)) {
+    for (const ep of enrichedParameters.value) {
+      if (ep.name && ep.value !== undefined && ep.value !== '') {
+        params[ep.name] = ep.value
+      }
+    }
+  }
+
   const normParams = new Map()
-  for (const [k, v] of Object.entries(rawParams)) {
+  for (const [k, v] of Object.entries(params)) {
     normParams.set(normalizeParamKey(k), v)
   }
 
   return defs.map(d => {
     const name = d.name || d.Name || ''
     const desc = d.description || d.Description || ''
-    let actualVal = rawParams[name]
+    let actualVal = params[name]
     if (actualVal === undefined) {
       actualVal = normParams.get(normalizeParamKey(name))
     }
