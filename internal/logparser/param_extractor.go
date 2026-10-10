@@ -45,6 +45,7 @@ func ExtractParametersInto(msg string, params map[string]string) {
 	}
 
 	// 1. 提取括号中的 Key=Value (支持逗号/分号分隔的带空格长字符串、嵌套括号)
+	// PARSE-08: 括号内结构化块保留空值（表达"该字段为空"的审计事实，如 Reason= Code=5）
 	if strings.IndexByte(msg, '(') != -1 {
 		for _, sub := range paramBlockRegex.FindAllStringSubmatch(msg, -1) {
 			if len(sub) < 2 {
@@ -52,15 +53,15 @@ func ExtractParametersInto(msg string, params map[string]string) {
 			}
 			subContent := sub[1]
 			if strings.IndexByte(subContent, '=') != -1 {
-				scanKVPairs(subContent, func(k, v string) {
+				scanKVPairs(subContent, true, func(k, v string) {
 					putParam(params, k, v, true)
 				})
 			}
 		}
 	}
 
-	// 2. 提取整句中散落的 Key="Value" 或 Key=Value（不覆盖已解析出的块内参数）
-	scanKVPairs(msg, func(k, v string) {
+	// 2. 提取整句中散落的 Key="Value" 或 Key=Value（不覆盖已解析出的块内参数；过滤散落孤立空值避免空白卡片）
+	scanKVPairs(msg, false, func(k, v string) {
 		putParam(params, k, v, false)
 	})
 }
@@ -106,7 +107,7 @@ func putParam(params map[string]string, k, v string, overwrite bool) {
 //   - 括号包裹的值（如 Location=(1,2)）在全局分支被逗号截成 `(1`。
 //
 // 手写扫描器对上述每一条都能给出明确、可测的语义。
-func scanKVPairs(s string, emit func(key, value string)) {
+func scanKVPairs(s string, allowEmpty bool, emit func(key, value string)) {
 	n := len(s)
 	i := 0
 
@@ -121,26 +122,11 @@ func scanKVPairs(s string, emit func(key, value string)) {
 
 		key, nextI, ok := scanKeyAt(s, i)
 		if !ok {
-			// N3: 当前位置未识别为合法键名。
-			// 若当前是一个连续单词（如 1st= 或 _id=），整词跳过到词尾，避免削成残缺键名（如 st= 或 id=）
+			// 当前位置未识别为合法键名，整词跳过到词尾，避免在词内低效步进
 			_, nextWord := readWord(s, i)
 			if nextWord > i {
-				// 若该词后紧随 '='（即形如 1st=abc 或 _id=5 的非法键赋值结构），
-				// 一并消费掉 '=' 及非法值，防止该值残留污染后续复合键吸收
-				j := nextWord
-				for j < n && (s[j] == ' ' || s[j] == '\t') {
-					j++
-				}
-				if j < n && s[j] == '=' {
-					_, nextVal := scanValue(s, j+1)
-					if nextVal > i {
-						i = nextVal
-						continue
-					}
-				}
 				i = nextWord
 			} else {
-				// 若不是连续词字符（如分隔符、标点或 '=' 等），前进一个 rune 继续
 				_, size := utf8.DecodeRuneInString(s[i:])
 				if size <= 0 {
 					size = 1
@@ -151,9 +137,9 @@ func scanKVPairs(s string, emit func(key, value string)) {
 		}
 
 		val, next := scanValue(s, nextI)
-		// B8: 空值键过滤。值 TrimSpace 后为空则跳过 emit，杜绝空白变量卡片污染
 		trimmedVal := strings.TrimSpace(val)
-		if trimmedVal != "" {
+		// B8 & PARSE-08: 括号内结构化块保留空值（表达字段为空的审计事实）；全局散落扫描过滤空值（防空白卡片污染）
+		if trimmedVal != "" || allowEmpty {
 			emit(key, trimmedVal)
 		}
 		if next <= nextI {
@@ -338,18 +324,12 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 		return "", pos, false
 	}
 
-	// 键名的首字符必须是字母或汉字（防标点或数字开头）
-	firstRune, _ := utf8.DecodeRuneInString(s[pos:])
-	if !unicode.IsLetter(firstRune) {
-		return "", pos, false
-	}
-
 	w, next := readWord(s, pos)
 	if w == "" {
 		return "", pos, false
 	}
 
-	// 1. 单词键快速路径：若直接紧随 '='，单词键直接成立（保持原有高兼容性）
+	// 1. 单词键快速路径：若直接紧随 '='，单词键直接成立（保持原有高兼容性，放开对数字/下划线开头的单键支持，如 1st=, _id=）
 	j := next
 	for j < n && (s[j] == ' ' || s[j] == '\t') {
 		j++
@@ -365,7 +345,12 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 		}
 	}
 
-	// 2. 复合键吸收：只有当第一个词为合法词汇且后续有空格时，才尝试吸收后续词
+	// 2. 复合键吸收：只有当第一个词首字符是字母或汉字（防时间戳 11:51:48 dev= 产生伪复合键），且为合法词汇时，才尝试吸收后续词
+	firstRune, _ := utf8.DecodeRuneInString(s[pos:])
+	if !unicode.IsLetter(firstRune) {
+		return "", pos, false
+	}
+
 	if !isValidKeyWord(w) {
 		return "", pos, false
 	}

@@ -15,11 +15,11 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 		want  map[string]string
 	}{
 		{
-			// PARSE-08 & B8: `Key=` 后紧跟空格或下一组键时，旧实现会把下一组键吞成自己的值；
-			// 现实现不吞下一组键，且空值键被过滤（不 emit），杜绝空白变量卡片污染。
+			// PARSE-08: `Key=` 后紧跟空格或下一组键时，旧实现会把下一组键吞成自己的值，
+			// 且空值被整条丢弃。现实现不吞下一组键，且保留括号结构化块中的空值表达字段为空的审计事实。
 			name:  "empty value must not swallow next pair",
 			input: "Session terminated. (Reason= Code=5)",
-			want:  map[string]string{"Code": "5"},
+			want:  map[string]string{"Reason": "", "Code": "5"},
 		},
 		{
 			// PARSE-08: 括号外的值遇空格即被截断（旧实现只剩 "Port"）。
@@ -131,18 +131,30 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 			},
 		},
 		{
-			// Audit N3: 非法首字符数字整词跳过，不削首字符产出残缺键名 st
-			name:  "numeric prefix identifier does not cut first char",
-			input: "1st=abc key=value",
+			// Audit N4: 数字开头的单键（如 1st=, 2nd=）在单键快速路径下正常保留，空格正常收口不吞后续键
+			name:  "numeric prefix identifier is kept as single key without swallowing",
+			input: "a=1 1st=abc b=2",
 			want: map[string]string{
-				"key": "value",
+				"a":   "1",
+				"1st": "abc",
+				"b":   "2",
 			},
 		},
 		{
-			// Audit N3: 下划线前缀非法键整词跳过，不削首字符产出残缺键名 id
-			name:  "underscore prefix identifier does not cut first char",
+			// Audit N4: 槽位与数字前缀单键
+			name:  "slot and numeric prefix second key",
+			input: "slot=0 2nd=up",
+			want: map[string]string{
+				"slot": "0",
+				"2nd":  "up",
+			},
+		},
+		{
+			// Audit N4: 下划线前缀单键正常保留
+			name:  "underscore prefix single key is preserved",
 			input: "_id=5 slot=1",
 			want: map[string]string{
+				"_id":  "5",
 				"slot": "1",
 			},
 		},

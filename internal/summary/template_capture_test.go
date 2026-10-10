@@ -185,13 +185,23 @@ func TestCaptureTemplateParams_AuditB1_TrailingPlaceholder(t *testing.T) {
 		}
 	})
 
-	t.Run("Degenerate template with single placeholder is rejected", func(t *testing.T) {
-		// N2: 退化模板（如 X/1/Y: [a]）因字面量词数 < 2 直接拒绝捕获，防止整句误吞
+	t.Run("Degenerate template with zero literal words is rejected", func(t *testing.T) {
+		// N2 & N5: 纯占位符退化模板（如 X/1/Y: [a]）因 literalWords == 0 直接拒绝捕获，防止整句误吞
 		tpl := "X/1/Y: [a]"
 		body := "hello"
 		res := CaptureTemplateParams(tpl, body)
 		if len(res) != 0 {
 			t.Fatalf("expected empty result for degenerate template, got %v", res)
+		}
+	})
+
+	t.Run("Valid template with one literal word is accepted", func(t *testing.T) {
+		// N5: 合法模板 "Alert [code]"（1 占位符 + 1 字面量词）不应被假阴性误拒
+		tpl := "X/1/Y: Alert [code]"
+		body := "Alert 404"
+		res := CaptureTemplateParams(tpl, body)
+		if res["code"] != "404" {
+			t.Fatalf("expected {code:404}, got %v", res)
 		}
 	})
 

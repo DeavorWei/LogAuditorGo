@@ -132,10 +132,10 @@ func compileTemplate(template string) *compiledTemplate {
 		return &compiledTemplate{valid: false}
 	}
 
-	// N2: 退化模板防护。若整条模板仅有 <= 1 个占位符且字面量词数 < 2，或缺乏字面量锚点，直接拒绝编译捕获，避免整句误吞
+	// N5: 退化模板防护。若剥离占位符后没有任何字面量词（纯占位符退化模板如 [a] 或 [a][b]），直接拒绝编译捕获，杜绝整句误吞
 	allLiterals := placeholderPattern.ReplaceAllString(stripped, " ")
 	literalWords := len(strings.Fields(allLiterals))
-	if (len(matches) <= 1 && literalWords < 2) || literalWords == 0 {
+	if literalWords == 0 {
 		return &compiledTemplate{valid: false}
 	}
 

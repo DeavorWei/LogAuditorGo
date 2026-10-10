@@ -580,7 +580,8 @@
                   </el-tooltip>
                 </div>
                 <div class="p-val-box">
-                  <span class="p-val">{{ p.value }}</span>
+                  <span v-if="p.value !== '' && p.value !== null && p.value !== undefined" class="p-val">{{ p.value }}</span>
+                  <span v-else class="p-val-empty">&lt;空&gt;</span>
                 </div>
               </div>
             </div>
@@ -2393,6 +2394,10 @@ watch(
 .p-val {
   color: #0f172a;
   font-weight: 500;
+}
+.p-val-empty {
+  color: #94a3b8;
+  font-style: italic;
 }
 .template-box {
   background: #f8fafc;
