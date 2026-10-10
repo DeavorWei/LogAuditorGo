@@ -34,7 +34,19 @@ var AliasGroups = map[string][]string{
 		"notifyreason", "reason", "errorcode", "errorsubcode",
 		"bgppeerlasterror", "lasterror", "failreason", "eventreason",
 		"cause", "errorreason", "diagnostic", "diag", "diagcode",
-		"downreason", "disconnectreason",
+		"downreason", "disconnectreason", "dropreason",
+	},
+	// 数量 / 计数
+	"count": {
+		"count", "dropcount", "packetcount", "pktcount", "totalcount",
+	},
+	// 槽位
+	"slot": {
+		"slot", "slotid", "slotno", "槽位号", "hwentityslotid", "hwcpuusagetrapslot",
+	},
+	// CPU / 处理器
+	"cpu": {
+		"cpu", "cpuid", "cpuno", "cpu号", "hwentitycpuid", "hwcpuusagetrapcpu",
 	},
 	// 状态
 	"state": {
@@ -69,7 +81,7 @@ var AliasGroups = map[string][]string{
 	},
 	// 硬件部件
 	"component": {
-		"entityname", "slot", "subslot", "fanid", "powerid", "cpuid",
+		"entityname", "subslot", "fanid", "powerid",
 		"boardname", "cardname", "chassisid",
 	},
 	// MAC 地址

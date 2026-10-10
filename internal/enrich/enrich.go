@@ -102,16 +102,32 @@ func EnrichParameters(paramsJSON string, kb *model.Knowledge) []EnrichedParamete
 	for k, v := range rawParams {
 		desc := ""
 		matched := false
+		normK := normalizeKey(k)
 
 		if d, ok := exactMap[k]; ok && d != "" {
 			desc = d
 			matched = true
-		} else if d, ok := normMap[normalizeKey(k)]; ok && d != "" {
+		} else if d, ok := normMap[normK]; ok && d != "" {
 			desc = d
 			matched = true
-		} else if d, ok := systemParamDescriptions[normalizeKey(k)]; ok && d != "" {
-			desc = d
-			matched = true
+		} else if role := summary.ResolveAliasRole(normK); role != "" {
+			// 三级匹配：通过语义角色别名查找知识库官方参数说明
+			if cands, ok := summary.AliasGroups[role]; ok {
+				for _, cand := range cands {
+					if d, ok := normMap[cand]; ok && d != "" {
+						desc = d
+						matched = true
+						break
+					}
+				}
+			}
+		}
+
+		if !matched {
+			if d, ok := systemParamDescriptions[normK]; ok && d != "" {
+				desc = d
+				matched = true
+			}
 		}
 
 		result = append(result, EnrichedParameter{
@@ -157,8 +173,15 @@ func RenderMessageTemplate(template string, rawParams map[string]string) string 
 		if val, ok := rawParams[keyName]; ok {
 			return val
 		}
-		if val, ok := normParams[normalizeKey(keyName)]; ok {
+		normK := normalizeKey(keyName)
+		if val, ok := normParams[normK]; ok {
 			return val
+		}
+		// 三级匹配：通过语义角色别名查找现场参数实际值
+		if role := summary.ResolveAliasRole(normK); role != "" {
+			if val := summary.ResolveParam(normParams, role); val != "" {
+				return val
+			}
 		}
 		return match
 	})
