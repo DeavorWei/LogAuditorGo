@@ -212,164 +212,14 @@
       <div v-else class="workbench-body">
         <!-- 左栏：日志流与动态筛选过滤 (28%) -->
         <div class="col-left">
-          <div class="filter-panel">
-            <div class="filter-row" style="gap: 6px;">
-              <el-input
-                v-model="filter.keyword"
-                placeholder="搜索报文/简名 (如 RM/ROUTE_DELETE)..."
-                prefix-icon="Search"
-                clearable
-                size="small"
-                @change="onFilterChange"
-                @clear="onFilterChange"
-              />
-              <el-button
-                v-if="hasActiveFilter"
-                size="small"
-                type="info"
-                plain
-                title="重置所有筛选条件"
-                @click="handleResetFilters"
-              >
-                重置
-              </el-button>
-            </div>
-          <div class="filter-row">
-            <el-select
-              v-model="currentSortOption"
-              placeholder="排序方式"
-              size="small"
-              style="width: 100%;"
-              @change="onSortChange"
-            >
-              <el-option label="⏰ 时间正序 (从早到晚)" value="time_asc" />
-              <el-option label="⏰ 时间倒序 (从新到旧)" value="time_desc" />
-              <el-option label="📄 原始入库顺序 (物理行序)" value="id_asc" />
-            </el-select>
-          </div>
-          <div class="filter-row">
-            <el-select v-model="filter.severity" placeholder="级别过滤" clearable size="small" style="width: 48%;" @change="onFilterChange">
-              <el-option label="全部级别" :value="null" />
-              <el-option label="<=2 (紧急/告警)" :value="2" />
-              <el-option label="<=4 (错误及以上)" :value="4" />
-              <el-option label="<=6 (通知及以上)" :value="6" />
-            </el-select>
-            <el-select v-model="filter.matched" placeholder="匹配状态" clearable size="small" style="width: 48%;" @change="onFilterChange">
-              <el-option label="全部状态" :value="null" />
-              <el-option label="已匹配知识库" :value="true" />
-              <el-option label="未匹配" :value="false" />
-            </el-select>
-          </div>
-          <div v-if="taskDevices.length > 0" class="filter-row">
-            <el-select
-              v-model="filter.deviceId"
-              placeholder="按设备筛选"
-              clearable
-              size="small"
-              style="width: 100%;"
-              @change="onFilterChange"
-            >
-              <el-option label="全部设备" :value="null" />
-              <el-option
-                v-for="d in taskDevices"
-                :key="d.id"
-                :label="`${d.device_name} (${d.log_count}条)`"
-                :value="d.id"
-              />
-            </el-select>
-          </div>
-          <!--
-            WB-FILTER: 筛选机制移除基于来源文件筛选，升级为基于起始与截止时间区间筛选。
-            采用独立双 datetime 选择器（各占 48%），复用标准两列 Flex 布局；
-            采用 value-format="YYYY-MM-DDTHH:mm:ssZ" 携带时区偏移，根除跨时区部署偏差；
-            通过 :shortcuts 提供常用排查窗口，并在窄屏下做紧凑字号与边距优化。
-          -->
-          <div class="filter-row">
-            <el-date-picker
-              v-model="filter.timeStart"
-              type="datetime"
-              placeholder="起始时间"
-              size="small"
-              style="width: 48%;"
-              format="YYYY-MM-DD HH:mm:ss"
-              value-format="YYYY-MM-DDTHH:mm:ssZ"
-              :shortcuts="startTimeShortcuts"
-              clearable
-              @change="onFilterChange"
-            />
-            <el-date-picker
-              v-model="filter.timeEnd"
-              type="datetime"
-              placeholder="截止时间"
-              size="small"
-              style="width: 48%;"
-              format="YYYY-MM-DD HH:mm:ss"
-              value-format="YYYY-MM-DDTHH:mm:ssZ"
-              :shortcuts="endTimeShortcuts"
-              clearable
-              @change="onFilterChange"
-            />
-          </div>
-
-          <!-- 标签多维筛选行 -->
-          <div class="filter-row tag-filter-row">
-            <el-select
-              v-model="filter.tagIds"
-              multiple
-              collapse-tags
-              collapse-tags-tooltip
-              clearable
-              placeholder="🏷 按标签筛选"
-              size="small"
-              style="flex: 1;"
-              @change="onFilterChange"
-            >
-              <el-option
-                v-for="t in tagStore.tags"
-                :key="t.id"
-                :label="`${t.name} (${t.log_count || 0})`"
-                :value="t.id"
-              >
-                <div style="display: flex; align-items: center; justify-content: space-between">
-                  <span>{{ t.name }}</span>
-                  <span
-                    :style="{
-                      display: 'inline-block',
-                      width: '10px',
-                      height: '10px',
-                      borderRadius: '50%',
-                      backgroundColor: t.color || '#409EFF'
-                    }"
-                  />
-                </div>
-              </el-option>
-            </el-select>
-            <!-- 多标签时支持切换 全部满足(ALL) / 任一满足(ANY) (P1-12) -->
-            <el-tooltip
-              v-if="filter.tagIds && filter.tagIds.length > 1"
-              :content="filter.tagLogic === 'all' ? '当前模式: 必须同时拥有所有选中标签 (AND)' : '当前模式: 拥有任一选中标签即可 (OR)'"
-              placement="top"
-            >
-              <el-button
-                size="small"
-                :type="filter.tagLogic === 'all' ? 'primary' : 'default'"
-                plain
-                @click="toggleTagLogic"
-              >
-                {{ filter.tagLogic === 'all' ? '全部' : '任一' }}
-              </el-button>
-            </el-tooltip>
-            <el-button
-              size="small"
-              type="info"
-              plain
-              title="管理标签"
-              @click="openTagManagerModal"
-            >
-              管理
-            </el-button>
-          </div>
-        </div>
+          <AuditFilterBar
+            :task-devices="taskDevices"
+            :task-meta="currentTask"
+            :selected-log="selectedLog"
+            @change="onFilterChange"
+            @reset="handleResetFilters"
+            @open-tag-manager="openTagManagerModal"
+          />
 
         <!-- 日志流顶部高级筛选操作条 -->
         <div class="log-stream-toolbar">
@@ -946,7 +796,9 @@ import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import RcaCenter from '@/components/RcaCenter.vue'
 import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
 import TagManagerModal from '@/components/TagManagerModal.vue'
+import AuditFilterBar from '@/components/AuditFilterBar.vue'
 import { useFilterStore } from '@/stores/filter'
+import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTaskStore } from '@/stores/task'
 import { useTagStore } from '@/stores/tag'
 import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
@@ -959,6 +811,7 @@ const route = useRoute()
 // 属于死代码，已移除。需要跳转时请重新引入 useRouter。
 
 const filterStore = useFilterStore()
+const workbenchUIStore = useWorkbenchUIStore()
 const filter = computed(() => filterStore.filters)
 const taskStore = useTaskStore()
 const tagStore = useTagStore()
@@ -1548,65 +1401,6 @@ const handleResetFilters = async () => {
   await fetchLogs()
 }
 
-const SORT_CONFIGS = {
-  time_asc:  { sortBy: 'time', order: 'asc' },
-  time_desc: { sortBy: 'time', order: 'desc' },
-  id_asc:    { sortBy: 'id',   order: 'asc' }
-}
-
-const currentSortOption = computed({
-  get() {
-    const s = filter.value.sortBy || 'time'
-    const o = filter.value.order || 'asc'
-    if (s === 'id') return 'id_asc'
-    return o === 'desc' ? 'time_desc' : 'time_asc'
-  },
-  set(val) {
-    const target = SORT_CONFIGS[val] || SORT_CONFIGS.time_asc
-    filterStore.filters.sortBy = target.sortBy
-    filterStore.filters.order = target.order
-  }
-})
-
-const onSortChange = async (val) => {
-  currentSortOption.value = val
-  filter.value.page = 1
-  await fetchLogs()
-}
-
-const startTimeShortcuts = [
-  {
-    text: '1小时前',
-    value: () => new Date(Date.now() - 3600 * 1000)
-  },
-  {
-    text: '24小时前',
-    value: () => new Date(Date.now() - 24 * 3600 * 1000)
-  },
-  {
-    text: '3天前',
-    value: () => new Date(Date.now() - 3 * 24 * 3600 * 1000)
-  },
-  {
-    text: '7天前',
-    value: () => new Date(Date.now() - 7 * 24 * 3600 * 1000)
-  }
-]
-
-const endTimeShortcuts = [
-  {
-    text: '现在',
-    value: () => new Date()
-  },
-  {
-    text: '今天结束',
-    value: () => {
-      const d = new Date()
-      d.setHours(23, 59, 59, 999)
-      return d
-    }
-  }
-]
 
 const onFilterChange = async () => {
   filter.value.page = 1
@@ -1708,10 +1502,6 @@ const selectLog = (log) => {
   selectedLog.value = log
 }
 
-const toggleTagLogic = async () => {
-  filter.value.tagLogic = filter.value.tagLogic === 'all' ? 'any' : 'all'
-  await onFilterChange()
-}
 
 const exportingReport = ref(false)
 const handleExportCommand = async (cmd) => {
@@ -2131,28 +1921,7 @@ watch(
   min-height: 0;
   background: #f8fafc;
 }
-.filter-panel {
-  padding: 10px;
-  border-bottom: 1px solid #e2e8f0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  flex-shrink: 0;
-}
-.filter-row {
-  display: flex;
-  justify-content: space-between;
-}
-.filter-panel :deep(.el-date-editor.el-input) {
-  --el-date-editor-width: 48%;
-}
-.filter-panel :deep(.el-date-editor .el-input__wrapper) {
-  padding-left: 6px;
-  padding-right: 6px;
-}
-.filter-panel :deep(.el-date-editor .el-input__inner) {
-  font-size: 11px;
-}
+
 .log-stream-list {
   flex: 1;
   min-height: 0;
