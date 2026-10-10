@@ -619,11 +619,20 @@
         @delete-tag="handleDeleteTag"
       />
 
-      <!-- 网格模式下空格键快速预览单例浮层 (建议 3) -->
+      <!-- [保留组件与逻辑] 网格模式下空格键快速预览单例浮层 -->
       <LogQuickLookPopover
         :visible="quickLookVisible"
         :log="hoveredLog"
         :anchor-pos="quickLookAnchorPos"
+      />
+
+      <!-- 空格键快速打标签弹窗 (支持悬浮日志与选中日志) -->
+      <QuickTagModal
+        v-model:visible="showQuickTagModal"
+        :log="quickTagTargetLog"
+        :task-id="currentTaskId"
+        @tag-added="onQuickTagAdded"
+        @tag-removed="onQuickTagRemoved"
       />
     </div>
   </div>
@@ -821,6 +830,7 @@ import AuditFilterBar from '@/components/AuditFilterBar.vue'
 import AuditLogCard from '@/components/AuditLogCard.vue'
 import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
 import LogQuickLookPopover from '@/components/LogQuickLookPopover.vue'
+import QuickTagModal from '@/components/QuickTagModal.vue'
 import { useFilterStore } from '@/stores/filter'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTaskStore } from '@/stores/task'
@@ -1619,6 +1629,42 @@ const quickLookVisible = ref(false)
 const hoveredLog = ref(null)
 const quickLookAnchorPos = ref(null)
 
+// 快速打标签弹窗状态 (空格键触发)
+const showQuickTagModal = ref(false)
+const quickTagTargetLog = ref(null)
+
+const openQuickTagModal = (log) => {
+  if (!log || !currentTaskId.value) return
+  quickTagTargetLog.value = log
+  showQuickTagModal.value = true
+}
+
+const onQuickTagAdded = (log, tag) => {
+  if (selectedLog.value && selectedLog.value.id === log.id) {
+    if (!selectedLog.value.tags) selectedLog.value.tags = []
+    if (!selectedLog.value.tags.some(t => t.id === tag.id)) {
+      selectedLog.value.tags.push(tag)
+    }
+  }
+  const recordInList = logRecords.value.find(r => r.id === log.id)
+  if (recordInList) {
+    if (!recordInList.tags) recordInList.tags = []
+    if (!recordInList.tags.some(t => t.id === tag.id)) {
+      recordInList.tags.push(tag)
+    }
+  }
+}
+
+const onQuickTagRemoved = (log, tagId) => {
+  if (selectedLog.value && selectedLog.value.id === log.id && selectedLog.value.tags) {
+    selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tagId)
+  }
+  const recordInList = logRecords.value.find(r => r.id === log.id)
+  if (recordInList && recordInList.tags) {
+    recordInList.tags = recordInList.tags.filter(t => t.id !== tagId)
+  }
+}
+
 const currentLogIndex = computed(() => {
   if (!selectedLog.value || !logRecords.value.length) return 0
   const idx = logRecords.value.findIndex(r => r.id === selectedLog.value.id)
@@ -1706,6 +1752,7 @@ const onGlobalKeydown = (e) => {
   // 3. 浮层/抽屉层级守卫 (修复 P1-3, N1)：其他弹窗或抽屉打开时不劫持快捷键
   const hasActiveOverlay =
     Boolean(advFilterDrawerRef.value?.visible) ||
+    showQuickTagModal.value ||
     showNewTaskDialog.value ||
     showImportDialog.value ||
     showProgressModal.value ||
@@ -1717,11 +1764,22 @@ const onGlobalKeydown = (e) => {
   // 4. 长按连发拦截 (修复 P1-4)
   if (e.repeat) return
 
-  // 5. 空格键快速预览 QuickLook (仅在沉浸全屏网格下生效，普通模式放行原生滚动，修复 P1-6)
+  // 5. 空格键：悬浮/选中日志快速打标签 (Quick Tag Modal)
+  // [代码预留] 原空格键快速预览 (QuickLook) 触发逻辑已停用并预留如下：
+  // /*
+  // if (e.code === 'Space') {
+  //   if (workbenchUIStore.isImmersive && hoveredLog.value && !showLogDetailModal.value) {
+  //     e.preventDefault()
+  //     quickLookVisible.value = true
+  //     return
+  //   }
+  // }
+  // */
   if (e.code === 'Space') {
-    if (workbenchUIStore.isImmersive && hoveredLog.value && !showLogDetailModal.value) {
+    const target = hoveredLog.value || selectedLog.value
+    if (target && !showQuickTagModal.value && !showLogDetailModal.value) {
       e.preventDefault()
-      quickLookVisible.value = true
+      openQuickTagModal(target)
       return
     }
   }
@@ -1743,9 +1801,12 @@ const onGlobalKeydown = (e) => {
     }
   }
 
-  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出沉浸全屏，修复 P0-2, N9)
+  // 8. Esc 键分层退出 (优先关闭快速打标 -> 其次关闭预览 -> 其次关闭详情弹窗 -> 最后退出沉浸全屏)
   if (e.key === 'Escape') {
-    if (quickLookVisible.value) {
+    if (showQuickTagModal.value) {
+      e.preventDefault()
+      showQuickTagModal.value = false
+    } else if (quickLookVisible.value) {
       e.preventDefault()
       quickLookVisible.value = false
     } else if (showLogDetailModal.value) {
@@ -1761,9 +1822,10 @@ const onGlobalKeydown = (e) => {
 }
 
 const onGlobalKeyup = (e) => {
-  if (e.code === 'Space') {
-    quickLookVisible.value = false
-  }
+  // [代码预留] 原松开空格关闭 QuickLook 逻辑已停用并预留如下：
+  // if (e.code === 'Space') {
+  //   quickLookVisible.value = false
+  // }
 }
 
 
