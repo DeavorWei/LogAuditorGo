@@ -22,6 +22,7 @@ import (
 	"logauditorgo/internal/logparser"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/summary"
 	"logauditorgo/pkg/logger"
 )
 
@@ -273,6 +274,17 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 		norm.KnowledgeID = k.ID
 		norm.MatchTier = tier
 		norm.MatchConfidence = conf
+		if k.Message != "" {
+			captured := summary.CaptureTemplateParams(k.Message, norm.MessageBody)
+			if len(captured) > 0 {
+				if norm.Parameters == nil {
+					norm.Parameters = make(map[string]string, len(captured))
+				}
+				for ck, cv := range captured {
+					norm.Parameters[ck] = cv
+				}
+			}
+		}
 	} else {
 		norm.KnowledgeID = 0
 		norm.MatchTier = matcher.TierUnmatch

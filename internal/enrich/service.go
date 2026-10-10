@@ -1,6 +1,8 @@
 package enrich
 
 import (
+	"encoding/json"
+
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/summary"
 )
@@ -63,17 +65,34 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 		if rec.KnowledgeID > 0 && knowledgeMap != nil {
 			kb = knowledgeMap[rec.KnowledgeID]
 		}
+
+		mergedParamsJSON := rec.ParametersJSON
+		if kb != nil && kb.Message != "" {
+			captured := summary.CaptureTemplateParams(kb.Message, rec.MessageBody)
+			if len(captured) > 0 {
+				if rawParams == nil {
+					rawParams = make(map[string]string, len(captured))
+				}
+				for ck, cv := range captured {
+					rawParams[ck] = cv
+				}
+				if b, err := json.Marshal(rawParams); err == nil {
+					mergedParamsJSON = string(b)
+				}
+			}
+		}
+
 		er.EventSummary = summaryFor(rec, rawParams, kb)
 
 		if kb != nil {
 			er.Knowledge = kb
-			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, kb)
-			er.ContextualizedKB = ContextualizeKnowledge(kb, rec.ParametersJSON)
+			er.EnrichedParameters = EnrichParameters(mergedParamsJSON, kb)
+			er.ContextualizedKB = ContextualizeKnowledge(kb, mergedParamsJSON)
 			if kb.Message != "" {
 				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
 			}
-		} else if rec.ParametersJSON != "" {
-			er.EnrichedParameters = EnrichParameters(rec.ParametersJSON, nil)
+		} else if mergedParamsJSON != "" {
+			er.EnrichedParameters = EnrichParameters(mergedParamsJSON, nil)
 		}
 		enrichedList = append(enrichedList, er)
 	}

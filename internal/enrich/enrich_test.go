@@ -2,6 +2,8 @@ package enrich
 
 import (
 	"testing"
+
+	"logauditorgo/internal/model"
 )
 
 func TestEnrichParametersForComments(t *testing.T) {
@@ -54,5 +56,60 @@ func TestEnrichParametersDigest(t *testing.T) {
 		if !p.Matched || p.Description == "" {
 			t.Errorf("expected %s to have matched description, got matched=%v, desc=%s", p.Name, p.Matched, p.Description)
 		}
+	}
+}
+
+type mockKnowledgeResolver struct {
+	m map[uint]*model.Knowledge
+}
+
+func (r *mockKnowledgeResolver) GetKnowledgeMapByIDs(ids []uint) (map[uint]*model.Knowledge, error) {
+	return r.m, nil
+}
+
+func TestEnrichLogs_TemplateCaptureZeroMigration(t *testing.T) {
+	kb := &model.Knowledge{
+		ID:         1001,
+		Module:     "FWD",
+		Brief:      "SYS_STAT_DROP_LOG",
+		Message:    "FWD/4/SYS_STAT_DROP_LOG: The forwarding engine detects packet loss. (Slot=[slotId], CPU=[cpuId], Drop reason=[dropReason], Drop count=[dropCount])",
+		Parameters: `[{"name":"slotId","description":"槽位号。"},{"name":"cpuId","description":"CPU号。"},{"name":"dropReason","description":"丢弃原因。"},{"name":"dropCount","description":"丢弃数量。"}]`,
+	}
+	resolver := &mockKnowledgeResolver{
+		m: map[uint]*model.Knowledge{1001: kb},
+	}
+	svc := NewService(resolver)
+
+	// 模拟存量日志：未包含捕获的官方参数名，仅有原始盲扫字段
+	records := []model.LogRecord{
+		{
+			ID:             1,
+			KnowledgeID:    1001,
+			MessageBody:    "Service=hppd[10177]0;The forwarding engine detects packet loss. (Slot=0, CPU=0, Drop reason=TTL exceed packets discarded, Drop count=28298)",
+			ParametersJSON: `{"Service":"hppd[10177]0"}`,
+		},
+	}
+
+	enriched := svc.EnrichLogs(records)
+	if len(enriched) != 1 {
+		t.Fatalf("expected 1 enriched record, got %d", len(enriched))
+	}
+
+	rec := enriched[0]
+	// 验证模板渲染
+	expectedRendered := "FWD/4/SYS_STAT_DROP_LOG: The forwarding engine detects packet loss. (Slot=0, CPU=0, Drop reason=TTL exceed packets discarded, Drop count=28298)"
+	if rec.RenderedMessage != expectedRendered {
+		t.Errorf("expected rendered message %q, got %q", expectedRendered, rec.RenderedMessage)
+	}
+
+	// 验证官方参数字典全部匹配成功
+	matchedCount := 0
+	for _, p := range rec.EnrichedParameters {
+		if p.Matched {
+			matchedCount++
+		}
+	}
+	if matchedCount < 4 {
+		t.Errorf("expected at least 4 matched parameters, got %d (%v)", matchedCount, rec.EnrichedParameters)
 	}
 }

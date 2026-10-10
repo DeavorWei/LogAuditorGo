@@ -1207,3 +1207,70 @@ func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
 
 
 
+
+func TestImport_TemplateParamsCapturePersistence(t *testing.T) {
+	logger.Init("debug", "console")
+
+	tmpDir, err := os.MkdirTemp("", "task_template_capture_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	// 插入一条知识库记录
+	kb := model.Knowledge{
+		Module:      "FWD",
+		Severity:    4,
+		Brief:       "SYS_STAT_DROP_LOG",
+		Message:     "FWD/4/SYS_STAT_DROP_LOG: The forwarding engine detects packet loss. (Slot=[slotId], CPU=[cpuId], Drop reason=[dropReason], Drop count=[dropCount])",
+		Description: "丢包统计告警",
+		Parameters:  `[{"name":"slotId","description":"槽位号。"},{"name":"cpuId","description":"CPU号。"},{"name":"dropReason","description":"丢弃原因。"},{"name":"dropCount","description":"丢弃数量。"}]`,
+		ContentHash: "hash_sys_stat_drop_log_test",
+	}
+	if err := globalDB.Create(&kb).Error; err != nil {
+		t.Fatalf("create test knowledge failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, matchEngine, nil)
+
+	taskInfo, err := svc.CreateEmptyTask("Template-Capture-Task", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	logLine := "Oct 9 2026 11:52:11+08:00 Longan-1 %%01FWD/4/SYS_STAT_DROP_LOG(l):Service=hppd[10177]0;The forwarding engine detects packet loss. (Slot=0, CPU=0, Drop reason=TTL exceed packets discarded, Drop count=28298)"
+	item := task.FileUploadItem{
+		FileName: "test.log",
+		Content:  logLine,
+	}
+
+	_, importErr := svc.ImportLogs(taskInfo.TaskID, []task.FileUploadItem{item}, "overwrite")
+	if importErr != nil {
+		t.Fatalf("import logs failed: %v", importErr)
+	}
+
+	// 读取导入的日志记录
+	logs, total, err := svc.QueryTaskLogs(taskInfo.TaskID, model.LogQueryFilter{})
+	if err != nil {
+		t.Fatalf("query logs failed: %v", err)
+	}
+	if total != 1 || len(logs) != 1 {
+		t.Fatalf("expected 1 log record, got total=%d len=%d", total, len(logs))
+	}
+
+	record := logs[0]
+	if !strings.Contains(record.ParametersJSON, "slotId") ||
+		!strings.Contains(record.ParametersJSON, "cpuId") ||
+		!strings.Contains(record.ParametersJSON, "dropReason") ||
+		!strings.Contains(record.ParametersJSON, "dropCount") {
+		t.Errorf("ParametersJSON does not contain expected captured parameters, got: %s", record.ParametersJSON)
+	}
+}
