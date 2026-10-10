@@ -215,6 +215,7 @@
             :task-devices="taskDevices"
             :task-meta="currentTask"
             :selected-log="selectedLog"
+            :latest-log-time="latestLogTimestamp"
             @change="onFilterChange"
             @reset="handleResetFilters"
             @open-tag-manager="openTagManagerModal"
@@ -901,6 +902,17 @@ const totalLogs = ref(0)
 const loadingLogs = ref(false)
 const selectedLog = ref(null)
 const activeTab = ref('knowledge')
+
+// 动态提取当前已拉取日志流的最新有效时间戳，作为动态时间锚点基准 (§6.2)
+const latestLogTimestamp = computed(() => {
+  if (logRecords.value && logRecords.value.length > 0) {
+    for (let i = logRecords.value.length - 1; i >= 0; i--) {
+      const ts = logRecords.value[i]?.timestamp
+      if (ts && !String(ts).startsWith('0001-01-01')) return ts
+    }
+  }
+  return null
+})
 
 const taskDevices = ref([])
 

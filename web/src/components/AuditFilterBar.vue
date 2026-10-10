@@ -294,6 +294,10 @@ const props = defineProps({
   selectedLog: {
     type: Object,
     default: () => null
+  },
+  latestLogTime: {
+    type: [String, Number, Date],
+    default: null
   }
 })
 
@@ -535,13 +539,22 @@ const removeSingleFilter = (key) => {
 
 // 建议 2: 动态数据锚点基准计算引擎 (§6.2)
 const getAnchorTimestamp = () => {
-  // 1. 优先使用 taskMeta 中的最新日志时间戳
-  const metaTime = props.taskMeta?.latest_timestamp || props.taskMeta?.end_time || props.taskMeta?.max_time
+  // 1. 优先使用传入的最新日志时戳或 taskMeta
+  const metaTime = props.latestLogTime ||
+    props.taskMeta?.latest_timestamp ||
+    props.taskMeta?.end_time ||
+    props.taskMeta?.max_time ||
+    props.taskMeta?.finish_time
   if (metaTime) {
     const d = new Date(metaTime)
     if (!isNaN(d.getTime())) return d
   }
-  // 2. 降级为当前系统时间
+  // 2. 局部选中日志时戳兜底
+  if (props.selectedLog && props.selectedLog.timestamp && !String(props.selectedLog.timestamp).startsWith('0001-01-01')) {
+    const d = new Date(props.selectedLog.timestamp)
+    if (!isNaN(d.getTime())) return d
+  }
+  // 3. 系统当前时间兜底
   return new Date()
 }
 
