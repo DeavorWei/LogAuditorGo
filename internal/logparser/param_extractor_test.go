@@ -94,6 +94,42 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 				"lacp": "LACP 1-2",
 			},
 		},
+		{
+			// Audit B3 守卫 1: Trunk1-2 紧随空格与合法键，不能在连字符处误切
+			name:  "trunk with dash numbers must not be cut at hyphen",
+			input: "ifname=Eth-Trunk1-2 slot=3",
+			want: map[string]string{
+				"ifname": "Eth-Trunk1-2",
+				"slot":   "3",
+			},
+		},
+		{
+			// Audit B3 守卫 2: 负数 -3dBm 紧随空格与合法键，负号不能被吃成空值
+			name:  "negative values like dBm must not swallow negative sign",
+			input: "rate=-3dBm level=ok",
+			want: map[string]string{
+				"rate":  "-3dBm",
+				"level": "ok",
+			},
+		},
+		{
+			// Audit B3 守卫 3: 路径中的连字符后跟普通词汇，不误切
+			name:  "path containing hyphens followed by space and key",
+			input: "path=/var/log/app-error code=1",
+			want: map[string]string{
+				"path": "/var/log/app-error",
+				"code": "1",
+			},
+		},
+		{
+			// Audit B3 守卫 4: 带有普通复合短语的值不误切
+			name:  "message with dash and normal space words",
+			input: "msg=error-see log=details",
+			want: map[string]string{
+				"msg": "error-see",
+				"log": "details",
+			},
+		},
 	}
 
 	for _, tc := range cases {

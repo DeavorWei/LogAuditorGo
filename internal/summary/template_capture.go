@@ -1,6 +1,7 @@
 package summary
 
 import (
+	"encoding/json"
 	"regexp"
 	"strings"
 	"unicode"
@@ -77,7 +78,24 @@ func matchTemplateRegex(template, messageBody string) map[string]string {
 	results := make(map[string]string, len(ct.paramNames))
 	for i, name := range ct.paramNames {
 		val := strings.TrimSpace(submatches[i+1])
-		if val != "" {
+		if val == "" || isPurePunctuation(val) {
+			continue
+		}
+		// B10: 占位符同名处理（同键异值合并为 JSON 数组，同值去重）
+		if existing, ok := results[name]; ok && existing != val {
+			var arr []string
+			if err := json.Unmarshal([]byte(existing), &arr); err == nil {
+				arr = append(arr, val)
+				if b, err := json.Marshal(arr); err == nil {
+					results[name] = string(b)
+				}
+			} else {
+				arr = []string{existing, val}
+				if b, err := json.Marshal(arr); err == nil {
+					results[name] = string(b)
+				}
+			}
+		} else {
 			results[name] = val
 		}
 	}
@@ -119,7 +137,7 @@ func compileTemplate(template string) *compiledTemplate {
 	regexBuilder.WriteString("(?i)")
 
 	lastIdx := 0
-	for matchIdx, loc := range matches {
+	for _, loc := range matches {
 		matchStart, matchEnd := loc[0], loc[1]
 		// 提取占位符文本中的名称
 		var paramName string
@@ -139,23 +157,23 @@ func compileTemplate(template string) *compiledTemplate {
 		literalPart := stripped[lastIdx:matchStart]
 		regexBuilder.WriteString(buildLiteralPattern(literalPart))
 
-		// 占位符捕获组的值模式判定：观察后续紧邻字符
-		nextChar := ""
-		if matchEnd < len(stripped) {
-			nextChar = strings.TrimLeft(stripped[matchEnd:], " \t")
-			if len(nextChar) > 0 {
-				nextChar = string([]rune(nextChar)[0])
-			}
-		}
+		// B1 & B12: 判定是否为尾部占位符（后续无有效字面量）
+		isTrailing := strings.TrimSpace(stripped[matchEnd:]) == ""
 
-		// 判断值匹配模式
 		valuePattern := "(.*?)"
-		if nextChar == "," || nextChar == ";" || nextChar == ")" || matchIdx == len(matches)-1 {
-			// 后邻逗号/分号/右括号或结尾，定界匹配，防止空格被吞
-			valuePattern = "([^,;)]*?)"
-		} else if nextChar == "%" {
-			// 后邻百分号紧贴
-			valuePattern = "(.*?)"
+		if isTrailing {
+			// B1: 尾部占位符无后随字面量收口，贪婪捕获非定界符字符到行尾/定界符，避免非贪婪匹配吞空串
+			valuePattern = `([^,;\r\n]+)`
+		} else {
+			nextChar := ""
+			tail := strings.TrimLeft(stripped[matchEnd:], " \t")
+			if len(tail) > 0 {
+				nextChar = string([]rune(tail)[0])
+			}
+			if nextChar == "," || nextChar == ";" || nextChar == ")" {
+				// 后邻逗号/分号/右括号，定界匹配，防止空格被吞
+				valuePattern = "([^,;)]*?)"
+			}
 		}
 
 		// 使用序号命名捕获或纯捕获组，避免占位符含 '-'（如 slot-id）导致 Go 正则编译失败
@@ -194,27 +212,39 @@ func buildLiteralPattern(literal string) string {
 	// 1. 先做正则元字符转义
 	quoted := regexp.QuoteMeta(literal)
 
-	// 2. 将连续空白转义为 \s+
-	// 为避免将用户原意改变，先把连续的空白转为 \s+
+	// 2. B5: 将连续空白转义为 \s+，并智能合并 '=' 前后的空白为 \s*=\s*，杜绝等号前多余 \s+
 	var b strings.Builder
 	runes := []rune(quoted)
 	n := len(runes)
-	inSpace := false
 
-	for i := 0; i < n; i++ {
+	for i := 0; i < n; {
 		r := runes[i]
 		if r == ' ' || r == '\t' || r == '\r' || r == '\n' {
-			if !inSpace {
-				b.WriteString(`\s+`)
-				inSpace = true
+			// 向前看：检查这一串空白后面是否紧跟 '='
+			j := i + 1
+			for j < n && (runes[j] == ' ' || runes[j] == '\t' || runes[j] == '\r' || runes[j] == '\n') {
+				j++
 			}
+			if j < n && runes[j] == '=' {
+				// 空白后紧跟 '='，整体合并为 \s*=\s*，并跳过等号及其后续空白
+				b.WriteString(`\s*=\s*`)
+				i = j + 1
+				for i < n && (runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\r' || runes[i] == '\n') {
+					i++
+				}
+				continue
+			}
+			b.WriteString(`\s+`)
+			i = j
 		} else if r == '=' {
-			inSpace = false
-			// 允许 '=' 前后有任意空白
 			b.WriteString(`\s*=\s*`)
+			i++
+			for i < n && (runes[i] == ' ' || runes[i] == '\t' || runes[i] == '\r' || runes[i] == '\n') {
+				i++
+			}
 		} else {
-			inSpace = false
 			b.WriteRune(r)
+			i++
 		}
 	}
 
@@ -223,8 +253,11 @@ func buildLiteralPattern(literal string) string {
 
 // matchParenBlockPositional 二级策略：提取正文与模板中的括号块按位置及词集映射
 func matchParenBlockPositional(template, messageBody string) map[string]string {
+	// B2: 必须先剥离模板头（如 "FWD/4/hwCpuOver(l):"），否则头部的 "(l)" 会被误当成模板括号块
+	strippedTpl := templateHeaderRegex.ReplaceAllString(template, "")
+
 	// 1. 提取模板最外层括号块
-	tplParenMatch := parenBlockRegex.FindStringSubmatch(template)
+	tplParenMatch := parenBlockRegex.FindStringSubmatch(strippedTpl)
 	if len(tplParenMatch) < 2 {
 		return nil
 	}

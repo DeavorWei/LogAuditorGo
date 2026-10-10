@@ -98,3 +98,46 @@ func TestKnowledgeDrivenSummary(t *testing.T) {
 		t.Errorf("expected raw message fallback, got: %s", summary5)
 	}
 }
+
+func TestExtractCoreContextParams_AuditB9_SnapshotAndRegression(t *testing.T) {
+	// 1. 基线快照测试：dropReason 应作为 reason 角色被最高优先级提取 (priority 0)
+	paramsWithDropReason := map[string]string{
+		"dropReason":     "TTL exceed packets discarded",
+		"InterfaceName1": "GE1/0/1",
+		"IP":             "192.168.1.1",
+		"Slot":           "0",
+		"CPU":            "0",
+	}
+	got := summary.ExtractCoreContextParams(summary.BuildNormalizedMap(paramsWithDropReason))
+	// 期望原因在最前面且不被砍掉，最多保留 3 个最高优先级实体 (原因, 接口, 对端/IP)
+	if !strings.Contains(got, "原因: TTL exceed packets discarded") {
+		t.Errorf("expected dropReason to be recognized as reason in summary, got: %s", got)
+	}
+	if !strings.Contains(got, "接口: GE1/0/1") || !strings.Contains(got, "IP: 192.168.1.1") {
+		t.Errorf("expected 接口 and IP to survive in summary, got: %s", got)
+	}
+
+	// 2. 角色拆分验证：slot 与 cpu 独立，互不串扰
+	normMap := summary.BuildNormalizedMap(map[string]string{
+		"slotId": "3",
+		"cpuId":  "1",
+	})
+	slotVal := summary.ResolveParam(normMap, "slot")
+	cpuVal := summary.ResolveParam(normMap, "cpu")
+	if slotVal != "3" {
+		t.Errorf("expected slotVal=3, got %s", slotVal)
+	}
+	if cpuVal != "1" {
+		t.Errorf("expected cpuVal=1, got %s", cpuVal)
+	}
+	// 验证 slot 角色不会读到 cpuId
+	onlyCpuMap := summary.BuildNormalizedMap(map[string]string{"cpuId": "1"})
+	if v := summary.ResolveParam(onlyCpuMap, "slot"); v != "" {
+		t.Errorf("expected slot role to NOT resolve cpuId, got %s", v)
+	}
+	// 验证 cpu 角色不会读到 slotId
+	onlySlotMap := summary.BuildNormalizedMap(map[string]string{"slotId": "3"})
+	if v := summary.ResolveParam(onlySlotMap, "cpu"); v != "" {
+		t.Errorf("expected cpu role to NOT resolve slotId, got %s", v)
+	}
+}

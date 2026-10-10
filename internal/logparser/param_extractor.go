@@ -188,7 +188,7 @@ func scanValue(s string, i int) (string, int) {
 			}
 		}
 		if c == '-' {
-			if looksLikeKeyAt(s, j+1) {
+			if looksLikeHyphenKeyAt(s, j+1) {
 				return strings.TrimSpace(s[i:j]), j + 1
 			}
 		}
@@ -272,10 +272,51 @@ func isValidKeyWord(w string) bool {
 	return true
 }
 
+// looksLikeHyphenKeyAt 专用于连字符 '-' 处的值切分判定（B3/方案 3.2.2 严格版）
+// 仅当 '-' 后面紧随单个纯标识符且紧跟 '=' 时才切分（如 -alarmID= 或 -clearType=）。
+// 严格要求：首字符必须是字母或汉字（彻底排除负数如 -3dBm），词内禁止包含 '-'（排除 Trunk1-2）和空格。
+func looksLikeHyphenKeyAt(s string, pos int) bool {
+	n := len(s)
+	if pos >= n {
+		return false
+	}
+
+	r, size := utf8.DecodeRuneInString(s[pos:])
+	// 首字符必须是字母或汉字，绝不能是数字或标点
+	if !unicode.IsLetter(r) {
+		return false
+	}
+
+	i := pos + size
+	runes := 1
+	for i < n && runes < maxParamKeyRunes {
+		ch, chSize := utf8.DecodeRuneInString(s[i:])
+		if unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' {
+			i += chSize
+			runes++
+		} else {
+			break
+		}
+	}
+
+	// 词末跳过可能的可选空白（最多空白），必须紧随 '='
+	j := i
+	for j < n && (s[j] == ' ' || s[j] == '\t') {
+		j++
+	}
+	return j < n && s[j] == '='
+}
+
 // scanKeyAt 从 pos 扫描键名（支持单词键及由空格连接的复合键，如 "forwarding type"、"slot id"）
 func scanKeyAt(s string, pos int) (string, int, bool) {
 	n := len(s)
 	if pos >= n {
+		return "", pos, false
+	}
+
+	// 键名的首字符必须是字母或汉字（防标点或数字开头）
+	firstRune, _ := utf8.DecodeRuneInString(s[pos:])
+	if !unicode.IsLetter(firstRune) {
 		return "", pos, false
 	}
 
@@ -291,7 +332,11 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 	}
 	if j < n && s[j] == '=' {
 		key := strings.TrimSpace(w)
-		if key != "" && utf8.RuneCountInString(key) <= maxParamKeyRunes {
+		if key != "" {
+			// B6: 超长截断保留前 64 rune 而非整键丢弃
+			if utf8.RuneCountInString(key) > maxParamKeyRunes {
+				key = string([]rune(key)[:maxParamKeyRunes])
+			}
 			return key, j + 1, true
 		}
 	}
@@ -304,8 +349,8 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 	words := []string{w}
 	curr := next
 
-	// 复合键最多吸收 4 个词（如 "current CPU usage" 为 3 个词）
-	for len(words) < 4 {
+	// B7: 复合键最多吸收 3 个词（如 "current CPU usage" 为 3 个词，避免吸收过长产生句子尾巴键）
+	for len(words) < 3 {
 		j := curr
 		for j < n && (s[j] == ' ' || s[j] == '\t') {
 			j++
@@ -334,7 +379,11 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 		if k < n && s[k] == '=' {
 			key := strings.Join(words, " ")
 			key = strings.TrimSpace(key)
-			if key != "" && utf8.RuneCountInString(key) <= maxParamKeyRunes {
+			if key != "" {
+				// B6: 超长截断保留前 64 rune
+				if utf8.RuneCountInString(key) > maxParamKeyRunes {
+					key = string([]rune(key)[:maxParamKeyRunes])
+				}
 				return key, k + 1, true
 			}
 		}
@@ -343,7 +392,7 @@ func scanKeyAt(s string, pos int) (string, int, bool) {
 	return "", pos, false
 }
 
-// looksLikeKeyAt 判断 s[pos:] 是否为 "Key=" 结构（用于决定空格或连字符是否截断值）
+// looksLikeKeyAt 判断 s[pos:] 是否为 "Key=" 结构（用于决定空格是否截断值）
 func looksLikeKeyAt(s string, pos int) bool {
 	_, _, ok := scanKeyAt(s, pos)
 	return ok

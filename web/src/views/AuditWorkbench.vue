@@ -1282,7 +1282,16 @@ const renderContextualizedHtml = (text) => {
 
   const normalized = normalizeLineBreaks(text)
 
-  const params = parsedParameters.value || {}
+  // 统一数据源：融合 parsedParameters 与后端富化下发的 enrichedParameters（包含官方捕获参数）
+  const params = { ...(parsedParameters.value || {}) }
+  if (Array.isArray(enrichedParameters.value)) {
+    for (const ep of enrichedParameters.value) {
+      if (ep.name && ep.value !== undefined && ep.value !== '') {
+        params[ep.name] = ep.value
+      }
+    }
+  }
+
   const normParams = new Map()
   for (const [k, v] of Object.entries(params)) {
     normParams.set(normalizeParamKey(k), v)

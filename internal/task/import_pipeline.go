@@ -281,6 +281,22 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 					norm.Parameters = make(map[string]string, len(captured))
 				}
 				for ck, cv := range captured {
+					if existing, ok := norm.Parameters[ck]; ok && existing != cv && existing != "" {
+						var arr []string
+						if err := json.Unmarshal([]byte(existing), &arr); err == nil {
+							arr = append(arr, cv)
+							if b, err := json.Marshal(arr); err == nil {
+								norm.Parameters[ck] = string(b)
+								continue
+							}
+						} else {
+							arr = []string{existing, cv}
+							if b, err := json.Marshal(arr); err == nil {
+								norm.Parameters[ck] = string(b)
+								continue
+							}
+						}
+					}
 					norm.Parameters[ck] = cv
 				}
 			}
