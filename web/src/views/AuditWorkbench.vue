@@ -217,7 +217,6 @@
             :latest-log-time="latestLogTimestamp"
             @change="onFilterChange"
             @reset="handleResetFilters"
-            @open-tag-manager="openTagManagerModal"
           />
 
         <!-- 日志流顶部高级筛选操作条 (纵向紧凑化) -->
@@ -319,20 +318,35 @@
               >
                 {{ t.name }}
               </el-tag>
-              <el-dropdown trigger="click" @command="handleAddLogTag">
+              <el-dropdown trigger="click" @command="handleTagDropdownCommand">
                 <el-button size="small" type="primary" plain class="add-log-tag-btn">+ 打标签</el-button>
                 <template #dropdown>
-                  <el-dropdown-menu>
+                  <el-dropdown-menu class="tag-dropdown-menu">
                     <el-dropdown-item
-                      v-for="t in availableTagsForSelected"
+                      v-for="t in tagStore.tags"
                       :key="t.id"
                       :command="t.id"
+                      class="tag-menu-item"
                     >
-                      <span :style="{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: t.color || '#409EFF', marginRight: '6px' }"></span>
-                      {{ t.name }}
+                      <div class="tag-item-row">
+                        <span class="tag-color-dot" :style="{ backgroundColor: t.color || '#409EFF' }"></span>
+                        <span class="tag-name-text">{{ t.name }}</span>
+                        <span v-if="isTagAssignedToSelected(t.id)" class="tag-assigned-badge">已添加</span>
+                        <span
+                          class="tag-delete-x"
+                          title="删除该标签"
+                          @click.stop="handleDeleteTag(t)"
+                        >
+                          <el-icon><Close /></el-icon>
+                        </span>
+                      </div>
                     </el-dropdown-item>
-                    <el-dropdown-item v-if="availableTagsForSelected.length === 0" disabled>
-                      暂无可选新标签
+                    <el-dropdown-item v-if="tagStore.tags.length === 0" disabled>
+                      暂无标签
+                    </el-dropdown-item>
+                    <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
+                      <el-icon color="#409eff"><Plus /></el-icon>
+                      <span style="color: #409eff; font-weight: 500;">+ 新增标签</span>
                     </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -572,6 +586,7 @@
         v-model:visible="showLogDetailModal"
         v-model:contextualize-mode="contextualizeMode"
         :log="selectedLog"
+        :task-id="currentTaskId"
         :current-index="currentLogIndex"
         :total-count="logRecords.length"
         :matched-rca="matchedRCA"
@@ -580,11 +595,11 @@
         :enriched-parameters="enrichedParameters"
         :matched-param-count="matchedParamCount"
         :kb-param-defs="kbParamDefs"
-        :available-tags="availableTagsForSelected"
         @prev="handlePrevLog"
         @next="handleNextLog"
         @add-tag="handleAddLogTag"
         @remove-tag="handleRemoveLogTag"
+        @delete-tag="handleDeleteTag"
       />
 
       <!-- 网格模式下空格键快速预览单例浮层 (建议 3) -->
@@ -762,26 +777,20 @@
       :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
     />
 
-    <!-- 高级筛选抽屉与标签管理弹窗 -->
+    <!-- 高级筛选抽屉 -->
     <AdvancedFilterDrawer
       ref="advFilterDrawerRef"
       :task-id="currentTaskId || ''"
       @apply="fetchLogs"
-    />
-
-    <TagManagerModal
-      ref="tagManagerModalRef"
-      :task-id="currentTaskId || ''"
-      @filter-applied="fetchLogs"
     />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, ArrowDown, Opportunity, Loading } from '@element-plus/icons-vue'
+import { useRoute } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, ArrowDown, Opportunity, Loading, Plus } from '@element-plus/icons-vue'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
@@ -791,7 +800,6 @@ import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import RcaCenter from '@/components/RcaCenter.vue'
 import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
-import TagManagerModal from '@/components/TagManagerModal.vue'
 import AuditFilterBar from '@/components/AuditFilterBar.vue'
 import AuditLogCard from '@/components/AuditLogCard.vue'
 import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
@@ -800,14 +808,13 @@ import { useFilterStore } from '@/stores/filter'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTaskStore } from '@/stores/task'
 import { useTagStore } from '@/stores/tag'
+import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
 import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
 import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
 import { useReanalyze } from '@/composables/useReanalyze'
 
 const route = useRoute()
-// WEB-14: 原文件声明了 `const router = useRouter()` 却从未使用（全文件无 router. 调用），
-// 属于死代码，已移除。需要跳转时请重新引入 useRouter。
 
 const filterStore = useFilterStore()
 const workbenchUIStore = useWorkbenchUIStore()
@@ -817,17 +824,10 @@ const tagStore = useTagStore()
 const rcaEvents = computed(() => taskStore.rcaEvents)
 
 const advFilterDrawerRef = ref(null)
-const tagManagerModalRef = ref(null)
 
 const openAdvFilterDrawer = () => {
   if (advFilterDrawerRef.value) {
     advFilterDrawerRef.value.open()
-  }
-}
-
-const openTagManagerModal = () => {
-  if (tagManagerModalRef.value) {
-    tagManagerModalRef.value.open()
   }
 }
 
@@ -1451,11 +1451,84 @@ const fetchLogs = async () => {
   }
 }
 
-const availableTagsForSelected = computed(() => {
-  if (!selectedLog.value) return []
-  const assignedIds = new Set((selectedLog.value.tags || []).map(t => t.id))
-  return tagStore.tags.filter(t => !assignedIds.has(t.id))
-})
+const isTagAssignedToSelected = (tagId) => {
+  return Boolean(selectedLog.value?.tags && selectedLog.value.tags.some(t => t.id === tagId))
+}
+
+const handleTagDropdownCommand = async (cmd) => {
+  if (cmd === '__create__') {
+    openCreateTagPrompt()
+  } else if (cmd) {
+    const tagId = Number(cmd)
+    if (isTagAssignedToSelected(tagId)) {
+      ElMessage.info('当前日志已包含此标签')
+    } else {
+      await handleAddLogTag(tagId)
+    }
+  }
+}
+
+const handleDeleteTag = (tag) => {
+  ElMessageBox.confirm(
+    `确定要彻底删除标签「${tag.name}」吗？此操作将从所有关联日志中移除该标签。`,
+    '删除标签',
+    {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning',
+      confirmButtonClass: 'el-button--danger'
+    }
+  ).then(async () => {
+    const success = await tagStore.deleteTag(currentTaskId.value, tag.id)
+    if (success) {
+      if (selectedLog.value && selectedLog.value.tags) {
+        selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tag.id)
+      }
+      const recordInList = logRecords.value.find(r => r.id === selectedLog.value?.id)
+      if (recordInList && recordInList.tags) {
+        recordInList.tags = recordInList.tags.filter(t => t.id !== tag.id)
+      }
+      if (filterStore.filters.tagIds.includes(tag.id)) {
+        filterStore.filters.tagIds = filterStore.filters.tagIds.filter(id => id !== tag.id)
+        await fetchLogs()
+      }
+    }
+  }).catch(() => {})
+}
+
+const openCreateTagPrompt = () => {
+  if (!currentTaskId.value) {
+    ElMessage.warning('请先选择审计任务')
+    return
+  }
+  ElMessageBox.prompt('请输入新标签名称 (≤32字符)：', '新增标签', {
+    confirmButtonText: '创建并打标',
+    cancelButtonText: '取消',
+    inputPattern: /\S+/,
+    inputErrorMessage: '标签名称不能为空',
+    inputPlaceholder: '例如: 接口震荡 / 核心设备',
+    maxlength: 32
+  }).then(async ({ value }) => {
+    const tagName = value.trim()
+    if (!tagName) return
+    const exists = tagStore.tags.some(t => t.name.toLowerCase() === tagName.toLowerCase())
+    if (exists) {
+      ElMessage.warning(`已存在同名标签「${tagName}」`)
+      return
+    }
+    const colorIndex = tagStore.tags.length % PREDEFINE_TAG_COLORS.length
+    const color = PREDEFINE_TAG_COLORS[colorIndex] || '#409EFF'
+
+    const newTag = await tagStore.createTag(currentTaskId.value, {
+      name: tagName,
+      color,
+      remark: ''
+    })
+    if (newTag && selectedLog.value) {
+      await handleAddLogTag(newTag.id)
+    }
+  }).catch(() => {})
+}
 
 const handleAddLogTag = async (tagId) => {
   if (!currentTaskId.value || !selectedLog.value || !tagId) return
@@ -1611,7 +1684,6 @@ const onGlobalKeydown = (e) => {
   // 3. 浮层/抽屉层级守卫 (修复 P1-3, N1)：其他弹窗或抽屉打开时不劫持快捷键
   const hasActiveOverlay =
     Boolean(advFilterDrawerRef.value?.visible) ||
-    Boolean(tagManagerModalRef.value?.visible) ||
     showNewTaskDialog.value ||
     showImportDialog.value ||
     showProgressModal.value ||
@@ -2767,5 +2839,80 @@ watch(
   font-size: 12px;
   height: 24px;
   padding: 0 8px;
+}
+
+/* 标签下拉菜单与单项悬浮删除按钮 */
+.tag-menu-item {
+  padding: 5px 10px !important;
+}
+
+.tag-item-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 150px;
+  gap: 6px;
+}
+
+.tag-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tag-name-text {
+  flex: 1;
+  font-size: 12px;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-assigned-badge {
+  font-size: 10px;
+  color: #10b981;
+  background: #ecfdf5;
+  padding: 0 4px;
+  border-radius: 2px;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+
+.tag-delete-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tag-menu-item:hover .tag-delete-x {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tag-delete-x:hover {
+  color: #ffffff;
+  background-color: #ef4444;
+  transform: scale(1.1);
+}
+
+.create-tag-menu-item {
+  color: #409eff;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>

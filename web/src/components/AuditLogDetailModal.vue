@@ -82,20 +82,35 @@
             >
               {{ t.name }}
             </el-tag>
-            <el-dropdown trigger="click" @command="handleAddTag">
+            <el-dropdown trigger="click" @command="handleTagCommand">
               <el-button size="small" type="primary" plain class="add-log-tag-btn">+ 打标签</el-button>
               <template #dropdown>
-                <el-dropdown-menu>
+                <el-dropdown-menu class="tag-dropdown-menu">
                   <el-dropdown-item
-                    v-for="t in availableTags"
+                    v-for="t in tagStore.tags"
                     :key="t.id"
                     :command="t.id"
+                    class="tag-menu-item"
                   >
-                    <span :style="{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', backgroundColor: t.color || '#409EFF', marginRight: '6px' }"></span>
-                    {{ t.name }}
+                    <div class="tag-item-row">
+                      <span class="tag-color-dot" :style="{ backgroundColor: t.color || '#409EFF' }"></span>
+                      <span class="tag-name-text">{{ t.name }}</span>
+                      <span v-if="isTagAssigned(t.id)" class="tag-assigned-badge">已添加</span>
+                      <span
+                        class="tag-delete-x"
+                        title="删除该标签"
+                        @click.stop="handleDeleteTag(t)"
+                      >
+                        <el-icon><Close /></el-icon>
+                      </span>
+                    </div>
                   </el-dropdown-item>
-                  <el-dropdown-item v-if="availableTags.length === 0" disabled>
-                    暂无可选新标签
+                  <el-dropdown-item v-if="tagStore.tags.length === 0" disabled>
+                    暂无标签
+                  </el-dropdown-item>
+                  <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
+                    <el-icon color="#409eff"><Plus /></el-icon>
+                    <span style="color: #409eff; font-weight: 500;">+ 新增标签</span>
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -301,13 +316,20 @@
 <script setup>
 import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { formatTime } from '@/utils/format'
-import { ArrowUp, ArrowDown, Close, InfoFilled } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, Close, InfoFilled, Plus } from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import RcaGraph from '@/components/RcaGraph.vue'
+import { useTagStore } from '@/stores/tag'
+import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
 
 const props = defineProps({
   visible: {
     type: Boolean,
     default: false
+  },
+  taskId: {
+    type: String,
+    default: ''
   },
   log: {
     type: Object,
@@ -361,8 +383,11 @@ const emit = defineEmits([
   'prev',
   'next',
   'add-tag',
-  'remove-tag'
+  'remove-tag',
+  'delete-tag'
 ])
+
+const tagStore = useTagStore()
 
 const activeTab = ref('knowledge')
 const isPrevShaking = ref(false)
@@ -417,8 +442,59 @@ const onDialogClosed = () => {
   emit('update:visible', false)
 }
 
-const handleAddTag = (tagId) => {
-  emit('add-tag', tagId)
+const isTagAssigned = (tagId) => {
+  return Boolean(props.log?.tags && props.log.tags.some(t => t.id === tagId))
+}
+
+const handleTagCommand = (cmd) => {
+  if (cmd === '__create__') {
+    handleCreateTag()
+  } else if (cmd) {
+    const tagId = Number(cmd)
+    if (isTagAssigned(tagId)) {
+      ElMessage.info('当前日志已包含此标签')
+    } else {
+      emit('add-tag', tagId)
+    }
+  }
+}
+
+const handleDeleteTag = (tag) => {
+  emit('delete-tag', tag)
+}
+
+const handleCreateTag = () => {
+  if (!props.taskId) {
+    ElMessage.warning('任务标识缺失')
+    return
+  }
+  ElMessageBox.prompt('请输入新标签名称 (≤32字符)：', '新增标签', {
+    confirmButtonText: '创建并打标',
+    cancelButtonText: '取消',
+    inputPattern: /\S+/,
+    inputErrorMessage: '标签名称不能为空',
+    inputPlaceholder: '例如: 接口震荡 / 核心设备',
+    maxlength: 32
+  }).then(async ({ value }) => {
+    const tagName = value.trim()
+    if (!tagName) return
+    const exists = tagStore.tags.some(t => t.name.toLowerCase() === tagName.toLowerCase())
+    if (exists) {
+      ElMessage.warning(`已存在同名标签「${tagName}」`)
+      return
+    }
+    const colorIndex = tagStore.tags.length % PREDEFINE_TAG_COLORS.length
+    const color = PREDEFINE_TAG_COLORS[colorIndex] || '#409EFF'
+
+    const newTag = await tagStore.createTag(props.taskId, {
+      name: tagName,
+      color,
+      remark: ''
+    })
+    if (newTag && props.log) {
+      emit('add-tag', newTag.id)
+    }
+  }).catch(() => {})
 }
 
 const formatDisplayTime = (record) => {
@@ -877,6 +953,81 @@ onBeforeUnmount(() => {
     border-right: none !important;
     border-bottom: 1px solid #e2e8f0;
   }
+}
+
+/* 标签下拉菜单与单项悬浮删除按钮 */
+.tag-menu-item {
+  padding: 5px 10px !important;
+}
+
+.tag-item-row {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 150px;
+  gap: 6px;
+}
+
+.tag-color-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.tag-name-text {
+  flex: 1;
+  font-size: 12px;
+  color: #334155;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tag-assigned-badge {
+  font-size: 10px;
+  color: #10b981;
+  background: #ecfdf5;
+  padding: 0 4px;
+  border-radius: 2px;
+  line-height: 16px;
+  flex-shrink: 0;
+}
+
+.tag-delete-x {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  color: #94a3b8;
+  font-size: 11px;
+  margin-left: auto;
+  opacity: 0;
+  pointer-events: none;
+  transition: all 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tag-menu-item:hover .tag-delete-x {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.tag-delete-x:hover {
+  color: #ffffff;
+  background-color: #ef4444;
+  transform: scale(1.1);
+}
+
+.create-tag-menu-item {
+  color: #409eff;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>
 

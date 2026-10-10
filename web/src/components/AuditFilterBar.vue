@@ -386,16 +386,6 @@
             {{ filter.tagLogic === 'all' ? '全部' : '任一' }}
           </el-button>
         </el-tooltip>
-        <el-button
-          size="small"
-          type="info"
-          plain
-          title="管理标签"
-          class="tag-manage-btn"
-          @click="$emit('open-tag-manager')"
-        >
-          管理
-        </el-button>
       </div>
     </div>
 
@@ -439,8 +429,7 @@ const props = defineProps({
 
 const emit = defineEmits([
   'change',
-  'reset',
-  'open-tag-manager'
+  'reset'
 ])
 
 const filterStore = useFilterStore()
@@ -1026,11 +1015,6 @@ const computedEndTimeShortcuts = computed(() => {
 }
 
 .tag-logic-btn {
-  padding: 0 8px;
-  flex-shrink: 0;
-}
-
-.tag-manage-btn {
   padding: 0 8px;
   flex-shrink: 0;
 }
