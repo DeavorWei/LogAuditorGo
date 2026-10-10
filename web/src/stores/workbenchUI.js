@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 
 const STORAGE_KEY = 'logauditorgo:workbench-ui'
 
@@ -56,11 +57,24 @@ export const useWorkbenchUIStore = defineStore('workbenchUI', () => {
     ui.value.isZenMode = val
   }
 
+  const toggleBrowserFullscreen = async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen()
+      } else {
+        await document.exitFullscreen()
+      }
+    } catch (e) {
+      ElMessage.info('当前浏览器限制全屏操作，您可直接按键盘 F11 开启物理全屏')
+    }
+  }
+
   return {
     ui,
     toggleFilterCollapse,
     toggleZenMode,
     setFilterCollapsed,
-    setZenMode
+    setZenMode,
+    toggleBrowserFullscreen
   }
 })

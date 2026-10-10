@@ -23,8 +23,6 @@ export const useFilterStore = defineStore('filter', () => {
     timeStart: null,
     timeEnd: null,
     viewMode: 'workbench',
-    // UI-13: RCA 级别筛选，补齐后左栏与右栏联动
-    rcaLevel: '',
     // 排序维度与方向：默认按真实日志发生时间正序 (time_asc)
     sortBy: 'time',
     order: 'asc',

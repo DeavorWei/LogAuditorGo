@@ -903,15 +903,22 @@ const loadingLogs = ref(false)
 const selectedLog = ref(null)
 const activeTab = ref('knowledge')
 
-// 动态提取当前已拉取日志流的最新有效时间戳，作为动态时间锚点基准 (§6.2)
+// 动态提取当前已拉取日志流的最新有效时间戳（取全页最大有效时戳，修复 N2 / §6.2）
 const latestLogTimestamp = computed(() => {
-  if (logRecords.value && logRecords.value.length > 0) {
-    for (let i = logRecords.value.length - 1; i >= 0; i--) {
-      const ts = logRecords.value[i]?.timestamp
-      if (ts && !String(ts).startsWith('0001-01-01')) return ts
+  if (!logRecords.value || logRecords.value.length === 0) return null
+  let maxTs = null
+  let maxTimeMs = -Infinity
+  for (const item of logRecords.value) {
+    const ts = item?.timestamp
+    if (ts && !String(ts).startsWith('0001-01-01')) {
+      const ms = new Date(ts).getTime()
+      if (!isNaN(ms) && ms > maxTimeMs) {
+        maxTimeMs = ms
+        maxTs = ts
+      }
     }
   }
-  return null
+  return maxTs
 })
 
 const taskDevices = ref([])
@@ -1518,11 +1525,14 @@ const currentLogIndex = computed(() => {
   return idx >= 0 ? idx : 0
 })
 
-// 滚动对齐当前选中日志至视口居中 (§4.4.4 / P2)
+// 滚动对齐当前选中日志至视口居中 (§4.4.4 / P2, 修复 N9)
 const scrollSelectedLogIntoView = () => {
   nextTick(() => {
     if (!selectedLog.value) return
-    const el = document.querySelector('.audit-log-card.active')
+    const selector = selectedLog.value.id !== undefined && selectedLog.value.id !== null
+      ? `.audit-log-card[data-log-id="${selectedLog.value.id}"]`
+      : '.audit-log-card.active'
+    const el = document.querySelector(selector) || document.querySelector('.audit-log-card.active')
     if (el) {
       el.scrollIntoView({ block: 'center', behavior: 'smooth' })
     }
@@ -1578,17 +1588,9 @@ const handleLogHoverLeave = (rec) => {
   }
 }
 
-// 浏览器物理全屏联动支持 (修复 P0-4)
-const toggleBrowserFullscreen = async () => {
-  try {
-    if (!document.fullscreenElement) {
-      await document.documentElement.requestFullscreen()
-    } else {
-      await document.exitFullscreen()
-    }
-  } catch (e) {
-    ElMessage.info('当前浏览器限制全屏操作，您可直接按键盘 F11 开启物理全屏')
-  }
+// 浏览器物理全屏联动支持 (收敛至 workbenchUIStore，修复 P0-4, N8)
+const toggleBrowserFullscreen = () => {
+  workbenchUIStore.toggleBrowserFullscreen()
 }
 
 // 全局按键守卫分发引擎 (修复 P0-2, P0-4, P1-3, P1-4, P1-6)
@@ -1601,14 +1603,14 @@ const onGlobalKeydown = (e) => {
   const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
   if (isInput) return
 
-  // 3. 浮层/抽屉层级守卫 (修复 P1-3)：其他弹窗或抽屉打开时不劫持快捷键
+  // 3. 浮层/抽屉层级守卫 (修复 P1-3, N1)：其他弹窗或抽屉打开时不劫持快捷键
   const hasActiveOverlay =
-    showAdvancedDrawer.value ||
-    showTagManageDialog.value ||
+    Boolean(advFilterDrawerRef.value?.visible) ||
+    Boolean(tagManagerModalRef.value?.visible) ||
     showNewTaskDialog.value ||
     showImportDialog.value ||
     showProgressModal.value ||
-    showExportDialog.value ||
+    showPathPicker.value ||
     showFilesDrawer.value ||
     showConflictDialog.value
   if (hasActiveOverlay) return
@@ -1642,7 +1644,7 @@ const onGlobalKeydown = (e) => {
     }
   }
 
-  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出 Zen Mode，修复 P0-2)
+  // 8. Esc 键分层退出 (优先关闭预览 -> 其次关闭详情弹窗 -> 最后退出 Zen Mode，修复 P0-2, N9)
   if (e.key === 'Escape') {
     if (quickLookVisible.value) {
       e.preventDefault()
@@ -1650,7 +1652,7 @@ const onGlobalKeydown = (e) => {
     } else if (showLogDetailModal.value) {
       e.preventDefault()
       showLogDetailModal.value = false
-      scrollSelectedLogIntoView()
+      // watch(showLogDetailModal) 在关闭时已单点触发 scrollSelectedLogIntoView，此处避免重复调用 (修复 N9)
     } else if (workbenchUIStore.ui.isZenMode) {
       e.preventDefault()
       workbenchUIStore.setZenMode(false)

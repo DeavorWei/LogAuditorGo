@@ -372,7 +372,7 @@ const open = () => {
   fetchPreviewCount()
 }
 
-defineExpose({ open })
+defineExpose({ open, visible })
 
 // 添加条件
 const addCondition = () => {

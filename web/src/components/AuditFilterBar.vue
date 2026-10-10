@@ -110,8 +110,8 @@
       </div>
     </div>
 
-    <!-- 折叠内容包裹容器 (由动画控制展开收缩，移除 v-show 保证贝塞尔过渡) -->
-    <div class="filter-collapsible-wrapper">
+    <!-- 折叠内容包裹容器 (由动画控制展开收缩，配合 inert 消除焦点黑洞) -->
+    <div class="filter-collapsible-wrapper" :inert="ui.isFilterCollapsed || undefined">
       <!-- 行 2: 时间与排序三等分行 (需求 1，平均平分列宽) -->
       <div class="filter-row filter-row-time-triplet">
         <el-select
@@ -350,7 +350,6 @@ const handleKeywordChange = () => {
 }
 
 const handleResetFilters = () => {
-  filterStore.resetFilters()
   emit('reset')
 }
 
@@ -367,24 +366,14 @@ const handleToggleZenMode = () => {
   workbenchUIStore.toggleZenMode()
 }
 
-// 浏览器物理全屏联动支持 (建议 4)
+// 浏览器物理全屏联动支持 (收敛至 workbenchUIStore，修复 N8)
 const isBrowserFullscreen = ref(typeof document !== 'undefined' && !!document.fullscreenElement)
 
 const handleFullscreenCommand = async (cmd) => {
   if (cmd === 'zen') {
     handleToggleZenMode()
   } else if (cmd === 'browser_fullscreen') {
-    try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen()
-        isBrowserFullscreen.value = true
-      } else {
-        await document.exitFullscreen()
-        isBrowserFullscreen.value = false
-      }
-    } catch (e) {
-      ElMessage.info('当前浏览器限制全屏操作，您可直接按键盘 F11 开启物理全屏')
-    }
+    await workbenchUIStore.toggleBrowserFullscreen()
   }
 }
 
@@ -537,19 +526,14 @@ const removeSingleFilter = (key) => {
   emit('change')
 }
 
-// 建议 2: 动态数据锚点基准计算引擎 (§6.2)
+// 动态数据锚点基准计算引擎 (§6.2, 修复 N3)
 const getAnchorTimestamp = () => {
-  // 1. 优先使用传入的最新日志时戳或 taskMeta
-  const metaTime = props.latestLogTime ||
-    props.taskMeta?.latest_timestamp ||
-    props.taskMeta?.end_time ||
-    props.taskMeta?.max_time ||
-    props.taskMeta?.finish_time
-  if (metaTime) {
-    const d = new Date(metaTime)
+  // 1. 优先使用传入的当前日志流最大/最新有效时戳 (修复 N2/N3)
+  if (props.latestLogTime) {
+    const d = new Date(props.latestLogTime)
     if (!isNaN(d.getTime())) return d
   }
-  // 2. 局部选中日志时戳兜底
+  // 2. 局部选中日志发生时戳兜底
   if (props.selectedLog && props.selectedLog.timestamp && !String(props.selectedLog.timestamp).startsWith('0001-01-01')) {
     const d = new Date(props.selectedLog.timestamp)
     if (!isNaN(d.getTime())) return d
@@ -752,15 +736,16 @@ const computedEndTimeShortcuts = computed(() => {
   max-width: 260px;
 }
 
-/* 折叠容器与各行 (修复 P1-1) */
+/* 折叠容器与各行 (修复 P1-1, N4, N5) */
 .filter-collapsible-wrapper {
   display: flex;
   flex-direction: column;
   gap: 6px;
-  max-height: 240px;
+  max-height: 120px;
   opacity: 1;
+  visibility: visible;
   overflow: hidden;
-  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin 0.2s ease;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin 0.2s ease, visibility 0s ease 0s;
 }
 
 .audit-filter-bar.is-collapsed .filter-collapsible-wrapper {
@@ -769,6 +754,8 @@ const computedEndTimeShortcuts = computed(() => {
   margin-top: 0;
   margin-bottom: 0;
   pointer-events: none;
+  visibility: hidden;
+  transition: max-height 0.25s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.2s ease, margin 0.2s ease, visibility 0s ease 0.25s;
 }
 
 /* 行 2: 时间与排序三等分行 */

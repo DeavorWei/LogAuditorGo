@@ -28,7 +28,7 @@
             <el-button
               size="small"
               icon="ArrowUp"
-              :class="{ 'is-shaking': isPrevShaking }"
+              :class="{ 'audit-modal-nav-shake': isPrevShaking }"
               :disabled="currentIndex <= 0"
               @click="handlePrev"
             >
@@ -42,7 +42,7 @@
             <el-button
               size="small"
               icon="ArrowDown"
-              :class="{ 'is-shaking': isNextShaking }"
+              :class="{ 'audit-modal-nav-shake': isNextShaking }"
               :disabled="currentIndex >= totalCount - 1"
               @click="handleNext"
             >
@@ -184,9 +184,9 @@
         </div>
 
         <!-- 关联根因预警 -->
-        <div v-if="matchedRCA" class="rca-alert">
+        <div v-if="currentRca" class="rca-alert">
           <div class="rca-alert-title">🚨 关联根因事件预警</div>
-          <div>{{ matchedRCA.root_cause_summary }}</div>
+          <div>{{ currentRca.root_cause_summary }}</div>
         </div>
       </div>
 
@@ -321,10 +321,6 @@ const props = defineProps({
     type: Number,
     default: 0
   },
-  matchedRCA: {
-    type: Object,
-    default: () => null
-  },
   matchedRca: {
     type: Object,
     default: () => null
@@ -372,7 +368,7 @@ const activeTab = ref('knowledge')
 const isPrevShaking = ref(false)
 const isNextShaking = ref(false)
 
-const currentRca = computed(() => props.matchedRca || props.matchedRCA)
+const currentRca = computed(() => props.matchedRca)
 
 const dialogVisible = computed({
   get() {
@@ -853,7 +849,7 @@ onBeforeUnmount(() => {
   40%, 80% { transform: translateX(4px); }
 }
 
-.is-shaking {
+.audit-modal-nav-shake {
   animation: shake-anim 0.35s ease-in-out;
 }
 

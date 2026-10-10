@@ -5,6 +5,7 @@
       sevColorClass,
       { active: active }
     ]"
+    :data-log-id="record.id"
     @click="$emit('click', record)"
     @mouseenter="$emit('hover-enter', record, $event)"
     @mouseleave="$emit('hover-leave', record)"

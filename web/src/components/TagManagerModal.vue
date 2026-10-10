@@ -138,7 +138,7 @@ const open = () => {
   tagStore.fetchTags(props.taskId)
 }
 
-defineExpose({ open })
+defineExpose({ open, visible })
 
 const startEdit = (tag) => {
   isEditing.value = true
