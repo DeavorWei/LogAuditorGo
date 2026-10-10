@@ -55,6 +55,45 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 			input: "BGP session authentication failed with no parameters.",
 			want:  map[string]string{},
 		},
+		{
+			// P1 D1: 复合键吸收正例
+			name:  "composite keys absorption in parenthesis",
+			input: "The CPU usage exceeds the threshold value. (forwarding type=1, slot id=0, CPU id=0, current CPU usage=97, threshold=90)",
+			want: map[string]string{
+				"forwarding type":   "1",
+				"slot id":           "0",
+				"CPU id":            "0",
+				"current CPU usage": "97",
+				"threshold":         "90",
+			},
+		},
+		{
+			// P1 D2: 连字符切分正例
+			name:  "hyphen separated key value pairs",
+			input: "CID=0x0-alarmID=0x00f103b4-clearType=service_resume;",
+			want: map[string]string{
+				"CID":       "0x0",
+				"alarmID":   "0x00f103b4",
+				"clearType": "service_resume",
+			},
+		},
+		{
+			// P1 反例守卫：英文叙述句防误吞为复合键
+			name:  "narrative english sentences must not be swallowed as keys",
+			input: "The CPU usage on SPU 0 CPU 0 is suddenly changed from 98% to 1%, and the change value is 97%, exceeding threshold value 40%.",
+			want:  map[string]string{},
+		},
+		{
+			// P1 反例守卫：正常含连字符的值不误切
+			name:  "values containing hyphens like UUID, date, trunk must not be cut",
+			input: "uuid=123e4567-e89b-12d3-a456-426614174000, date=2026-10-09, port=Eth-Trunk1, lacp=LACP 1-2",
+			want: map[string]string{
+				"uuid": "123e4567-e89b-12d3-a456-426614174000",
+				"date": "2026-10-09",
+				"port": "Eth-Trunk1",
+				"lacp": "LACP 1-2",
+			},
+		},
 	}
 
 	for _, tc := range cases {

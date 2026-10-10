@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -118,42 +119,22 @@ func scanKVPairs(s string, emit func(key, value string)) {
 			return
 		}
 
-		// 读取键名：连续的非分隔、非 '=' 字符（含中文），带长度上限
-		start := i
-		runes := 0
-		for i < n && runes < maxParamKeyRunes {
-			r, size := utf8.DecodeRuneInString(s[i:])
-			if !isKeyChar(r) {
-				break
+		key, nextI, ok := scanKeyAt(s, i)
+		if !ok {
+			// 当前字符不可能构成键名，前进一个 rune 继续
+			_, size := utf8.DecodeRuneInString(s[i:])
+			if size <= 0 {
+				size = 1
 			}
 			i += size
-			runes++
-		}
-		if i == start {
-			// 当前字符不可能构成键名（引号 / 方括号等），跳过继续
-			i++
-			continue
-		}
-		key := strings.TrimSpace(s[start:i])
-		if key == "" {
 			continue
 		}
 
-		// 键名后允许空白，但必须紧跟 '=' 才构成键值对
-		j := i
-		for j < n && (s[j] == ' ' || s[j] == '\t') {
-			j++
-		}
-		if j >= n || s[j] != '=' {
-			continue
-		}
-
-		i = j + 1
-		val, next := scanValue(s, i)
+		val, next := scanValue(s, nextI)
 		emit(key, val)
-		if next <= i {
+		if next <= nextI {
 			// 防御：值扫描未推进时强制前进，杜绝死循环
-			next = i + 1
+			next = nextI + 1
 		}
 		i = next
 	}
@@ -189,7 +170,8 @@ func scanValue(s string, i int) (string, int) {
 	}
 
 	// 普通值：遇到 , ; ( ) 结束；
-	// 遇到空格时，只有"空格之后紧跟 Key= 结构"才截断，否则空格视为值的一部分。
+	// 遇到空格时，只有"空格之后紧跟 Key= 结构"才截断，否则空格视为值的一部分；
+	// 遇到连字符 '-' 时，若其后紧随 Key= 结构（如 -alarmID=...）则切分值。
 	j := i
 	for j < n {
 		c := s[j]
@@ -203,6 +185,11 @@ func scanValue(s string, i int) (string, int) {
 			}
 			if k >= n || s[k] == ',' || s[k] == ';' || s[k] == ')' || looksLikeKeyAt(s, k) {
 				break
+			}
+		}
+		if c == '-' {
+			if looksLikeKeyAt(s, j+1) {
+				return strings.TrimSpace(s[i:j]), j + 1
 			}
 		}
 		j++
@@ -250,11 +237,11 @@ func byteIndex(s string, c byte, from int) int {
 	return -1
 }
 
-// looksLikeKeyAt 判断 s[pos:] 是否为 "Key=" 结构（用于决定空格是否截断值）
-func looksLikeKeyAt(s string, pos int) bool {
+// readWord 从 pos 开始读取一个连续单词（由 isKeyChar 字符组成）
+func readWord(s string, pos int) (string, int) {
 	n := len(s)
 	if pos >= n {
-		return false
+		return "", pos
 	}
 	i := pos
 	runes := 0
@@ -267,13 +254,99 @@ func looksLikeKeyAt(s string, pos int) bool {
 		runes++
 	}
 	if i == pos {
+		return "", pos
+	}
+	return s[pos:i], i
+}
+
+// isValidKeyWord 判定一个单词是否是合法的复合键组成词（由字母、数字、下划线、短横线或汉字组成）
+func isValidKeyWord(w string) bool {
+	if w == "" {
 		return false
 	}
-	j := i
+	for _, r := range w {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' {
+			return false
+		}
+	}
+	return true
+}
+
+// scanKeyAt 从 pos 扫描键名（支持单词键及由空格连接的复合键，如 "forwarding type"、"slot id"）
+func scanKeyAt(s string, pos int) (string, int, bool) {
+	n := len(s)
+	if pos >= n {
+		return "", pos, false
+	}
+
+	w, next := readWord(s, pos)
+	if w == "" {
+		return "", pos, false
+	}
+
+	// 1. 单词键快速路径：若直接紧随 '='，单词键直接成立（保持原有高兼容性）
+	j := next
 	for j < n && (s[j] == ' ' || s[j] == '\t') {
 		j++
 	}
-	return j < n && s[j] == '='
+	if j < n && s[j] == '=' {
+		key := strings.TrimSpace(w)
+		if key != "" && utf8.RuneCountInString(key) <= maxParamKeyRunes {
+			return key, j + 1, true
+		}
+	}
+
+	// 2. 复合键吸收：只有当第一个词为合法词汇且后续有空格时，才尝试吸收后续词
+	if !isValidKeyWord(w) {
+		return "", pos, false
+	}
+
+	words := []string{w}
+	curr := next
+
+	// 复合键最多吸收 4 个词（如 "current CPU usage" 为 3 个词）
+	for len(words) < 4 {
+		j := curr
+		for j < n && (s[j] == ' ' || s[j] == '\t') {
+			j++
+		}
+		if j >= n {
+			return "", pos, false
+		}
+
+		// 复合键词与词之间必须由至少一个空白隔开
+		if j == curr {
+			return "", pos, false
+		}
+
+		nextW, nextPos := readWord(s, j)
+		if nextW == "" || !isValidKeyWord(nextW) {
+			return "", pos, false
+		}
+		words = append(words, nextW)
+		curr = nextPos
+
+		// 检查当前吸收后的词后面是否紧跟 '='
+		k := curr
+		for k < n && (s[k] == ' ' || s[k] == '\t') {
+			k++
+		}
+		if k < n && s[k] == '=' {
+			key := strings.Join(words, " ")
+			key = strings.TrimSpace(key)
+			if key != "" && utf8.RuneCountInString(key) <= maxParamKeyRunes {
+				return key, k + 1, true
+			}
+		}
+	}
+
+	return "", pos, false
+}
+
+// looksLikeKeyAt 判断 s[pos:] 是否为 "Key=" 结构（用于决定空格或连字符是否截断值）
+func looksLikeKeyAt(s string, pos int) bool {
+	_, _, ok := scanKeyAt(s, pos)
+	return ok
 }
 
 // isKeyChar 判定字符是否可以作为键名的一部分。
