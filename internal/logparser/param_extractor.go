@@ -121,17 +121,41 @@ func scanKVPairs(s string, emit func(key, value string)) {
 
 		key, nextI, ok := scanKeyAt(s, i)
 		if !ok {
-			// 当前字符不可能构成键名，前进一个 rune 继续
-			_, size := utf8.DecodeRuneInString(s[i:])
-			if size <= 0 {
-				size = 1
+			// N3: 当前位置未识别为合法键名。
+			// 若当前是一个连续单词（如 1st= 或 _id=），整词跳过到词尾，避免削成残缺键名（如 st= 或 id=）
+			_, nextWord := readWord(s, i)
+			if nextWord > i {
+				// 若该词后紧随 '='（即形如 1st=abc 或 _id=5 的非法键赋值结构），
+				// 一并消费掉 '=' 及非法值，防止该值残留污染后续复合键吸收
+				j := nextWord
+				for j < n && (s[j] == ' ' || s[j] == '\t') {
+					j++
+				}
+				if j < n && s[j] == '=' {
+					_, nextVal := scanValue(s, j+1)
+					if nextVal > i {
+						i = nextVal
+						continue
+					}
+				}
+				i = nextWord
+			} else {
+				// 若不是连续词字符（如分隔符、标点或 '=' 等），前进一个 rune 继续
+				_, size := utf8.DecodeRuneInString(s[i:])
+				if size <= 0 {
+					size = 1
+				}
+				i += size
 			}
-			i += size
 			continue
 		}
 
 		val, next := scanValue(s, nextI)
-		emit(key, val)
+		// B8: 空值键过滤。值 TrimSpace 后为空则跳过 emit，杜绝空白变量卡片污染
+		trimmedVal := strings.TrimSpace(val)
+		if trimmedVal != "" {
+			emit(key, trimmedVal)
+		}
 		if next <= nextI {
 			// 防御：值扫描未推进时强制前进，杜绝死循环
 			next = nextI + 1

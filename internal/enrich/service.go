@@ -2,6 +2,8 @@ package enrich
 
 import (
 	"encoding/json"
+	"sort"
+	"strings"
 
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/summary"
@@ -76,8 +78,8 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 				for ck, cv := range captured {
 					rawParams[ck] = cv
 				}
-				if b, err := json.Marshal(rawParams); err == nil {
-					mergedParamsJSON = string(b)
+				if sJSON, err := marshalSortedParamsJSON(rawParams); err == nil {
+					mergedParamsJSON = sJSON
 				}
 			}
 		}
@@ -97,6 +99,33 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 		enrichedList = append(enrichedList, er)
 	}
 	return enrichedList
+}
+
+// marshalSortedParamsJSON 将参数 map 按键名升序排序后序列化为 JSON，杜绝键序随机造成的 diff 噪音 (Audit B13)
+func marshalSortedParamsJSON(params map[string]string) (string, error) {
+	if len(params) == 0 {
+		return "{}", nil
+	}
+	keys := make([]string, 0, len(params))
+	for k := range params {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteByte('{')
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		kB, _ := json.Marshal(k)
+		vB, _ := json.Marshal(params[k])
+		b.Write(kB)
+		b.WriteByte(':')
+		b.Write(vB)
+	}
+	b.WriteByte('}')
+	return b.String(), nil
 }
 
 func summaryFor(rec model.LogRecord, rawParams map[string]string, kb *model.Knowledge) string {

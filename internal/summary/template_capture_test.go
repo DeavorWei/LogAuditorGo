@@ -185,16 +185,17 @@ func TestCaptureTemplateParams_AuditB1_TrailingPlaceholder(t *testing.T) {
 		}
 	})
 
-	t.Run("Single trailing placeholder in entire template", func(t *testing.T) {
+	t.Run("Degenerate template with single placeholder is rejected", func(t *testing.T) {
+		// N2: 退化模板（如 X/1/Y: [a]）因字面量词数 < 2 直接拒绝捕获，防止整句误吞
 		tpl := "X/1/Y: [a]"
 		body := "hello"
 		res := CaptureTemplateParams(tpl, body)
-		if res["a"] != "hello" {
-			t.Fatalf("expected {a:hello}, got %v", res)
+		if len(res) != 0 {
+			t.Fatalf("expected empty result for degenerate template, got %v", res)
 		}
 	})
 
-	t.Run("Common network state trailing placeholder", func(t *testing.T) {
+	t.Run("Common network state trailing placeholder with sufficient anchor words", func(t *testing.T) {
 		tpl := "BGP/6/STATE: The BGP peer 192.168.1.1 changed to [state]"
 		body := "The BGP peer 192.168.1.1 changed to Down"
 		res := CaptureTemplateParams(tpl, body)
@@ -233,5 +234,35 @@ func TestCaptureTemplateParams_AuditB10_DuplicateParamMerge(t *testing.T) {
 	res := CaptureTemplateParams(tpl, body)
 	if res["port"] != `["1","2"]` {
 		t.Errorf("expected JSON array [\"1\",\"2\"], got %s", res["port"])
+	}
+}
+
+func TestCaptureTemplateParams_AuditN1_HuaweiHeaderWithoutSpace(t *testing.T) {
+	// N1: %%01 与模块名之间无空格的华为头，一级正则与二级位置映射均能正确剥离头并捕获
+	tpl := "%%01FWD/4/hwCpuOver(l): The cpu usage is high. (slot id = [slotId], current cpu usage = [usage])"
+	body := "The cpu usage is high. (slot id=3, current cpu usage=90)"
+	res, prov := CaptureTemplateParamsWithProvenance(tpl, body)
+	if prov != "regex" && prov != "positional" {
+		t.Fatalf("expected capture to succeed, got prov=%s, res=%v", prov, res)
+	}
+	if res["slotId"] != "3" || res["usage"] != "90" {
+		t.Fatalf("expected {slotId:3, usage:90}, got %v", res)
+	}
+}
+
+func TestCaptureTemplateParams_AuditN2_TrailingPlaceholderParenGuard(t *testing.T) {
+	// N2: 尾部占位符排除括号，避免将尾部元数据括号 (Slot=0, CPU=0) 误吞入尾部占位符
+	tpl := "X/1/Y: The forward status is [status]"
+	body := "The forward status is active (Slot=0, CPU=0)"
+	res := CaptureTemplateParams(tpl, body)
+	if res["status"] != "active" {
+		t.Fatalf("expected {status:active}, got %v", res)
+	}
+
+	tpl2 := "X/1/Y: The reason is [reason]"
+	body2 := "The reason is link down"
+	res2 := CaptureTemplateParams(tpl2, body2)
+	if res2["reason"] != "link down" {
+		t.Fatalf("expected {reason:link down}, got %v", res2)
 	}
 }

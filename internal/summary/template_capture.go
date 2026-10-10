@@ -21,7 +21,7 @@ type compiledTemplate struct {
 var templateCaptureCache = cache.NewLRUCache[string, *compiledTemplate](512)
 
 // 知识库模板头部前缀正则，例如 "FWD/4/SESSCTRLEND: " 或 "%%01FWD/4/hwEntityExtCpuUsageNotfication_clear(l): "
-var templateHeaderRegex = regexp.MustCompile(`^(?:%%[0-9a-zA-Z]+\s+)?[\w\-]+/\d+/[\w\-]+(?:\([a-zA-Z]\))?:\s*`)
+var templateHeaderRegex = regexp.MustCompile(`^(?:%%[0-9a-zA-Z]+\s*)?[\w\-]+/\d+/[\w\-]+(?:\([a-zA-Z]\))?:\s*`)
 
 // 占位符模式：[name], <name>, {name}
 var placeholderPattern = regexp.MustCompile(`\[\s*([a-zA-Z0-9_\-]+)\s*\]|<\s*([a-zA-Z0-9_\-]+)\s*>|\{\s*([a-zA-Z0-9_\-]+)\s*\}`)
@@ -132,6 +132,13 @@ func compileTemplate(template string) *compiledTemplate {
 		return &compiledTemplate{valid: false}
 	}
 
+	// N2: 退化模板防护。若整条模板仅有 <= 1 个占位符且字面量词数 < 2，或缺乏字面量锚点，直接拒绝编译捕获，避免整句误吞
+	allLiterals := placeholderPattern.ReplaceAllString(stripped, " ")
+	literalWords := len(strings.Fields(allLiterals))
+	if (len(matches) <= 1 && literalWords < 2) || literalWords == 0 {
+		return &compiledTemplate{valid: false}
+	}
+
 	var paramNames []string
 	var regexBuilder strings.Builder
 	regexBuilder.WriteString("(?i)")
@@ -162,8 +169,9 @@ func compileTemplate(template string) *compiledTemplate {
 
 		valuePattern := "(.*?)"
 		if isTrailing {
-			// B1: 尾部占位符无后随字面量收口，贪婪捕获非定界符字符到行尾/定界符，避免非贪婪匹配吞空串
-			valuePattern = `([^,;\r\n]+)`
+			// B1 & N2: 尾部占位符无后随字面量收口，字符集排除逗号、分号、括号与换行，
+			// 避免吞掉正文尾部的元数据括号如 (Slot=0, CPU=0)
+			valuePattern = `([^,;()\r\n]+)`
 		} else {
 			nextChar := ""
 			tail := strings.TrimLeft(stripped[matchEnd:], " \t")

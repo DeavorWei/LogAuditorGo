@@ -15,11 +15,11 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 		want  map[string]string
 	}{
 		{
-			// PARSE-08: `Key=` 后紧跟空格或下一组键时，旧实现会把下一组键吞成自己的值，
-			// 且空值被整条丢弃，无法表达"该字段为空"这一审计事实。
+			// PARSE-08 & B8: `Key=` 后紧跟空格或下一组键时，旧实现会把下一组键吞成自己的值；
+			// 现实现不吞下一组键，且空值键被过滤（不 emit），杜绝空白变量卡片污染。
 			name:  "empty value must not swallow next pair",
 			input: "Session terminated. (Reason= Code=5)",
-			want:  map[string]string{"Reason": "", "Code": "5"},
+			want:  map[string]string{"Code": "5"},
 		},
 		{
 			// PARSE-08: 括号外的值遇空格即被截断（旧实现只剩 "Port"）。
@@ -128,6 +128,52 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 			want: map[string]string{
 				"msg": "error-see",
 				"log": "details",
+			},
+		},
+		{
+			// Audit N3: 非法首字符数字整词跳过，不削首字符产出残缺键名 st
+			name:  "numeric prefix identifier does not cut first char",
+			input: "1st=abc key=value",
+			want: map[string]string{
+				"key": "value",
+			},
+		},
+		{
+			// Audit N3: 下划线前缀非法键整词跳过，不削首字符产出残缺键名 id
+			name:  "underscore prefix identifier does not cut first char",
+			input: "_id=5 slot=1",
+			want: map[string]string{
+				"slot": "1",
+			},
+		},
+		{
+			// Audit B8: 连续空值键过滤，不生成空字符串键值对污染卡片
+			name:  "empty value pairs are filtered",
+			input: "a= b=1 x= y=2",
+			want: map[string]string{
+				"b": "1",
+				"y": "2",
+			},
+		},
+		{
+			// Audit B14: 分号分隔符覆盖
+			name:  "semicolon separated key value pairs",
+			input: "CID=0x0;alarmID=0x1;state=up",
+			want: map[string]string{
+				"CID":     "0x0",
+				"alarmID": "0x1",
+				"state":   "up",
+			},
+		},
+		{
+			// Audit B14: 混合逗号、分号与空格复合键
+			name:  "mixed delimiters with commas and semicolons",
+			input: "Slot=0, CPU=0; Drop count=100; Extra=none",
+			want: map[string]string{
+				"Slot":       "0",
+				"CPU":        "0",
+				"Drop count": "100",
+				"Extra":      "none",
 			},
 		},
 	}
