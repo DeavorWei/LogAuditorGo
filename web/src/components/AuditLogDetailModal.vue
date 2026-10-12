@@ -157,7 +157,7 @@
             <span>动态提取变量与文档说明 (Parameters & Documentation)</span>
             <span v-if="enrichedParameters.length > 0" class="param-count-badge">
               已提取 {{ enrichedParameters.length }} 个变量
-              <template v-if="matchedParamCount > 0">（已匹配 {{ matchedParamCount }} 条说明）</template>
+              <template v-if="matchedParamCount > 0">（已匹配 {{ matchedParamCount }} 条文档说明）</template>
             </span>
           </div>
           <div v-if="enrichedParameters && enrichedParameters.length > 0" class="param-grid-enhanced">
@@ -179,14 +179,14 @@
             </div>
           </div>
           <div v-else class="empty-hint">
-            {{ log.module === 'COMMENT' ? '此条记录为设备系统注释或元数据，非设备故障告警，无需提取业务动态键值。' : '该日志未解析出结构化动态键值变量' }}
+            {{ log.module === 'COMMENT' ? '此条记录为设备系统注释或文件导出元数据，非设备故障告警，无需提取业务动态键值。' : '该日志未解析出结构化动态键值变量' }}
           </div>
         </div>
 
         <!-- 官方日志消息模板实例化 -->
         <div v-if="log.knowledge && log.knowledge.message" class="section-box">
           <div class="box-title flex-between">
-            <span>📋 官方日志消息模板实例化</span>
+            <span>📋 官方日志消息模板实例化 (Template Instantiation)</span>
             <el-tag size="small" type="success" effect="plain">变量已注入</el-tag>
           </div>
           <div class="template-box">
@@ -208,7 +208,7 @@
       <!-- 右栏 50%: 华为官方知识库与 RCA 因果拓扑 -->
       <div class="modal-pane-right">
         <el-tabs v-model="activeTab" class="custom-tabs">
-          <el-tab-pane label="官方知识与排查步骤" name="knowledge">
+          <el-tab-pane label="官方知识与处理步骤" name="knowledge">
             <div v-if="log.knowledge" class="kb-content">
               <div class="kb-header-card">
                 <div class="kb-header-top">
@@ -285,13 +285,28 @@
                 <span class="comment-kb-title">💡 注释性日志说明 (Comment / Metadata)</span>
               </div>
               <div class="comment-kb-body">
-                <p>网络设备系统注释或日志文件导出元数据行（以 <code>#</code> 开头），非网络故障告警，无需故障排错处置。</p>
+                <div class="comment-item">
+                  <span class="c-label">日志类型：</span>
+                  <span class="c-val">网络设备系统注释或日志文件导出元数据行（以 <code>#</code> 开头）</span>
+                </div>
+                <div class="comment-item">
+                  <span class="c-label">业务影响：</span>
+                  <span class="c-val">非网络故障、协议异常或系统告警事件，对网络业务及设备运行无负面影响</span>
+                </div>
+                <div class="comment-item">
+                  <span class="c-label">典型用途：</span>
+                  <span class="c-val">记录日志生成槽位与运行环境、设备型号及固件版本、防篡改哈希校验（Digest）或文件归档记录，用于日志审计溯源与文件完整性校验</span>
+                </div>
+                <div class="comment-item">
+                  <span class="c-label">运维建议：</span>
+                  <span class="c-val">系统已自动归档为注释性记录，运维人员无需进行故障排查或处置</span>
+                </div>
               </div>
             </div>
 
             <!-- 未命中知识库空态 -->
             <div v-else class="empty-kb">
-              <el-empty description="该日志未命中官方知识库，可在知识库中心使用语义检索获取背景知识" />
+              <el-empty description="该日志未命中官方知识库，可在知识库中心使用语义搜索进行检索" />
             </div>
           </el-tab-pane>
 
@@ -512,9 +527,21 @@ const getSevClass = (sev) => {
   return 'sev-info'
 }
 
-const formatTooltipHtml = (desc) => {
-  if (!desc) return ''
-  return String(desc).replace(/\n/g, '<br/>')
+const escapeHtml = (str) => {
+  if (!str) return ''
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
+}
+
+// 格式化 tooltip 内容，支持换行并限制最大显示范围
+const formatTooltipHtml = (text) => {
+  if (!text) return ''
+  const escaped = escapeHtml(text).replace(/\r?\n/g, '<br/>')
+  return `<div style="max-width: 420px; max-height: 280px; overflow-y: auto; white-space: normal; line-height: 1.6; font-size: 12px; padding: 2px 4px;"><strong>官方文档定义:</strong><br/>${escaped}</div>`
 }
 
 // 键盘无障碍轮播穿梭事件监听
@@ -703,49 +730,65 @@ onBeforeUnmount(() => {
 
 .param-grid-enhanced {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 8px;
 }
-
 .param-card {
   background: #ffffff;
   border: 1px solid #e2e8f0;
   border-radius: 6px;
   padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  transition: all 0.15s ease;
 }
-
+.param-card:hover {
+  border-color: #38bdf8;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+.param-card.has-desc {
+  border-left: 3px solid #0284c7;
+}
 .param-card-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 4px;
+  gap: 6px;
 }
-
 .p-key {
-  font-weight: 600;
-  color: #0f172a;
-  font-size: 12px;
-}
-
-.p-desc-badge {
-  font-size: 10px;
   color: #0284c7;
-  cursor: pointer;
-}
-
-.p-val {
+  font-weight: 600;
   font-size: 12px;
-  color: #16a34a;
+}
+.p-desc-badge {
+  font-size: 11px;
+  color: #0369a1;
+  background: #f0f9ff;
+  padding: 1px 5px;
+  border-radius: 3px;
+  max-width: 130px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: help;
+}
+.p-val-box {
+  background: #f8fafc;
+  padding: 3px 6px;
+  border-radius: 4px;
   font-family: monospace;
+  font-size: 12px;
   word-break: break-all;
 }
-
+.p-val {
+  color: #0f172a;
+  font-weight: 500;
+}
 .p-val-empty {
-  font-size: 11px;
   color: #94a3b8;
   font-style: italic;
 }
-
 .empty-hint {
   font-size: 12px;
   color: #94a3b8;
@@ -753,35 +796,57 @@ onBeforeUnmount(() => {
 }
 
 .template-box {
-  background: #ffffff;
+  background: #f8fafc;
   border: 1px solid #e2e8f0;
-  border-radius: 4px;
-  padding: 8px;
+  border-radius: 6px;
+  padding: 10px 12px;
 }
-
 .template-rendered {
-  font-size: 12px;
+  font-size: 13px;
+  line-height: 1.6;
   color: #1e293b;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
-
+:deep(.inst-param-injected) {
+  background: #dcfce7;
+  color: #15803d;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border-bottom: 1.5px solid #22c55e;
+}
+:deep(.inst-param-placeholder) {
+  background: #f1f5f9;
+  color: #64748b;
+  padding: 1px 4px;
+  border-radius: 3px;
+}
 .template-raw-sub {
   font-size: 11px;
   color: #64748b;
+  border-top: 1px dashed #cbd5e1;
+  padding-top: 6px;
+  word-break: break-all;
+}
+.template-raw-sub .sub-label {
+  margin-right: 6px;
+  font-weight: 500;
+}
+.template-raw-sub code {
+  font-family: monospace;
+  color: #475569;
 }
 
 .rca-alert {
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  color: #991b1b;
-  padding: 10px;
+  background: #fff7ed;
+  border: 1px solid #fdba74;
   border-radius: 6px;
+  padding: 12px;
   font-size: 12px;
-  margin-top: 10px;
+  color: #9a3412;
 }
-
 .rca-alert-title {
-  font-weight: 700;
+  font-weight: bold;
   margin-bottom: 4px;
 }
 
@@ -790,101 +855,189 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
+  padding: 8px 12px;
+  background: #f8fafc;
+  border-radius: 6px;
   margin-bottom: 12px;
+  border: 1px solid #e2e8f0;
 }
-
 .detail-tags-label {
-  font-size: 12px;
-  color: #64748b;
+  font-size: 13px;
   font-weight: 600;
+  color: #475569;
+  flex-shrink: 0;
 }
-
 .detail-tags-list {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+}
+.detail-tag-pill {
+  border: none;
+}
+.add-log-tag-btn {
+  font-size: 12px;
+  height: 24px;
+  padding: 0 8px;
 }
 
 /* 知识库右栏 */
 .kb-content {
   padding: 4px 0;
 }
-
 .kb-header-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: #f0f9ff;
+  border: 1px solid #bae6fd;
   border-radius: 6px;
-  padding: 10px;
-  margin-bottom: 12px;
+  padding: 12px;
+  margin-bottom: 14px;
 }
-
 .kb-header-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
 }
-
 .kb-title {
-  font-size: 14px;
-  font-weight: 700;
-  color: #0f172a;
+  font-size: 16px;
+  font-weight: bold;
+  color: #0369a1;
 }
-
 .kb-meta {
+  margin-top: 6px;
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  font-size: 11px;
   align-items: center;
+  font-size: 11px;
 }
-
-.badge-tier { background: #e0f2fe; color: #0369a1; padding: 1px 6px; border-radius: 3px; }
-.badge-conf { background: #dcfce7; color: #15803d; padding: 1px 6px; border-radius: 3px; }
-.badge-ctx  { color: #059669; font-weight: 500; }
+.badge-tier { background: #e0f2fe; color: #0284c7; padding: 2px 6px; border-radius: 3px; }
+.badge-conf { background: #dcfce7; color: #15803d; padding: 2px 6px; border-radius: 3px; font-weight: bold; }
+.badge-ctx {
+  background: #dcfce7;
+  color: #166534;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
+}
 
 .kb-block {
   margin-bottom: 14px;
 }
-
 .kb-subtitle {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #334155;
   margin-bottom: 6px;
 }
-
 .kb-text {
-  font-size: 12px;
-  line-height: 1.6;
+  font-size: 13px;
   color: #475569;
+  line-height: 1.6;
+  white-space: pre-line;
+  word-break: break-word;
+}
+.action-box {
+  background: #f8fafc;
+  border-left: 3px solid #10b981;
+  padding: 10px 12px;
+  border-radius: 0 4px 4px 0;
+}
+.cause-text {
+  background: #fffbeb;
+  border-left: 3px solid #f59e0b;
+  padding: 8px 12px;
+  border-radius: 0 4px 4px 0;
 }
 
-.dict-pname { font-weight: 600; color: #0284c7; }
-.dict-pval { color: #16a34a; font-family: monospace; }
-.dict-pnone { color: #94a3b8; font-style: italic; }
-.dict-count-tag { font-size: 11px; color: #64748b; }
+.dict-count-tag {
+  font-size: 11px;
+  font-weight: normal;
+  color: #64748b;
+}
+.dict-pname {
+  font-family: monospace;
+  font-weight: 600;
+  color: #0284c7;
+}
+.dict-pval {
+  font-family: monospace;
+  background: #f0fdf4;
+  color: #15803d;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  border: 1px solid #bbf7d0;
+}
+.dict-pnone {
+  color: #94a3b8;
+  font-style: italic;
+}
 
 .comment-kb-card {
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  border-radius: 6px;
-  padding: 14px;
+  margin: 12px 0;
+  padding: 16px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
 }
-
 .comment-kb-header {
   display: flex;
   align-items: center;
   gap: 8px;
+  font-size: 14px;
   font-weight: 600;
-  color: #0284c7;
-  margin-bottom: 8px;
+  color: #0369a1;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px dashed #cbd5e1;
+}
+.comment-kb-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #334155;
+}
+.comment-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.comment-item .c-label {
+  font-weight: 600;
+  color: #0369a1;
+  flex-shrink: 0;
+  min-width: 70px;
+}
+.comment-item .c-val {
+  color: #334155;
+}
+.comment-item code {
+  background: #e0f2fe;
+  color: #0369a1;
+  padding: 1px 4px;
+  border-radius: 3px;
+  font-family: monospace;
 }
 
-.comment-kb-body {
-  font-size: 12px;
-  color: #334155;
+.rca-tab-content {
+  padding: 8px 0;
+}
+.rca-guide {
+  margin-top: 14px;
+  background: #f0fdf4;
+  border: 1px solid #bbf7d0;
+  border-radius: 6px;
+  padding: 12px;
+  font-size: 13px;
+  color: #166534;
   line-height: 1.6;
+}
+.guide-title {
+  font-weight: 600;
+  margin-bottom: 6px;
 }
 
 .empty-kb, .empty-state {
