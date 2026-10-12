@@ -772,12 +772,12 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 <style scoped>
 .audit-filter-bar {
   padding: 4px 8px 3px 8px;
-  border-bottom: 1px solid #e2e8f0;
+  border-bottom: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   gap: 4px;
   flex-shrink: 0;
-  background: #f8fafc;
+  background: var(--bg-subtle);
   transition: all 0.2s ease;
 }
 
@@ -846,12 +846,12 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 }
 
 :deep(.zen-filter-date .el-input__inner) {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .zen-time-separator {
-  color: #94a3b8;
-  font-size: 11px;
+  color: var(--gray-400);
+  font-size: var(--fs-xs);
   user-select: none;
   flex-shrink: 0;
 }
@@ -874,7 +874,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 
 .reset-filter-btn {
   padding: 0 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .fullscreen-btn-group {
@@ -892,10 +892,10 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 .dropdown-tag {
   margin-left: 8px;
   font-size: 10px;
-  color: #3b82f6;
-  background: #eff6ff;
+  color: var(--brand-500);
+  background: var(--brand-50);
   padding: 1px 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
 }
 
 /* 沉浸/全屏模式右上角分栏选择器与操作控件 */
@@ -911,22 +911,22 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   display: flex;
   align-items: center;
   gap: 4px;
-  background: #e2e8f0;
+  background: var(--border-base);
   padding: 2px 4px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .zen-selector-label {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
-  color: #475569;
+  color: var(--gray-600);
   white-space: nowrap;
   padding-left: 2px;
 }
 
 .zen-column-radios :deep(.el-radio-button__inner) {
   padding: 2px 7px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   height: 22px;
   line-height: 16px;
 }
@@ -939,7 +939,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 .exit-zen-btn {
   height: 22px;
   padding: 0 8px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* 过滤胶囊栏 (紧凑化) */
@@ -950,12 +950,12 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   padding: 0;
   margin: 0;
   min-height: 20px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .chips-label {
-  color: #64748b;
-  font-size: 11px;
+  color: var(--gray-500);
+  font-size: var(--fs-xs);
   font-weight: 500;
   flex-shrink: 0;
   line-height: 18px;
@@ -975,7 +975,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   line-height: 16px;
   padding: 0 4px;
   max-width: 150px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 .filter-chip-item :deep(.el-tag__close) {
@@ -1047,7 +1047,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 }
 
 :deep(.triplet-item .el-input__inner) {
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 /* 行 3: 设备/级别/匹配状态属性行 */
@@ -1097,18 +1097,18 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   padding: 0 10px;
   height: 16px;
   line-height: 14px;
-  border-radius: 9999px;
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
-  color: #64748b;
+  border-radius: var(--radius-full);
+  background: var(--gray-100);
+  border: 1px solid var(--gray-300);
+  color: var(--gray-500);
   font-size: 10px;
   transition: all 0.2s ease;
 }
 
 .pill-handle:hover {
-  background: #e2e8f0;
-  border-color: #94a3b8;
-  color: #0284c7;
+  background: var(--border-base);
+  border-color: var(--gray-400);
+  color: var(--brand-600);
   transform: translateY(1px);
 }
 
@@ -1119,10 +1119,10 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 .pill-badge {
   font-size: 9px;
   line-height: 12px;
-  background: #38bdf8;
-  color: #ffffff;
+  background: var(--brand-400);
+  color: var(--gray-0);
   padding: 0 4px;
-  border-radius: 9999px;
+  border-radius: var(--radius-full);
   margin-left: 2px;
   font-weight: 600;
 }

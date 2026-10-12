@@ -118,19 +118,6 @@ onUnmounted(() => {
 </script>
 
 <style>
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
-html, body, #app {
-  height: 100%;
-  width: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  background-color: #f1f5f9;
-  color: #1e293b;
-}
-
 .app-layout {
   height: 100%;
   display: flex;
@@ -138,45 +125,45 @@ html, body, #app {
 }
 
 .app-header {
-  height: 60px;
-  background-color: #1e293b;
+  height: var(--app-header-h);
+  background-color: var(--bg-dark-2);
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-  z-index: 100;
+  padding: 0 var(--sp-10);
+  box-shadow: var(--shadow-2);
+  z-index: var(--z-sticky);
 }
 
 .logo-title {
   display: flex;
   align-items: center;
-  gap: 10px;
-  color: #ffffff;
+  gap: var(--sp-5);
+  color: var(--gray-0);
 }
 
 .logo-icon {
-  font-size: 24px;
-  color: #38bdf8;
+  font-size: var(--fs-4xl);
+  color: var(--brand-400);
 }
 
 .brand-name {
-  font-size: 18px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   letter-spacing: 0.5px;
-  color: #f8fafc;
+  color: var(--text-on-dark);
 }
 
 .brand-sub {
-  font-size: 12px;
-  color: #94a3b8;
-  padding-left: 8px;
-  border-left: 1px solid #475569;
+  font-size: var(--fs-sm);
+  color: var(--text-on-dark-secondary);
+  padding-left: var(--sp-4);
+  border-left: 1px solid var(--gray-600);
 }
 
 .nav-menu {
   border-bottom: none !important;
-  height: 60px;
+  height: var(--app-header-h);
   flex: 1;
   min-width: 0;
 }
@@ -185,7 +172,7 @@ html, body, #app {
 .running-jobs-indicator {
   display: flex;
   align-items: center;
-  margin-left: 16px;
+  margin-left: var(--sp-8);
   flex-shrink: 0;
 }
 
@@ -200,9 +187,9 @@ html, body, #app {
 
 .app-main {
   flex: 1;
-  padding: 16px 20px;
+  padding: var(--app-main-pad-y) var(--app-main-pad-x);
   overflow: auto;
-  transition: padding 0.15s ease;
+  transition: padding var(--dur-base) var(--ease-standard);
 }
 
 .app-main.is-immersive {

@@ -173,9 +173,9 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
   padding: 10px 14px;
   margin-bottom: 12px;
 }
@@ -186,13 +186,13 @@ defineExpose({
 }
 
 .stat-pill {
-  font-size: 13px;
-  color: #475569;
+  font-size: var(--fs-md);
+  color: var(--gray-600);
 }
 
 .stat-pill strong {
-  color: #0f172a;
-  font-size: 14px;
+  color: var(--gray-900);
+  font-size: var(--fs-lg);
 }
 
 .dialog-footer {

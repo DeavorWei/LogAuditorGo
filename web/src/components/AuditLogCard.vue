@@ -119,9 +119,9 @@ const displayTime = computed(() => {
 <style scoped>
 .audit-log-card {
   position: relative;
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  background: var(--gray-0);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
   padding: 8px 10px 8px 14px; /* 左内边距为指示边条留足间隙 */
   cursor: pointer;
   transition: all 0.15s ease;
@@ -142,7 +142,7 @@ const displayTime = computed(() => {
   top: 0;
   bottom: 0;
   width: 4px;
-  background-color: var(--sev-bar-color, #94a3b8);
+  background-color: var(--sev-bar-color, var(--gray-400));
   border-top-left-radius: 6px;
   border-bottom-left-radius: 6px;
   transition: width 0.15s ease;
@@ -154,73 +154,73 @@ const displayTime = computed(() => {
 
 /* 严重度色条色彩变量 */
 .audit-log-card.sev-crit-bar {
-  --sev-bar-color: #ef4444; /* Lv.0 ~ Lv.2 紧急深红 */
+  --sev-bar-color: var(--danger-strong); /* Lv.0 ~ Lv.2 紧急深红 */
 }
 .audit-log-card.sev-err-bar {
-  --sev-bar-color: #f59e0b; /* Lv.3 ~ Lv.4 告警橙黄 */
+  --sev-bar-color: var(--warning-strong); /* Lv.3 ~ Lv.4 告警橙黄 */
 }
 .audit-log-card.sev-warn-bar {
-  --sev-bar-color: #3b82f6; /* Lv.5 ~ Lv.6 通知亮蓝 */
+  --sev-bar-color: var(--brand-500); /* Lv.5 ~ Lv.6 通知亮蓝 */
 }
 .audit-log-card.sev-info-bar {
-  --sev-bar-color: #94a3b8; /* Lv.7 调试信息浅灰 */
+  --sev-bar-color: var(--gray-400); /* Lv.7 调试信息浅灰 */
 }
 .audit-log-card.sev-comment {
-  --sev-bar-color: #64748b; /* 注释行石板灰 */
+  --sev-bar-color: var(--gray-500); /* 注释行石板灰 */
 }
 
 .audit-log-card:hover {
-  border-color: #94a3b8;
-  background: #f8fafc;
+  border-color: var(--gray-400);
+  background: var(--bg-subtle);
   transform: translateY(-1px);
   box-shadow: 0 4px 8px -2px rgba(0, 0, 0, 0.05);
 }
 
 .audit-log-card.active {
-  border-color: #38bdf8;
-  background: #f0f9ff;
-  box-shadow: 0 0 0 1px #38bdf8;
+  border-color: var(--brand-400);
+  background: var(--brand-50);
+  box-shadow: 0 0 0 1px var(--brand-400);
 }
 
 .log-card-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .sev-tag {
   font-size: 10px;
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   font-weight: 700;
   flex-shrink: 0;
 }
-.sev-crit { background: #fee2e2; color: #991b1b; }
-.sev-err  { background: #ffedd5; color: #9a3412; }
-.sev-warn { background: #fef9c3; color: #854d0e; }
-.sev-info { background: #f1f5f9; color: #475569; }
+.sev-crit { background: var(--sev-crit-bg); color: var(--danger-text); }
+.sev-err  { background: var(--sev-err-bg); color: var(--sev-err-text); }
+.sev-warn { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
+.sev-info { background: var(--gray-100); color: var(--gray-600); }
 
 .log-seq {
   font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: #64748b;
-  background: #f1f5f9;
+  color: var(--gray-500);
+  background: var(--gray-100);
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   font-weight: 600;
   flex-shrink: 0;
   line-height: 14px;
 }
 
 .audit-log-card.active .log-seq {
-  color: #0369a1;
-  background: #e0f2fe;
+  color: var(--brand-700);
+  background: var(--brand-100);
 }
 
 .log-mod {
   font-weight: 600;
-  color: #0f172a;
+  color: var(--gray-900);
   flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -228,27 +228,27 @@ const displayTime = computed(() => {
 }
 
 .match-tag {
-  background: #dcfce7;
-  color: #166534;
+  background: var(--inst-injected-bg);
+  color: var(--action-text);
   font-size: 10px;
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 
 .comment-tag {
-  background: #f1f5f9;
-  color: #475569;
-  border: 1px solid #cbd5e1;
+  background: var(--gray-100);
+  color: var(--gray-600);
+  border: 1px solid var(--gray-300);
   font-size: 10px;
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
   flex-shrink: 0;
 }
 
 .log-card-msg {
-  font-size: 11px;
-  color: #475569;
+  font-size: var(--fs-xs);
+  color: var(--gray-600);
   margin: 3px 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -262,7 +262,7 @@ const displayTime = computed(() => {
 
 .log-card-footer {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--gray-400);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -272,7 +272,7 @@ const displayTime = computed(() => {
 
 .log-time {
   font-family: monospace;
-  color: #64748b;
+  color: var(--gray-500);
   flex-shrink: 0;
 }
 
@@ -284,10 +284,10 @@ const displayTime = computed(() => {
 }
 
 .host-tag {
-  background: #e0f2fe;
-  color: #0369a1;
+  background: var(--brand-100);
+  color: var(--brand-700);
   padding: 0 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   max-width: 90px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -295,10 +295,10 @@ const displayTime = computed(() => {
 }
 
 .file-tag {
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--gray-100);
+  color: var(--gray-600);
   padding: 0 4px;
-  border-radius: 2px;
+  border-radius: var(--radius-xs);
   max-width: 110px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -306,10 +306,10 @@ const displayTime = computed(() => {
 }
 
 .slot-tag {
-  background: #e2e8f0;
+  background: var(--border-base);
   padding: 0 4px;
-  border-radius: 2px;
-  color: #475569;
+  border-radius: var(--radius-xs);
+  color: var(--gray-600);
 }
 
 .log-card-tags {

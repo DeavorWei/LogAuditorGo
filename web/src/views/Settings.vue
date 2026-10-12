@@ -356,13 +356,13 @@ onMounted(() => {
 }
 
 .stat-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   border-left: 4px solid transparent;
 }
-.stat-blue { border-left-color: #3b82f6; }
-.stat-emerald { border-left-color: #10b981; }
-.stat-amber { border-left-color: #f59e0b; }
-.stat-purple { border-left-color: #8b5cf6; }
+.stat-blue { border-left-color: var(--brand-500); }
+.stat-emerald { border-left-color: var(--success-strong); }
+.stat-amber { border-left-color: var(--warning-strong); }
+.stat-purple { border-left-color: var(--purple-500); }
 
 :deep(.el-card__body) {
   display: flex;
@@ -376,27 +376,27 @@ onMounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #64748b;
+  color: var(--gray-500);
 }
 
 .stat-val {
-  font-size: 22px;
+  font-size: var(--fs-3xl);
   font-weight: 700;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 .stat-unit {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: normal;
-  color: #64748b;
+  color: var(--gray-500);
 }
 .stat-title {
-  font-size: 13px;
-  color: #64748b;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
   margin-top: 4px;
 }
 
 .config-card, .files-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 .card-header {
@@ -419,20 +419,20 @@ onMounted(() => {
 }
 
 .rule-tip {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  color: #475569;
+  color: var(--gray-600);
 }
 .rule-tip code {
-  background-color: #e2e8f0;
+  background-color: var(--border-base);
   padding: 2px 4px;
-  border-radius: 4px;
-  color: #0f172a;
+  border-radius: var(--radius-sm);
+  color: var(--gray-900);
 }
 
 .form-hint {
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   margin-top: 4px;
 }
 
@@ -441,7 +441,7 @@ onMounted(() => {
   gap: 12px;
   margin-top: 24px;
   padding-top: 16px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--gray-100);
 }
 
 .file-name-cell {
@@ -449,32 +449,32 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-family: monospace;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .icon-active {
-  color: #10b981;
-  font-size: 16px;
+  color: var(--success-strong);
+  font-size: var(--fs-xl);
 }
 
 .icon-archive {
-  color: #64748b;
-  font-size: 16px;
+  color: var(--gray-500);
+  font-size: var(--fs-xl);
 }
 
 .active-file-text {
   font-weight: 600;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 
 .file-size-tag {
   font-family: monospace;
   font-weight: 500;
-  color: #334155;
+  color: var(--gray-700);
 }
 
 .time-text {
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
 }
 </style>

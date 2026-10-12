@@ -775,7 +775,7 @@ const confirmBatchUntag = async () => {
   margin-bottom: 4px;
 }
 .alert-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
 }
 .base-tags {
@@ -785,20 +785,20 @@ const confirmBatchUntag = async () => {
   gap: 6px;
 }
 .base-tag-item {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .logic-bar {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-subtle));
   padding: 8px 12px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
 }
 .logic-label {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 500;
-  color: var(--el-text-color-regular, #606266);
+  color: var(--el-text-color-regular, var(--gray-600));
 }
 .conditions-list {
   display: flex;
@@ -809,19 +809,19 @@ const confirmBatchUntag = async () => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: #fff;
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  background: var(--gray-0);
+  border: 1px solid var(--el-border-color-lighter, var(--border-light));
   padding: 8px 10px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   transition: border-color 0.2s;
 }
 .condition-row:hover {
-  border-color: var(--el-color-primary-light-5, #a0cfff);
+  border-color: var(--el-color-primary-light-5, var(--brand-300));
 }
 .row-index {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #909399;
+  color: var(--gray-500);
   line-height: 32px;
   width: 20px;
 }
@@ -839,8 +839,8 @@ const confirmBatchUntag = async () => {
   flex-direction: column;
 }
 .regex-error-tip {
-  font-size: 11px;
-  color: #f56c6c;
+  font-size: var(--fs-xs);
+  color: var(--danger-strong);
   margin-top: 3px;
   line-height: 1.2;
 }
@@ -851,41 +851,41 @@ const confirmBatchUntag = async () => {
 .empty-conditions {
   text-align: center;
   padding: 24px 0;
-  color: #909399;
-  font-size: 13px;
-  border: 1px dashed var(--el-border-color, #dcdfe6);
-  border-radius: 6px;
+  color: var(--gray-500);
+  font-size: var(--fs-md);
+  border: 1px dashed var(--el-border-color, var(--gray-300));
+  border-radius: var(--radius-md);
 }
 .add-bar {
   display: flex;
   justify-content: flex-start;
 }
 .preview-box {
-  background: #fdf6ec;
-  border: 1px solid #faecd8;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bg);
   padding: 12px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   margin-top: 8px;
 }
 .preview-info {
-  font-size: 14px;
-  color: #e6a23c;
+  font-size: var(--fs-lg);
+  color: var(--warning-strong);
   display: flex;
   align-items: center;
 }
 .preview-count {
-  font-size: 16px;
-  color: #f56c6c;
+  font-size: var(--fs-xl);
+  color: var(--danger-strong);
   margin-left: 4px;
 }
 .preview-loading {
-  font-size: 13px;
-  color: #909399;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
   margin-left: 6px;
 }
 .preview-hint {
-  font-size: 12px;
-  color: #909399;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   margin-top: 4px;
 }
 .drawer-footer {
@@ -895,8 +895,8 @@ const confirmBatchUntag = async () => {
   width: 100%;
 }
 .batch-tag-tip {
-  font-size: 13px;
-  color: #606266;
+  font-size: var(--fs-md);
+  color: var(--gray-600);
   margin-bottom: 12px;
 }
 </style>

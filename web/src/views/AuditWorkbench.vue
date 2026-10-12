@@ -384,8 +384,8 @@ onMounted(async () => {
   height: calc(100vh - 92px);
   display: flex;
   flex-direction: column;
-  background: #fff;
-  border-radius: 8px;
+  background: var(--gray-0);
+  border-radius: var(--radius-lg);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   overflow: hidden;
   transition: all 0.15s ease;

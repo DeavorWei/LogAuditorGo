@@ -230,8 +230,8 @@ defineExpose({
 <style scoped>
 .workbench-header {
   height: 52px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-base);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -246,11 +246,11 @@ defineExpose({
 }
 
 .task-badge {
-  font-size: 12px;
-  color: #64748b;
-  background: #e2e8f0;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
+  background: var(--border-base);
   padding: 3px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .header-right {

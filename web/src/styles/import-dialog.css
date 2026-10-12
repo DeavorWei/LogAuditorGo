@@ -1,53 +1,22 @@
 /*
  * 导入类弹窗共享样式（HDX 文档导入 / 任务日志导入 / 设备日志导入）。
- * 以「导入 HDX 文档」弹窗为视觉基准抽取的设计令牌与公共类，
- * 保证三个导入入口的弹窗结构、配色、间距、交互反馈完全一致。
+ * 消费 tokens.css 设计令牌，保留全部 imp-* 类名与结构。
  * 该文件为全局样式，在 main.js 中统一引入。
  */
-
-:root {
-  /* 主色与功能色（对齐 element-plus primary #0284c7 体系） */
-  --imp-primary: #0284c7;
-  --imp-primary-dark: #0369a1;
-  --imp-primary-bg: #f0f9ff;
-  --imp-primary-border: #bae6fd;
-  --imp-success: #16a34a;
-  --imp-success-bg: #f0fdf4;
-  --imp-success-border: #bbf7d0;
-  --imp-warning: #d97706;
-  --imp-warning-bg: #fffbeb;
-  --imp-warning-border: #fde68a;
-  --imp-danger: #ef4444;
-  --imp-danger-bg: #fef2f2;
-  --imp-danger-border: #fecaca;
-
-  /* 中性色 */
-  --imp-text: #1e293b;
-  --imp-text-secondary: #475569;
-  --imp-text-muted: #64748b;
-  --imp-text-faint: #94a3b8;
-  --imp-border: #e2e8f0;
-  --imp-bg: #f8fafc;
-  --imp-bg-hover: #f1f5f9;
-  --imp-bg-selected: #e0f2fe;
-
-  --imp-radius: 8px;
-  --imp-radius-sm: 6px;
-}
 
 /* ---------- 弹窗主体骨架 ---------- */
 
 .imp-dialog-content {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-7);
 }
 
 /* 顶部来源选择行：输入框 + 主操作 + 次操作 */
 .imp-source-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-6);
 }
 
 .imp-source-row .el-input {
@@ -59,25 +28,25 @@
 .imp-tip-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--imp-text-secondary);
-  background: var(--imp-primary-bg);
-  border: 1px solid var(--imp-primary-border);
-  border-radius: var(--imp-radius-sm);
-  padding: 8px 14px;
-  line-height: 1.6;
+  gap: var(--sp-4);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius-md);
+  padding: var(--sp-4) var(--sp-7);
+  line-height: var(--lh-normal);
 }
 
 .imp-tip-bar strong {
-  color: var(--imp-primary-dark);
+  color: var(--brand-700);
 }
 
 /* 结果/内容容器 */
 .imp-result-container {
-  border: 1px solid var(--imp-border);
-  border-radius: var(--imp-radius);
-  background: var(--imp-bg);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
   min-height: 380px;
   display: flex;
   flex-direction: column;
@@ -90,64 +59,64 @@
   justify-content: space-between;
   align-items: center;
   flex-wrap: wrap;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--imp-text-secondary);
-  padding: 2px 4px;
+  gap: var(--sp-4);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  padding: var(--sp-1) var(--sp-2);
 }
 
 .imp-summary-left {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  gap: 10px;
+  gap: var(--sp-5);
 }
 
 .imp-summary-left strong {
-  color: var(--imp-primary);
+  color: var(--brand-600);
   font-weight: 600;
 }
 
 .imp-count-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
+  font-size: var(--fs-xs);
+  padding: var(--sp-1) var(--sp-4);
+  border-radius: var(--radius-sm);
   font-weight: 500;
   white-space: nowrap;
 }
 
 .imp-count-badge.is-dir {
-  background: var(--imp-warning-bg);
-  border: 1px solid var(--imp-warning-border);
-  color: #92400e;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning-text);
 }
 
 .imp-count-badge.is-file {
-  background: var(--imp-primary-bg);
-  border: 1px solid var(--imp-primary-border);
-  color: var(--imp-primary-dark);
+  background: var(--brand-50);
+  border: 1px solid var(--brand-200);
+  color: var(--brand-700);
 }
 
 .imp-count-badge.is-selected {
-  background: var(--imp-success-bg);
-  border: 1px solid var(--imp-success-border);
-  color: #15803d;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success-text);
 }
 
 /* 扩展名提示 chips（如 .log .txt .syslog） */
 .imp-ext-chips {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
 .imp-ext-chip {
-  font-size: 11px;
-  font-family: monospace;
-  background: var(--imp-bg-hover);
-  color: var(--imp-text-secondary);
-  border-radius: 3px;
+  font-size: var(--fs-xs);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-radius: var(--radius-xs);
   padding: 1px 5px;
   white-space: nowrap;
 }
@@ -159,32 +128,32 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 20px;
+  padding: 60px var(--sp-9);
   text-align: center;
   flex: 1;
 }
 
 .imp-state-title {
-  font-size: 15px;
+  font-size: var(--fs-xl);
   font-weight: 600;
-  color: var(--imp-text);
-  margin-top: 14px;
+  color: var(--text-primary);
+  margin-top: var(--sp-7);
 }
 
 .imp-state-desc {
-  font-size: 13px;
-  color: var(--imp-text-muted);
-  margin-top: 6px;
+  font-size: var(--fs-md);
+  color: var(--text-placeholder);
+  margin-top: var(--sp-3);
   max-width: 480px;
-  line-height: 1.6;
+  line-height: var(--lh-normal);
 }
 
 /* ---------- 已选清单 ---------- */
 
 .imp-selected-box {
-  border: 1px solid var(--imp-border);
-  border-radius: var(--imp-radius-sm);
-  background: #fff;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  background: var(--bg-surface);
   overflow: hidden;
 }
 
@@ -203,15 +172,15 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 13px;
-  color: var(--imp-text-secondary);
-  padding: 8px 12px;
-  background: var(--imp-bg);
-  border-bottom: 1px solid var(--imp-border);
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+  padding: var(--sp-4) var(--sp-6);
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-base);
 }
 
 .imp-selected-header strong {
-  color: var(--imp-primary);
+  color: var(--brand-600);
 }
 
 .imp-selected-list {
@@ -224,10 +193,10 @@
 .imp-selected-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 7px 12px;
-  border-bottom: 1px solid var(--imp-border);
-  font-size: 12px;
+  gap: var(--sp-5);
+  padding: 7px var(--sp-6);
+  border-bottom: 1px solid var(--border-base);
+  font-size: var(--fs-sm);
 }
 
 .imp-selected-item:last-child {
@@ -235,32 +204,32 @@
 }
 
 .imp-selected-item:hover {
-  background: var(--imp-bg);
+  background: var(--bg-subtle);
 }
 
 .imp-selected-type {
   flex-shrink: 0;
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 3px;
+  font-size: var(--fs-xs);
+  padding: 1px var(--sp-3);
+  border-radius: var(--radius-xs);
   white-space: nowrap;
 }
 
 .imp-selected-type.is-dir {
-  background: var(--imp-warning-bg);
-  border: 1px solid var(--imp-warning-border);
-  color: #92400e;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning-text);
 }
 
 .imp-selected-type.is-file {
-  background: var(--imp-primary-bg);
-  border: 1px solid var(--imp-primary-border);
-  color: var(--imp-primary-dark);
+  background: var(--brand-50);
+  border: 1px solid var(--brand-200);
+  color: var(--brand-700);
 }
 
 .imp-selected-name {
   font-weight: 600;
-  color: var(--imp-text);
+  color: var(--text-primary);
   max-width: 220px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -274,30 +243,30 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--imp-text-muted);
-  font-family: monospace;
+  color: var(--text-placeholder);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
 }
 
 .imp-selected-size {
   flex-shrink: 0;
-  color: var(--imp-text-faint);
+  color: var(--text-disabled);
 }
 
 .imp-selected-remove {
   flex-shrink: 0;
   cursor: pointer;
-  color: var(--imp-text-faint);
-  transition: color 0.2s;
+  color: var(--text-disabled);
+  transition: color var(--dur-base) var(--ease-standard);
 }
 
 .imp-selected-remove:hover {
-  color: var(--imp-danger);
+  color: var(--danger-strong);
 }
 
 /* ---------- 结果表格 ---------- */
 
 .imp-table {
-  border-radius: var(--imp-radius-sm);
+  border-radius: var(--radius-md);
   overflow: hidden;
-  background: #fff;
+  background: var(--bg-surface);
 }

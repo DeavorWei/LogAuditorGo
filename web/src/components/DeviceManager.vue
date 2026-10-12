@@ -727,21 +727,21 @@ defineExpose({
   flex-wrap: wrap;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px dashed #cbd5e1;
-  border-radius: 6px;
-  background: #f8fafc;
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius-md);
+  background: var(--bg-subtle);
 }
 
 .conflict-label {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  color: #334155;
+  color: var(--gray-700);
   flex-shrink: 0;
 }
 
 .conflict-hint {
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   flex: 1;
   min-width: 200px;
 }
@@ -749,8 +749,8 @@ defineExpose({
 .text-meta-row {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   margin-top: 4px;
 }
 
@@ -763,10 +763,10 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #fff;
+  background: var(--gray-0);
   padding: 12px 16px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-base);
 }
 .bar-left {
   display: flex;
@@ -774,11 +774,11 @@ defineExpose({
   gap: 12px;
 }
 .tip-text {
-  font-size: 13px;
-  color: #64748b;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
 }
 .table-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 .device-name-cell {
   display: flex;
@@ -793,10 +793,10 @@ defineExpose({
 }
 .code-text {
   font-family: monospace;
-  background: #f1f5f9;
+  background: var(--gray-100);
   padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
 }
 .empty-guide {
   padding: 40px;
@@ -804,7 +804,7 @@ defineExpose({
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  color: #64748b;
+  color: var(--gray-500);
 }
 .empty-actions {
   display: flex;

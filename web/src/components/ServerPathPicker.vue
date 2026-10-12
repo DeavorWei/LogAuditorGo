@@ -856,9 +856,9 @@ watch(() => props.visible, v => {
   gap: 2px;
   height: 32px;
   padding: 0 8px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  background: var(--gray-0);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
   overflow: hidden;
   white-space: nowrap;
 }
@@ -869,9 +869,9 @@ watch(() => props.visible, v => {
   max-width: 180px;
   min-width: 0;
   padding: 2px 6px;
-  border-radius: 4px;
-  font-size: 12px;
-  color: #334155;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  color: var(--gray-700);
   cursor: pointer;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -885,31 +885,31 @@ watch(() => props.visible, v => {
 }
 
 .pathbar-seg:hover {
-  background: #f1f5f9;
-  color: #0284c7;
+  background: var(--gray-100);
+  color: var(--brand-600);
 }
 
 .pathbar-seg.is-root {
   font-weight: 600;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 
 .pathbar-seg.is-current {
-  background: #e0f2fe;
-  color: #0369a1;
+  background: var(--brand-100);
+  color: var(--brand-700);
   font-weight: 600;
 }
 
 .pathbar-seg.is-ellipsis {
-  color: #64748b;
+  color: var(--gray-500);
   letter-spacing: 1px;
   padding: 2px 8px;
 }
 
 .pathbar-fold-tip {
   margin-left: auto;
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
   flex-shrink: 0;
   padding-left: 8px;
 }
@@ -932,15 +932,15 @@ watch(() => props.visible, v => {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  font-size: 12px;
-  color: #334155;
-  border-radius: 4px;
+  font-size: var(--fs-sm);
+  color: var(--gray-700);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 
 .pathbar-pop-item:hover {
-  background: #f1f5f9;
-  color: #0284c7;
+  background: var(--gray-100);
+  color: var(--brand-600);
 }
 
 .pathbar-pop-item span {
@@ -960,8 +960,8 @@ watch(() => props.visible, v => {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
@@ -970,11 +970,11 @@ watch(() => props.visible, v => {
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  font-size: 12px;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-base);
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #475569;
+  color: var(--gray-600);
 }
 
 .fav-list {
@@ -984,12 +984,12 @@ watch(() => props.visible, v => {
 }
 
 .fav-list.is-recent {
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-base);
 }
 
 .recent-icon {
-  color: #0284c7;
-  font-size: 13px;
+  color: var(--brand-600);
+  font-size: var(--fs-md);
 }
 
 .fav-item {
@@ -998,17 +998,17 @@ watch(() => props.visible, v => {
   gap: 6px;
   padding: 4px 10px;
   cursor: pointer;
-  font-size: 12px;
-  color: #334155;
+  font-size: var(--fs-sm);
+  color: var(--gray-700);
 }
 
 .fav-item:hover {
-  background: #f1f5f9;
+  background: var(--gray-100);
 }
 
 .fav-icon {
-  color: #f59e0b;
-  font-size: 13px;
+  color: var(--warning-strong);
+  font-size: var(--fs-md);
 }
 
 .fav-name {
@@ -1019,24 +1019,24 @@ watch(() => props.visible, v => {
 }
 
 .fav-del {
-  color: #94a3b8;
+  color: var(--gray-400);
 }
 
 .fav-del:hover {
-  color: #ef4444;
+  color: var(--danger-strong);
 }
 
 .side-empty {
   padding: 10px;
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
 }
 
 .tree-box {
   flex: 1;
   overflow: auto;
   padding: 4px 0;
-  border-top: 1px solid #e2e8f0;
+  border-top: 1px solid var(--border-base);
 }
 
 .picker-main {
@@ -1063,11 +1063,11 @@ watch(() => props.visible, v => {
   flex-wrap: wrap;
   gap: 10px;
   padding: 6px 10px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  font-size: 12px;
-  color: #475569;
+  background: var(--gray-0);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
+  font-size: var(--fs-sm);
+  color: var(--gray-600);
 }
 
 .main-stats-item {
@@ -1079,15 +1079,15 @@ watch(() => props.visible, v => {
 }
 
 .main-stats-item.is-dir {
-  color: #92400e;
+  color: var(--warning-text);
 }
 
 .main-stats-item.is-file {
-  color: #0369a1;
+  color: var(--brand-700);
 }
 
 .main-stats-hint {
-  color: #94a3b8;
+  color: var(--gray-400);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1101,8 +1101,8 @@ watch(() => props.visible, v => {
 .entry-list {
   flex: 1;
   overflow-y: auto;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
 }
 
 /*
@@ -1127,18 +1127,18 @@ watch(() => props.visible, v => {
   padding: 0 10px;
   height: 34px;
   line-height: 34px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
   user-select: none;
   box-sizing: border-box;
 }
 
 .entry-row:hover {
-  background: #f1f5f9;
+  background: var(--gray-100);
 }
 
 .entry-row.is-selected {
-  background: #e0f2fe;
+  background: var(--brand-100);
 }
 
 .entry-row.is-disabled {
@@ -1152,12 +1152,12 @@ watch(() => props.visible, v => {
 }
 
 .entry-icon {
-  color: #94a3b8;
+  color: var(--gray-400);
   flex-shrink: 0;
 }
 
 .entry-icon.is-dir {
-  color: #f59e0b;
+  color: var(--warning-strong);
 }
 
 .entry-name {
@@ -1166,45 +1166,45 @@ watch(() => props.visible, v => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: #1e293b;
+  color: var(--gray-800);
 }
 
 .entry-size {
   width: 90px;
   text-align: right;
-  color: #64748b;
-  font-size: 12px;
+  color: var(--gray-500);
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
 .entry-time {
   width: 130px;
   text-align: right;
-  color: #94a3b8;
-  font-size: 12px;
+  color: var(--gray-400);
+  font-size: var(--fs-sm);
   flex-shrink: 0;
 }
 
 .list-tip {
   padding: 10px;
   text-align: center;
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
 }
 
 .picker-summary {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   padding: 8px 10px;
-  background: #f8fafc;
+  background: var(--bg-subtle);
 }
 
 .summary-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 13px;
-  color: #334155;
+  font-size: var(--fs-md);
+  color: var(--gray-700);
 }
 
 .summary-chips {
@@ -1217,8 +1217,8 @@ watch(() => props.visible, v => {
 }
 
 .more-tip {
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   align-self: center;
 }
 </style>

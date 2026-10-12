@@ -1,0 +1,222 @@
+/* ==========================================================================
+   tokens.css —— LogAuditorGo 设计令牌（全站唯一魔数来源）
+   消费方：所有 SFC scoped 样式 / 全局共享层 / element-theme.css
+   ========================================================================== */
+:root {
+  /* ---------- 品牌主色（Sky 阶梯） ---------- */
+  --brand-50: #f0f9ff;
+  --brand-100: #e0f2fe;
+  --brand-200: #bae6fd;
+  --brand-300: #7dd3fc;
+  --brand-400: #38bdf8;
+  --brand-500: #0ea5e9;
+  --brand-600: #0284c7;
+  --brand-700: #0369a1;
+  --brand-800: #075985;
+  --brand-900: #0c4a6e;
+
+  /* ---------- 语义色四件套（text / bg / border / strong） ---------- */
+  --success-text: #15803d;
+  --success-bg: #f0fdf4;
+  --success-border: #bbf7d0;
+  --success-strong: #16a34a;
+
+  --warning-text: #92400e;
+  --warning-bg: #fffbeb;
+  --warning-border: #fde68a;
+  --warning-strong: #d97706;
+
+  --danger-text: #991b1b;
+  --danger-bg: #fef2f2;
+  --danger-border: #fecaca;
+  --danger-strong: #dc2626;
+
+  --info-text: #075985;
+  --info-bg: #f0f9ff;
+  --info-border: #bae6fd;
+  --info-strong: #0284c7;
+
+  /* 业务语义块（统一"原因/措施/影响/摘要/模板注入"的颜色语言） */
+  --cause-text: #92400e;
+  --cause-bg: #fffbeb;
+  --cause-border: #fde68a;
+  --action-text: #166534;
+  --action-bg: #f0fdf4;
+  --action-border: #bbf7d0;
+  --impact-text: #991b1b;
+  --impact-bg: #fef2f2;
+  --impact-border: #fecaca;
+  --summary-text: #075985;
+  --summary-bg: #f0f9ff;
+  --summary-border: #bae6fd;
+  --inst-injected-bg: #dcfce7;
+  --inst-injected-border: #86efac;
+  --inst-injected-text: #15803d;
+
+  /* 辅助数据/统计分析色（Purple 阶梯，用于 Dashboard/Settings/Report 核心指标卡） */
+  --purple-50: #faf5ff;
+  --purple-100: #f3e8ff;
+  --purple-500: #8b5cf6;
+  --purple-600: #7c3aed;
+  --purple-strong: #6d28d9;
+
+  /* ---------- 中性色（Slate） ---------- */
+  --gray-0: #ffffff;
+  --gray-50: #f8fafc;
+  --gray-100: #f1f5f9;
+  --gray-200: #e2e8f0;
+  --gray-300: #cbd5e1;
+  --gray-400: #94a3b8;
+  --gray-500: #64748b;
+  --gray-600: #475569;
+  --gray-700: #334155;
+  --gray-800: #1e293b;
+  --gray-900: #0f172a;
+
+  /* ---------- 文本语义 ---------- */
+  --text-primary: var(--gray-900);      /* 标题/强调 */
+  --text-regular: var(--gray-700);      /* 正文 */
+  --text-secondary: var(--gray-600);    /* 次级说明（白底/灰底均 ≥6.9:1） */
+  --text-placeholder: var(--gray-500);  /* 占位/提示（仅白底） */
+  --text-disabled: var(--gray-400);     /* 禁用 */
+  --text-link: var(--brand-600);
+  --text-on-brand: #ffffff;
+  --text-on-dark: #f8fafc;
+  --text-on-dark-secondary: #94a3b8;    /* 暗底上次级 */
+
+  /* ---------- 边框 / 背景 ---------- */
+  --border-base: var(--gray-200);
+  --border-light: var(--gray-100);
+  --border-strong: var(--gray-300);
+  --bg-page: var(--gray-100);
+  --bg-surface: var(--gray-0);
+  --bg-subtle: var(--gray-50);
+  --bg-hover: var(--gray-100);
+  --bg-active: var(--brand-50);
+  --bg-dark: var(--gray-900);
+  --bg-dark-2: var(--gray-800);         /* 暗色容器两档 */
+  --bg-inverse-code: #0f172a;           /* 代码/终端底 */
+
+  /* ---------- 严重度（全局唯一映射，配 severity.css） ---------- */
+  --sev-crit-text: #b91c1c;
+  --sev-crit-bg: #fee2e2;
+  --sev-crit-border: #fecaca;
+  --sev-crit-bar: #ef4444;
+
+  --sev-err-text: #c2410c;
+  --sev-err-bg: #ffedd5;
+  --sev-err-border: #fed7aa;
+  --sev-err-bar: #f97316;
+
+  --sev-warn-text: #a16207;
+  --sev-warn-bg: #fef9c3;
+  --sev-warn-border: #fde68a;
+  --sev-warn-bar: #eab308;
+
+  --sev-info-text: #475569;
+  --sev-info-bg: #f1f5f9;
+  --sev-info-border: #e2e8f0;
+  --sev-info-bar: #94a3b8;
+
+  --sev-comment-text: #475569;
+  --sev-comment-bg: #f8fafc;
+  --sev-comment-border: #cbd5e1;
+  --sev-comment-bar: #64748b;
+
+  /* ---------- 字阶（8 阶，正文基准 13px） ---------- */
+  --fs-xs: 11px;   /* 徽标/角标/密集元信息专用 */
+  --fs-sm: 12px;   /* 辅助文字 */
+  --fs-md: 13px;   /* 正文基准 */
+  --fs-lg: 14px;   /* 卡片/区块标题 */
+  --fs-xl: 16px;   /* 页面/面板标题 */
+  --fs-2xl: 18px;  /* 空态主标题 */
+  --fs-3xl: 22px;  /* KPI 数值 */
+  --fs-4xl: 26px;  /* 仪表盘大数值 */
+  --lh-tight: 1.4;
+  --lh-normal: 1.6;
+  --lh-loose: 1.8;
+
+  /* ---------- 间距（2px 网格 + 语义规则） ---------- */
+  --sp-1: 2px;
+  --sp-2: 4px;
+  --sp-3: 6px;
+  --sp-4: 8px;
+  --sp-5: 10px;
+  --sp-6: 12px;
+  --sp-7: 14px;
+  --sp-8: 16px;
+  --sp-9: 20px;
+  --sp-10: 24px;
+  --sp-12: 32px;
+  --sp-14: 48px;
+
+  /* ---------- 圆角（6 阶） ---------- */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-full: 9999px;
+
+  /* ---------- 阴影（3 阶 + 浮层） ---------- */
+  --shadow-1: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-2: 0 2px 8px -2px rgba(15, 23, 42, 0.08);
+  --shadow-3: 0 8px 24px -8px rgba(15, 23, 42, 0.15);
+  --shadow-pop: 0 25px 50px -12px rgba(2, 6, 23, 0.5);
+
+  /* ---------- 动效 ---------- */
+  --dur-fast: 0.12s;
+  --dur-base: 0.18s;
+  --dur-slow: 0.25s;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-decelerate: cubic-bezier(0, 0, 0.2, 1);
+
+  /* ---------- 布局 ---------- */
+  --app-header-h: 60px;
+  --app-main-pad-y: 16px;
+  --app-main-pad-x: 20px;
+  --wb-col-left: 28%;
+  --wb-col-mid: 36%;
+  --wb-col-right: 36%;
+
+  /* ---------- 对话框 ---------- */
+  --dialog-sm: 480px;
+  --dialog-md: 600px;
+  --dialog-lg: 760px;
+  --dialog-xl: 1000px;
+  --dialog-top: 6vh;
+
+  /* ---------- z-index 标尺 ---------- */
+  --z-sticky: 100;
+  --z-drawer: 1000;
+  --z-modal: 2000;
+  --z-popover: 3000;
+  --z-toast: 4000;
+
+  /* ---------- 兼容性映射（原 --imp-* 变量） ---------- */
+  --imp-primary: var(--brand-600);
+  --imp-primary-dark: var(--brand-700);
+  --imp-primary-bg: var(--brand-50);
+  --imp-primary-border: var(--brand-200);
+  --imp-success: var(--success-strong);
+  --imp-success-bg: var(--success-bg);
+  --imp-success-border: var(--success-border);
+  --imp-warning: var(--warning-strong);
+  --imp-warning-bg: var(--warning-bg);
+  --imp-warning-border: var(--warning-border);
+  --imp-danger: var(--danger-strong);
+  --imp-danger-bg: var(--danger-bg);
+  --imp-danger-border: var(--danger-border);
+
+  --imp-text: var(--gray-800);
+  --imp-text-secondary: var(--text-secondary);
+  --imp-text-muted: var(--gray-500);
+  --imp-text-faint: var(--gray-400);
+  --imp-border: var(--border-base);
+  --imp-bg: var(--bg-subtle);
+  --imp-bg-hover: var(--bg-hover);
+  --imp-bg-selected: var(--brand-100);
+
+  --imp-radius: var(--radius-lg);
+  --imp-radius-sm: var(--radius-md);
+}

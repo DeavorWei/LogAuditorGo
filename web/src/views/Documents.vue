@@ -710,7 +710,7 @@ onMounted(() => {
 }
 
 .doc-header-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 .header-content {
@@ -729,21 +729,21 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
 }
 
 .stats-item strong {
-  color: #0284c7;
+  color: var(--brand-600);
   font-weight: 600;
 }
 
 .stats-divider {
-  color: #cbd5e1;
+  color: var(--gray-300);
 }
 
 .stats-desc {
-  color: #94a3b8;
+  color: var(--gray-400);
 }
 
 .header-right {
@@ -752,7 +752,7 @@ onMounted(() => {
 }
 
 .table-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 
 /* 批量操作控制栏 */
@@ -761,10 +761,10 @@ onMounted(() => {
   justify-content: space-between;
   align-items: center;
   padding: 8px 12px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
   border-bottom: none;
-  border-radius: 6px 6px 0 0;
+  border-radius: var(--radius-md) 6px 0 0;
 }
 
 .batch-left {
@@ -774,12 +774,12 @@ onMounted(() => {
 }
 
 .batch-count-tip {
-  font-size: 13px;
-  color: #475569;
+  font-size: var(--fs-md);
+  color: var(--gray-600);
 }
 
 .batch-count-tip strong {
-  color: #0284c7;
+  color: var(--brand-600);
 }
 
 /* 空知识库引导卡片 */
@@ -788,9 +788,9 @@ onMounted(() => {
 }
 
 .guide-card {
-  border-radius: 8px;
-  background: #f8fafc;
-  border: 1px dashed #cbd5e1;
+  border-radius: var(--radius-lg);
+  background: var(--bg-subtle);
+  border: 1px dashed var(--gray-300);
 }
 
 .guide-header {
@@ -799,14 +799,14 @@ onMounted(() => {
 }
 
 .guide-header h3 {
-  font-size: 18px;
-  color: #1e293b;
+  font-size: var(--fs-2xl);
+  color: var(--gray-800);
   margin: 12px 0 6px 0;
 }
 
 .guide-header p {
-  font-size: 13px;
-  color: #64748b;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
 }
 
 .guide-actions {
@@ -818,9 +818,9 @@ onMounted(() => {
 .action-tile-single {
   width: 100%;
   max-width: 480px;
-  background: #fff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  background: var(--gray-0);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   padding: 24px 20px;
   text-align: center;
   cursor: pointer;
@@ -831,20 +831,20 @@ onMounted(() => {
 }
 
 .action-tile-single:hover {
-  border-color: #0284c7;
+  border-color: var(--brand-600);
   box-shadow: 0 4px 14px rgba(2, 132, 199, 0.12);
   transform: translateY(-2px);
 }
 
 .action-tile-single h4 {
-  font-size: 16px;
-  color: #0f172a;
+  font-size: var(--fs-xl);
+  color: var(--gray-900);
   margin: 12px 0 6px 0;
 }
 
 .action-tile-single p {
-  font-size: 13px;
-  color: #64748b;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
   line-height: 1.5;
   margin-bottom: 16px;
 }
@@ -866,8 +866,8 @@ onMounted(() => {
 }
 
 .selected-tip {
-  font-size: 13px;
-  color: #475569;
+  font-size: var(--fs-md);
+  color: var(--gray-600);
 }
 
 .doc-title-cell {
@@ -878,7 +878,7 @@ onMounted(() => {
 
 .doc-name-text {
   font-weight: 600;
-  color: #0284c7;
+  color: var(--brand-600);
   line-height: 1.4;
 }
 
@@ -890,41 +890,41 @@ onMounted(() => {
 }
 
 .meta-tag {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: monospace;
-  background: #f1f5f9;
-  color: #475569;
+  background: var(--gray-100);
+  color: var(--gray-600);
   padding: 1px 5px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 
 .product-tag {
-  background: #f0fdf4;
-  color: #166534;
+  background: var(--success-bg);
+  color: var(--action-text);
 }
 
 .ver-tag {
-  background: #fef3c7;
-  color: #92400e;
+  background: var(--warning-bg);
+  color: var(--warning-text);
 }
 
 .path-cell-text {
-  color: #334155;
+  color: var(--gray-700);
   font-family: monospace;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* 冲突弹窗 */
 .conflict-dialog-body {
-  font-size: 14px;
+  font-size: var(--fs-lg);
 }
 
 .conflict-file-list {
   max-height: 140px;
   overflow-y: auto;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
   padding: 8px 12px;
   display: flex;
   flex-direction: column;
@@ -932,7 +932,7 @@ onMounted(() => {
 }
 
 .conflict-item {
-  font-size: 12px;
-  color: #991b1b;
+  font-size: var(--fs-sm);
+  color: var(--danger-text);
 }
 </style>

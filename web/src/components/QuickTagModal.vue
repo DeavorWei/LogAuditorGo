@@ -288,7 +288,7 @@ const handleCreateAndAdd = async () => {
 .quick-tag-modal :deep(.el-dialog__header) {
   padding: 12px 16px;
   margin-right: 0;
-  border-bottom: 1px solid #f1f5f9;
+  border-bottom: 1px solid var(--gray-100);
 }
 
 .quick-tag-modal :deep(.el-dialog__body) {
@@ -297,7 +297,7 @@ const handleCreateAndAdd = async () => {
 
 .quick-tag-modal :deep(.el-dialog__footer) {
   padding: 10px 16px;
-  border-top: 1px solid #f1f5f9;
+  border-top: 1px solid var(--gray-100);
 }
 
 .modal-custom-header {
@@ -309,17 +309,17 @@ const handleCreateAndAdd = async () => {
 .header-title {
   font-size: 15px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 
 .header-subtitle {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  color: #64748b;
+  color: var(--gray-500);
 }
 
 .header-log-brief {
-  color: #0284c7;
+  color: var(--brand-600);
   font-weight: 600;
   margin-left: 4px;
 }
@@ -339,8 +339,8 @@ const handleCreateAndAdd = async () => {
 }
 
 .section-label {
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   font-weight: 600;
   white-space: nowrap;
   line-height: 24px;
@@ -357,12 +357,12 @@ const handleCreateAndAdd = async () => {
 .current-tag-chip {
   font-weight: 500;
   border: none;
-  color: #ffffff;
+  color: var(--gray-0);
 }
 
 .empty-tags-hint {
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   line-height: 24px;
 }
 
@@ -373,7 +373,7 @@ const handleCreateAndAdd = async () => {
 }
 
 .input-search-icon {
-  color: #94a3b8;
+  color: var(--gray-400);
 }
 
 /* 可选标签列表 */
@@ -390,8 +390,8 @@ const handleCreateAndAdd = async () => {
 }
 
 .tags-count-hint {
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
 }
 
 .available-tags-grid {
@@ -401,9 +401,9 @@ const handleCreateAndAdd = async () => {
   max-height: 190px;
   overflow-y: auto;
   padding: 4px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
 }
 
 .tag-pick-item {
@@ -411,25 +411,25 @@ const handleCreateAndAdd = async () => {
   align-items: center;
   gap: 6px;
   padding: 3px 8px;
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
+  background: var(--gray-0);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-sm);
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   transition: all 0.15s ease;
 }
 
 .tag-pick-item:hover {
-  border-color: #3b82f6;
-  background: #eff6ff;
+  border-color: var(--brand-500);
+  background: var(--brand-50);
   transform: translateY(-1px);
 }
 
 .tag-pick-item.is-assigned {
-  background: #f0fdf4;
-  border-color: #86efac;
-  color: #166534;
+  background: var(--success-bg);
+  border-color: var(--inst-injected-border);
+  color: var(--action-text);
 }
 
 .tag-color-badge {
@@ -441,7 +441,7 @@ const handleCreateAndAdd = async () => {
 
 .tag-name-text {
   font-weight: 500;
-  color: #1e293b;
+  color: var(--gray-800);
   max-width: 130px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -449,26 +449,26 @@ const handleCreateAndAdd = async () => {
 }
 
 .tag-pick-item.is-assigned .tag-name-text {
-  color: #15803d;
+  color: var(--success-text);
 }
 
 .tag-status-check {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
-  color: #16a34a;
+  color: var(--success-strong);
 }
 
 .tag-count-sub {
   font-size: 10px;
-  color: #94a3b8;
+  color: var(--gray-400);
 }
 
 .no-tags-tip {
   width: 100%;
   padding: 16px 8px;
   text-align: center;
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   line-height: 1.6;
 }
 
@@ -479,7 +479,7 @@ const handleCreateAndAdd = async () => {
 }
 
 .footer-tip {
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
 }
 </style>

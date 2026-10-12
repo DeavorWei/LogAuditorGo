@@ -434,8 +434,8 @@ defineExpose({
 .text-meta-row {
   display: flex;
   justify-content: space-between;
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   margin-top: 4px;
 }
 
@@ -446,9 +446,9 @@ defineExpose({
 .conflict-file-list {
   max-height: 150px;
   overflow-y: auto;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  border-radius: 6px;
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius-md);
   padding: 6px 10px;
   display: flex;
   flex-direction: column;
@@ -456,7 +456,7 @@ defineExpose({
 }
 
 .conflict-item {
-  font-size: 13px;
-  color: #991b1b;
+  font-size: var(--fs-md);
+  color: var(--danger-text);
 }
 </style>

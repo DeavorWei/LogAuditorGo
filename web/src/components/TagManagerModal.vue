@@ -208,16 +208,16 @@ const filterByTag = (tag) => {
 
 <style scoped>
 .create-card {
-  background: var(--el-fill-color-light, #f5f7fa);
+  background: var(--el-fill-color-light, var(--bg-subtle));
   padding: 12px 16px;
-  border-radius: 6px;
-  border: 1px solid var(--el-border-color-lighter, #ebeef5);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--el-border-color-lighter, var(--border-light));
 }
 .card-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   margin: 0 0 10px 0;
-  color: var(--el-text-color-primary, #303133);
+  color: var(--el-text-color-primary, var(--gray-800));
 }
 .tag-form {
   margin-bottom: -18px;

@@ -172,7 +172,7 @@ onMounted(() => {
   gap: 16px;
 }
 .tasks-header-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 .header-content {
   display: flex;
@@ -180,6 +180,6 @@ onMounted(() => {
   align-items: center;
 }
 .table-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 </style>

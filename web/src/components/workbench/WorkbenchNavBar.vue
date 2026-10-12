@@ -78,10 +78,10 @@ const currentTask = computed(() => taskStore.currentTask)
   display: flex;
   justify-content: flex-start;
   align-items: center;
-  background: #ffffff;
+  background: var(--gray-0);
   padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-base);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   flex-shrink: 0;
 }
@@ -104,35 +104,35 @@ const currentTask = computed(() => taskStore.currentTask)
   min-width: 16px;
   padding: 0 4px;
   margin-left: 6px;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   line-height: 1;
-  border-radius: 8px;
-  background-color: #3b82f6;
-  color: #ffffff;
+  border-radius: var(--radius-lg);
+  background-color: var(--brand-500);
+  color: var(--gray-0);
   box-sizing: border-box;
 }
 
 .nav-count-badge.danger {
-  background-color: #ef4444;
+  background-color: var(--danger-strong);
 }
 
 .nav-count-badge.warning {
-  background-color: #f59e0b;
+  background-color: var(--warning-strong);
 }
 
 .workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge {
   background-color: rgba(255, 255, 255, 0.28);
-  color: #ffffff;
+  color: var(--gray-0);
 }
 
 .workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.danger {
-  background-color: #dc2626;
-  color: #ffffff;
+  background-color: var(--danger-strong);
+  color: var(--gray-0);
 }
 
 .workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.warning {
-  background-color: #d97706;
-  color: #ffffff;
+  background-color: var(--warning-strong);
+  color: var(--gray-0);
 }
 </style>

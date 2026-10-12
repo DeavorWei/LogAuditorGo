@@ -262,10 +262,10 @@ defineExpose({
   display: flex;
   justify-content: space-between;
   align-items: center;
-  background: #fff;
+  background: var(--gray-0);
   padding: 12px 16px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-base);
 }
 .stats-grid {
   display: grid;
@@ -273,39 +273,39 @@ defineExpose({
   gap: 16px;
 }
 .stat-card {
-  background: #fff;
+  background: var(--gray-0);
   padding: 16px 20px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  border-left: 4px solid #3b82f6;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-base);
+  border-left: 4px solid var(--brand-500);
 }
 .stat-card .val {
   font-size: 24px;
   font-weight: bold;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 .stat-card .label {
-  color: #64748b;
-  font-size: 13px;
+  color: var(--gray-500);
+  font-size: var(--fs-md);
   margin-top: 4px;
 }
 .section-card {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
 }
 .card-header-title {
   display: flex;
   align-items: center;
   gap: 8px;
   font-weight: 600;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 .conclusion-box {
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 6px;
+  background: var(--brand-50);
+  border: 1px solid var(--brand-200);
+  border-radius: var(--radius-md);
   padding: 16px;
-  font-size: 14px;
-  color: #1e3a8a;
+  font-size: var(--fs-lg);
+  color: var(--brand-900);
   white-space: pre-line;
   line-height: 1.6;
 }
@@ -315,11 +315,11 @@ defineExpose({
   gap: 16px;
 }
 .device-overview-card {
-  border: 1px solid #e2e8f0;
-  border-top: 4px solid #3b82f6;
-  border-radius: 6px;
+  border: 1px solid var(--border-base);
+  border-top: 4px solid var(--brand-500);
+  border-radius: var(--radius-md);
   padding: 14px;
-  background: #fafafa;
+  background: var(--bg-subtle);
 }
 .device-card-header {
   display: flex;
@@ -330,29 +330,29 @@ defineExpose({
 .device-name {
   font-weight: 600;
   font-size: 15px;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 .meta-row {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-bottom: 4px;
   display: flex;
   gap: 6px;
 }
 .meta-row .label {
-  color: #64748b;
+  color: var(--gray-500);
   width: 70px;
   flex-shrink: 0;
 }
 .meta-row .val {
-  color: #1e293b;
+  color: var(--gray-800);
   font-family: monospace;
 }
 .top-modules-row {
   margin-top: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 .top-modules-row .label {
-  color: #64748b;
+  color: var(--gray-500);
   margin-bottom: 4px;
   display: block;
 }
@@ -362,20 +362,20 @@ defineExpose({
   gap: 4px;
 }
 .mod-tag {
-  background: #f1f5f9;
-  border: 1px solid #e2e8f0;
+  background: var(--gray-100);
+  border: 1px solid var(--border-base);
   padding: 1px 6px;
-  border-radius: 4px;
-  font-size: 11px;
-  color: #475569;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-xs);
+  color: var(--gray-600);
 }
 .common-events-section {
   margin-bottom: 16px;
 }
 .sub-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  color: #475569;
+  color: var(--gray-600);
   margin-bottom: 8px;
 }
 .tags-wrap {
@@ -384,12 +384,12 @@ defineExpose({
   gap: 8px;
 }
 .common-event-tag {
-  background: #e0e7ff;
-  border: 1px solid #c7d2fe;
-  color: #3730a3;
+  background: var(--purple-50);
+  border: 1px solid var(--purple-100);
+  color: var(--purple-strong);
   padding: 4px 10px;
-  border-radius: 4px;
-  font-size: 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
   font-weight: 500;
 }
 .clusters-section {
@@ -401,21 +401,21 @@ defineExpose({
   gap: 10px;
 }
 .cluster-item-card {
-  background: #fffbeb;
-  border: 1px solid #fef3c7;
-  border-left: 4px solid #f59e0b;
-  border-radius: 6px;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-bg);
+  border-left: 4px solid var(--warning-strong);
+  border-radius: var(--radius-md);
   padding: 10px 14px;
 }
 .cluster-summary {
-  font-size: 13px;
-  color: #92400e;
+  font-size: var(--fs-md);
+  color: var(--warning-text);
   font-weight: 500;
   margin-bottom: 4px;
 }
 .cluster-devices {
-  font-size: 12px;
-  color: #78350f;
+  font-size: var(--fs-sm);
+  color: var(--sev-warn-text);
   display: flex;
   align-items: center;
 }

@@ -169,12 +169,12 @@ defineExpose({
 <style scoped>
 .col-left {
   width: 28%;
-  border-right: 1px solid #e2e8f0;
+  border-right: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
   height: 100%;
   min-height: 0;
-  background: #f8fafc;
+  background: var(--bg-subtle);
   transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
@@ -190,13 +190,13 @@ defineExpose({
   padding: 2px 10px;
   height: 26px;
   min-height: 26px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-base);
 }
 
 .log-total-text {
-  font-size: 11px;
-  color: #64748b;
+  font-size: var(--fs-xs);
+  color: var(--gray-500);
   font-weight: 500;
   line-height: 1;
 }
@@ -204,9 +204,9 @@ defineExpose({
 .adv-filter-btn {
   height: 20px !important;
   padding: 0 6px !important;
-  font-size: 11px !important;
+  font-size: var(--fs-xs) !important;
   line-height: 18px !important;
-  border-radius: 3px !important;
+  border-radius: var(--radius-xs) !important;
 }
 
 .log-stream-list {
@@ -231,8 +231,8 @@ defineExpose({
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-top: 1px solid #e2e8f0;
-  background: #fff;
+  border-top: 1px solid var(--border-base);
+  background: var(--gray-0);
   flex-shrink: 0;
 }
 

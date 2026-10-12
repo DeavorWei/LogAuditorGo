@@ -160,7 +160,7 @@ const detail = computed(() => {
   min-width: 360px;
   display: flex;
   flex-direction: column;
-  background: #ffffff;
+  background: var(--gray-0);
   overflow-y: auto;
   box-sizing: border-box;
 }
@@ -191,9 +191,9 @@ const detail = computed(() => {
 }
 
 .kb-header-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   padding: 12px 14px;
 }
 
@@ -205,9 +205,9 @@ const detail = computed(() => {
 }
 
 .kb-title {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 700;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 
 .kb-meta {
@@ -218,73 +218,73 @@ const detail = computed(() => {
 }
 
 .badge-tier, .badge-conf {
-  font-size: 11px;
-  background: #e2e8f0;
-  color: #475569;
+  font-size: var(--fs-xs);
+  background: var(--border-base);
+  color: var(--gray-600);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
 }
 
 .badge-ctx {
-  font-size: 11px;
-  color: #15803d;
-  background: #dcfce7;
+  font-size: var(--fs-xs);
+  color: var(--success-text);
+  background: var(--inst-injected-bg);
   padding: 2px 6px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   font-weight: 500;
 }
 
 .kb-block {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-md);
   padding: 12px;
 }
 
 .kb-subtitle {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
-  color: #334155;
+  color: var(--gray-700);
   margin-bottom: 6px;
 }
 
 .kb-text {
-  font-size: 13px;
-  color: #334155;
+  font-size: var(--fs-md);
+  color: var(--gray-700);
   line-height: 1.6;
 }
 
 .action-box {
-  background: #ffffff;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
+  background: var(--gray-0);
+  border: 1px solid var(--gray-300);
+  border-radius: var(--radius-sm);
   padding: 8px 12px;
 }
 
 .dict-count-tag {
-  font-size: 11px;
-  color: #0284c7;
+  font-size: var(--fs-xs);
+  color: var(--brand-600);
 }
 
 .dict-pname {
   font-weight: 600;
-  color: #0284c7;
+  color: var(--brand-600);
 }
 
 .dict-pval {
-  color: #15803d;
+  color: var(--success-text);
   font-weight: 600;
 }
 
 .dict-pnone {
-  color: #94a3b8;
+  color: var(--gray-400);
   font-style: italic;
 }
 
 .comment-kb-card {
-  background: #f0fdf4;
-  border: 1px solid #bbf7d0;
-  border-radius: 8px;
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  border-radius: var(--radius-lg);
   padding: 16px;
 }
 
@@ -296,9 +296,9 @@ const detail = computed(() => {
 }
 
 .comment-kb-title {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
-  color: #166534;
+  color: var(--action-text);
 }
 
 .comment-kb-body {
@@ -308,17 +308,17 @@ const detail = computed(() => {
 }
 
 .comment-item {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
 }
 
 .c-label {
   font-weight: 600;
-  color: #15803d;
+  color: var(--success-text);
 }
 
 .c-val {
-  color: #334155;
+  color: var(--gray-700);
 }
 
 .rc-graph-container {
@@ -327,12 +327,12 @@ const detail = computed(() => {
 
 .rca-guide {
   margin-top: 12px;
-  background: #fff7ed;
-  border: 1px solid #ffedd5;
-  border-radius: 6px;
+  background: var(--sev-err-bg);
+  border: 1px solid var(--sev-err-bg);
+  border-radius: var(--radius-md);
   padding: 10px 12px;
-  font-size: 13px;
-  color: #c2410c;
+  font-size: var(--fs-md);
+  color: var(--sev-err-text);
 }
 
 .guide-title {
@@ -349,18 +349,18 @@ const detail = computed(() => {
 }
 
 :deep(.inst-param-injected) {
-  background: #dcfce7;
-  color: #15803d;
+  background: var(--inst-injected-bg);
+  color: var(--success-text);
   font-weight: 600;
   padding: 1px 4px;
-  border-radius: 3px;
-  border-bottom: 2px solid #86efac;
+  border-radius: var(--radius-xs);
+  border-bottom: 2px solid var(--inst-injected-border);
 }
 
 :deep(.inst-param-placeholder) {
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--gray-100);
+  color: var(--gray-500);
   padding: 1px 4px;
-  border-radius: 3px;
+  border-radius: var(--radius-xs);
 }
 </style>

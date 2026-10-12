@@ -678,9 +678,9 @@ onUnmounted(() => {
 
 /* 顶部进度主卡片 */
 .progress-main-card {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   padding: 14px 16px;
 }
 
@@ -705,18 +705,18 @@ onUnmounted(() => {
 }
 
 .status-running {
-  background-color: #0284c7;
+  background-color: var(--brand-600);
   box-shadow: 0 0 0 0 rgba(2, 132, 199, 0.7);
   animation: pulse-blue 1.6s infinite;
 }
 
 .status-completed {
-  background-color: #16a34a;
+  background-color: var(--success-strong);
   box-shadow: 0 0 8px rgba(22, 163, 74, 0.5);
 }
 
 .status-failed {
-  background-color: #dc2626;
+  background-color: var(--danger-strong);
   box-shadow: 0 0 8px rgba(220, 38, 38, 0.5);
 }
 
@@ -738,7 +738,7 @@ onUnmounted(() => {
 .stage-name-text {
   font-size: 15px;
   font-weight: 600;
-  color: #1e293b;
+  color: var(--gray-800);
 }
 
 .progress-bar-wrap {
@@ -749,8 +749,8 @@ onUnmounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   margin-top: 6px;
 }
 
@@ -763,11 +763,11 @@ onUnmounted(() => {
 .counter-text {
   font-family: monospace;
   font-weight: 600;
-  color: #0284c7;
+  color: var(--brand-600);
 }
 
 .elapsed-text {
-  color: #94a3b8;
+  color: var(--gray-400);
   font-family: monospace;
 }
 
@@ -778,25 +778,25 @@ onUnmounted(() => {
   gap: 6px;
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px dashed #cbd5e1;
+  border-top: 1px dashed var(--gray-300);
 }
 
 .overall-icon {
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
 }
 
 .overall-text {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
-  color: #0284c7;
+  color: var(--brand-600);
 }
 
 /* 全阶段步骤流 */
 .stages-flow-box {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
+  background: var(--gray-0);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-lg);
   padding: 16px 12px 12px 12px;
 }
 
@@ -819,7 +819,7 @@ onUnmounted(() => {
 .stage-line {
   flex: 1;
   height: 2px;
-  background: #e2e8f0;
+  background: var(--border-base);
 }
 
 .stage-line.is-hidden {
@@ -834,14 +834,14 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #e2e8f0;
-  color: #94a3b8;
-  font-size: 11px;
+  background: var(--border-base);
+  color: var(--gray-400);
+  font-size: var(--fs-xs);
   font-weight: 600;
 }
 
 .bullet-icon {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /*
@@ -854,8 +854,8 @@ onUnmounted(() => {
   line-height: 16px;
   margin-top: 8px;
   padding: 0 2px;
-  font-size: 12px;
-  color: #94a3b8;
+  font-size: var(--fs-sm);
+  color: var(--gray-400);
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -867,58 +867,58 @@ onUnmounted(() => {
   height: 15px;
   line-height: 15px;
   margin-top: 2px;
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
   white-space: nowrap;
   overflow: hidden;
 }
 
 .stage-process .stage-bullet {
-  background: #0284c7;
-  color: #ffffff;
+  background: var(--brand-600);
+  color: var(--gray-0);
   box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.18);
 }
 
 .stage-process .stage-name {
-  color: #0284c7;
+  color: var(--brand-600);
   font-weight: 600;
 }
 
 .stage-success .stage-bullet {
-  background: #16a34a;
-  color: #ffffff;
+  background: var(--success-strong);
+  color: var(--gray-0);
 }
 
 .stage-success .stage-name {
-  color: #16a34a;
+  color: var(--success-strong);
 }
 
 .stage-error .stage-bullet {
-  background: #dc2626;
-  color: #ffffff;
+  background: var(--danger-strong);
+  color: var(--gray-0);
 }
 
 .stage-error .stage-name {
-  color: #dc2626;
+  color: var(--danger-strong);
   font-weight: 600;
 }
 
 /* 控制台终端 */
 .terminal-container {
-  background: #0f172a;
-  border-radius: 8px;
-  border: 1px solid #1e293b;
+  background: var(--gray-900);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--gray-800);
   overflow: hidden;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 }
 
 .terminal-header {
-  background: #1e293b;
+  background: var(--gray-800);
   padding: 6px 12px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  border-bottom: 1px solid #334155;
+  border-bottom: 1px solid var(--gray-700);
 }
 
 .terminal-title {
@@ -932,13 +932,13 @@ onUnmounted(() => {
   height: 9px;
   border-radius: 50%;
 }
-.dot.red { background: #ef4444; }
-.dot.yellow { background: #f59e0b; }
-.dot.green { background: #10b981; }
+.dot.red { background: var(--danger-strong); }
+.dot.yellow { background: var(--warning-strong); }
+.dot.green { background: var(--success-strong); }
 
 .title-text {
-  font-size: 11px;
-  color: #94a3b8;
+  font-size: var(--fs-xs);
+  color: var(--gray-400);
   font-family: monospace;
   margin-left: 4px;
 }
@@ -950,8 +950,8 @@ onUnmounted(() => {
 }
 
 .terminal-actions :deep(.el-checkbox__label) {
-  color: #94a3b8;
-  font-size: 11px;
+  color: var(--gray-400);
+  font-size: var(--fs-xs);
 }
 
 .terminal-body {
@@ -959,13 +959,13 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 8px 12px;
   font-family: 'Consolas', 'Fira Code', monospace;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.6;
-  color: #f1f5f9;
+  color: var(--gray-100);
 }
 
 .terminal-empty {
-  color: #475569;
+  color: var(--gray-600);
   font-style: italic;
   padding: 10px 0;
   text-align: center;
@@ -978,14 +978,14 @@ onUnmounted(() => {
 }
 
 .log-time {
-  color: #64748b;
+  color: var(--gray-500);
   flex-shrink: 0;
 }
 
-.log-info .log-msg { color: #e2e8f0; }
-.log-success .log-msg { color: #4ade80; font-weight: 500; }
-.log-warning .log-msg { color: #fbbf24; }
-.log-error .log-msg { color: #f87171; font-weight: 500; }
+.log-info .log-msg { color: var(--border-base); }
+.log-success .log-msg { color: var(--inst-injected-border); font-weight: 500; }
+.log-warning .log-msg { color: var(--warning-border); }
+.log-error .log-msg { color: var(--danger-border); font-weight: 500; }
 
 /* 底部操作区 */
 .modal-footer {
@@ -996,22 +996,22 @@ onUnmounted(() => {
 }
 
 .footer-left-hint {
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .hint-text {
-  color: #64748b;
+  color: var(--gray-500);
 }
 .hint-success {
-  color: #16a34a;
+  color: var(--success-strong);
   font-weight: 500;
 }
 .hint-error {
-  color: #dc2626;
+  color: var(--danger-strong);
   font-weight: 500;
 }
 .hint-warn {
-  color: #b45309;
+  color: var(--warning-strong);
   font-weight: 500;
 }
 

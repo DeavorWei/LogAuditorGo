@@ -45,25 +45,25 @@ defineEmits(['open-picker', 'open-text'])
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #f8fafc;
+  background: var(--bg-subtle);
   padding: 24px;
 }
 
 .guide-card {
   width: 720px;
-  border-radius: 12px;
+  border-radius: var(--radius-xl);
   text-align: center;
   padding: 24px 16px;
 }
 
 .guide-header h3 {
   margin: 12px 0 6px 0;
-  color: #0f172a;
+  color: var(--gray-900);
 }
 
 .guide-header p {
-  font-size: 13px;
-  color: #64748b;
+  font-size: var(--fs-md);
+  color: var(--gray-500);
   margin-bottom: 24px;
 }
 
@@ -75,9 +75,9 @@ defineEmits(['open-picker', 'open-text'])
 
 .action-tile {
   flex: 1;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 8px;
+  border: 1px solid var(--border-base);
+  background: var(--gray-0);
+  border-radius: var(--radius-lg);
   padding: 20px 14px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -88,20 +88,20 @@ defineEmits(['open-picker', 'open-text'])
 }
 
 .action-tile:hover {
-  border-color: #38bdf8;
+  border-color: var(--brand-400);
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
 }
 
 .action-tile h4 {
   margin: 4px 0 0 0;
-  font-size: 14px;
-  color: #1e293b;
+  font-size: var(--fs-lg);
+  color: var(--gray-800);
 }
 
 .action-tile p {
-  font-size: 12px;
-  color: #64748b;
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
   margin: 0 0 10px 0;
   min-height: 32px;
   line-height: 1.4;
