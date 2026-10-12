@@ -89,6 +89,12 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  const deleteTaskFile = async (taskId, fileId) => {
+    const res = await api.deleteTaskFile(taskId, fileId)
+    await fetchTaskFiles(taskId)
+    return res
+  }
+
   const fetchTaskDevices = async (taskId) => {
     loading.value.devices = true
     try {
@@ -177,6 +183,7 @@ export const useTaskStore = defineStore('task', () => {
     deviceOptions,
     fetchTasks,
     fetchTaskFiles,
+    deleteTaskFile,
     fetchTaskDevices,
     fetchRCA,
     setLogs,

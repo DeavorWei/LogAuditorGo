@@ -362,6 +362,28 @@ func (h *TaskHandler) GetTaskFiles(c *gin.Context) {
 	SuccessResponse(c, files)
 }
 
+// DeleteTaskFile 删除指定任务中的日志文件
+func (h *TaskHandler) DeleteTaskFile(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	fileID, err := strconv.ParseUint(c.Param("file_id"), 10, 32)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid file ID")
+		return
+	}
+
+	taskInfo, err := h.taskSvc.DeleteTaskFile(taskID, uint(fileID))
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, taskInfo, "Log file deleted successfully")
+}
+
 // ListTasks 获取所有任务
 func (h *TaskHandler) ListTasks(c *gin.Context) {
 	tasks, err := h.taskSvc.GetTaskList()

@@ -178,6 +178,9 @@ export default {
   getTaskFiles(taskId) {
     return request.get(`/tasks/${taskId}/files`)
   },
+  deleteTaskFile(taskId, fileId) {
+    return request.delete(`/tasks/${taskId}/files/${fileId}`)
+  },
   // 按服务端本地路径导入日志（支持一次提交多个目录或文件路径）
   importTaskLogsByPaths(taskId, { paths, exts, recursive = true, conflictMode = 'rename', deviceVersion }, isAsync = true) {
     return request.post(`/tasks/${taskId}/import`, {

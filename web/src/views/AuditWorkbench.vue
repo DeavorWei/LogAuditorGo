@@ -30,7 +30,7 @@
             plain
             icon="Files"
             style="margin-left: 4px;"
-            @click="showFilesDrawer = true"
+            @click="showFilesDialog = true"
           >
             已导入 {{ taskFiles.length }} 个文件 ({{ currentTask.log_count }} 行)
           </el-button>
@@ -637,30 +637,78 @@
     </div>
   </div>
 
-    <!-- 已导入日志文件抽屉 -->
-    <el-drawer v-model="showFilesDrawer" title="已导入日志文件清单" size="480px">
-      <div class="files-drawer-content">
-        <div class="drawer-summary">
-          <span>共 <strong>{{ taskFiles.length }}</strong> 个日志文件</span>
+    <!-- 已导入日志文件居中弹窗 -->
+    <el-dialog
+      v-model="showFilesDialog"
+      title="已导入日志文件清单"
+      width="780px"
+      align-center
+      destroy-on-close
+      class="task-files-dialog"
+    >
+      <div class="files-dialog-content">
+        <div class="files-dialog-summary">
+          <div class="summary-stats">
+            <span class="stat-pill">
+              共 <strong>{{ taskFiles.length }}</strong> 个日志文件
+            </span>
+            <span class="stat-pill">
+              累计 <strong>{{ (currentTask?.log_count ?? totalFileLines).toLocaleString() }}</strong> 行日志
+            </span>
+            <span class="stat-pill">
+              总大小 <strong>{{ totalFilesSize }}</strong>
+            </span>
+          </div>
           <el-button type="primary" size="small" icon="Upload" @click="openImportDialog">补充导入日志</el-button>
         </div>
 
-        <el-table :data="taskFiles" border size="small" style="width: 100%;">
-          <el-table-column prop="file_name" label="文件名" min-width="160" show-overflow-tooltip>
+        <el-table
+          :data="taskFiles"
+          border
+          stripe
+          size="small"
+          style="width: 100%;"
+          max-height="400px"
+          empty-text="暂无已导入日志文件"
+        >
+          <el-table-column prop="file_name" label="文件名" min-width="190" show-overflow-tooltip>
             <template #default="{ row }">
               <span style="font-weight: 600; color: #0284c7;">📄 {{ row.file_name }}</span>
             </template>
           </el-table-column>
-          <el-table-column prop="line_count" label="日志行数" width="90" align="center" />
-          <el-table-column prop="file_size" label="大小" width="80" align="center">
+          <el-table-column prop="line_count" label="日志行数" width="105" align="center">
+            <template #default="{ row }">
+              <el-tag size="small" type="info">{{ (row.line_count || 0).toLocaleString() }} 行</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="file_size" label="大小" width="90" align="center">
             <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
           </el-table-column>
-          <el-table-column prop="created_at" label="导入时间" width="130">
+          <el-table-column prop="created_at" label="导入时间" width="140" align="center">
             <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+          </el-table-column>
+          <el-table-column label="操作" width="85" align="center" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                type="danger"
+                link
+                size="small"
+                icon="Delete"
+                :loading="deletingFileId === row.id"
+                @click="handleDeleteFile(row)"
+              >
+                删除
+              </el-button>
+            </template>
           </el-table-column>
         </el-table>
       </div>
-    </el-drawer>
+      <template #footer>
+        <div class="dialog-footer">
+          <el-button @click="showFilesDialog = false">关闭</el-button>
+        </div>
+      </template>
+    </el-dialog>
 
     <!-- 新建任务弹窗 -->
     <el-dialog v-model="showNewTaskDialog" title="新建日志审计任务" width="620px">
@@ -877,7 +925,17 @@ watch(currentViewMode, (mode) => {
   filterStore.filters.viewMode = mode
 })
 const taskFiles = ref([])
-const showFilesDrawer = ref(false)
+const showFilesDialog = ref(false)
+const deletingFileId = ref(null)
+
+const totalFileLines = computed(() => {
+  return taskFiles.value.reduce((acc, f) => acc + (f.line_count || 0), 0)
+})
+
+const totalFilesSize = computed(() => {
+  const bytes = taskFiles.value.reduce((acc, f) => acc + (f.file_size || 0), 0)
+  return formatSize(bytes)
+})
 const deviceManagerRef = ref(null)
 const timelineRef = ref(null)
 const rcaCenterRef = ref(null)
@@ -1408,6 +1466,87 @@ const fetchTaskFiles = async () => {
   } catch (e) {}
 }
 
+const handleDeleteFile = async (row) => {
+  if (!row || !currentTaskId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除日志文件「${row.file_name}」吗？\n删除后将同步移除该文件的 ${row.line_count || 0} 行日志记录，并更新设备日志统计及 RCA 分析结果。此操作无法撤销。`,
+      '删除日志文件确认',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger',
+        distinguishCancelAndClose: true
+      }
+    )
+  } catch (action) {
+    return
+  }
+
+  deletingFileId.value = row.id
+  try {
+    const res = await api.deleteTaskFile(currentTaskId.value, row.id)
+    if (res && res.code === 0) {
+      ElMessage.success(`文件「${row.file_name}」已成功删除`)
+
+      // 1. 周边联动：如果当前选中的单条日志属于被删除文件，清除选中状态
+      if (selectedLog.value && selectedLog.value.source_file === row.file_name) {
+        selectedLog.value = null
+      }
+      if (hoveredLog.value && hoveredLog.value.source_file === row.file_name) {
+        hoveredLog.value = null
+      }
+
+      // 2. 周边联动：如果当前筛选中有针对该文件的过滤条件，予以清除
+      if (filterStore.filters.sourceFile === row.file_name) {
+        filterStore.filters.sourceFile = ''
+      }
+
+      // 3. 周边联动：重新获取任务文件清单
+      await fetchTaskFiles()
+
+      // 4. 周边联动：同步最新任务元数据 (log_count, matched_count, status, file_count 等)
+      if (res.data) {
+        handleTaskMetadataUpdated(res.data)
+      } else {
+        const tRes = await api.getTask(currentTaskId.value)
+        if (tRes && tRes.code === 0) {
+          handleTaskMetadataUpdated(tRes.data)
+        }
+      }
+
+      // 5. 周边联动：刷新设备统计与当前激活的子视图 (DeviceManager / Timeline / RCA)
+      await fetchTaskDevices()
+      await refreshActiveSubView()
+
+      // 6. 周边联动：刷新标签系统的标签统计 (tagStore)
+      await tagStore.fetchTags(currentTaskId.value)
+
+      // 7. 周边联动：工作台日志列表重新查询
+      filter.value.page = 1
+      await fetchLogs()
+
+      // 8. 周边联动：重新检测/轮询 RCA 状态或拉取 RCA 拓扑
+      checkAndPollRcaStatus()
+      if (currentTask.value?.rca_status !== 'QUEUED' && currentTask.value?.rca_status !== 'RUNNING') {
+        await fetchRCA()
+      }
+
+      // 9. 如果全部文件已清空，关闭弹窗以展示空任务待导入引导界面
+      if (taskFiles.value.length === 0) {
+        showFilesDialog.value = false
+      }
+    } else {
+      ElMessage.error(res?.message || '删除日志文件失败')
+    }
+  } catch (err) {
+    ElMessage.error(err.message || '删除日志文件失败')
+  } finally {
+    deletingFileId.value = null
+  }
+}
+
 const fetchTaskDevices = async () => {
   if (!currentTaskId.value) return
   try {
@@ -1757,7 +1896,7 @@ const onGlobalKeydown = (e) => {
     showImportDialog.value ||
     showProgressModal.value ||
     showPathPicker.value ||
-    showFilesDrawer.value ||
+    showFilesDialog.value ||
     showConflictDialog.value
   if (hasActiveOverlay) return
 
@@ -2693,13 +2832,34 @@ watch(
 }
 
 /* 抽屉与弹窗样式 */
-.drawer-summary {
+.drawer-summary,
+.files-dialog-summary {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 12px;
+  margin-bottom: 14px;
   font-size: 13px;
   color: #475569;
+}
+.files-dialog-summary {
+  padding: 10px 14px;
+  background: #f8fafc;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+}
+.summary-stats {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.stat-pill {
+  font-size: 13px;
+  color: #475569;
+}
+.stat-pill strong {
+  color: #0284c7;
+  font-weight: 600;
 }
 .path-import-pane {
   border: 1px solid #e2e8f0;

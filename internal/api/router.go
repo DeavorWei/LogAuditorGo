@@ -150,6 +150,7 @@ func SetupRouter(
 		v1.GET("/tasks", taskHandler.ListTasks)
 		v1.GET("/tasks/:id", taskHandler.GetTask)
 		v1.GET("/tasks/:id/files", taskHandler.GetTaskFiles)
+		v1.DELETE("/tasks/:id/files/:file_id", taskHandler.DeleteTaskFile)
 		v1.POST("/tasks/:id/import", taskHandler.ImportLogs)
 		v1.GET("/tasks/:id/logs", taskHandler.QueryLogs)
 		v1.POST("/tasks/:id/logs/query", taskHandler.QueryLogsUnified)

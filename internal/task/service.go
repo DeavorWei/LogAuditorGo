@@ -326,6 +326,83 @@ func (s *Service) GetTaskFiles(taskID string) ([]model.TaskFile, error) {
 	return files, err
 }
 
+// DeleteTaskFile 删除任务中指定的已上传日志文件及其关联的全部日志记录，并联动更新设备统计与 RCA 状态
+func (s *Service) DeleteTaskFile(taskID string, fileID uint) (*model.TaskInfo, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	var targetFile model.TaskFile
+	if err := taskDB.First(&targetFile, "id = ?", fileID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("task file %d not found in task %s", fileID, taskID)
+		}
+		return nil, fmt.Errorf("find task file failed: %w", err)
+	}
+	fileName := targetFile.FileName
+
+	var taskInfo model.TaskInfo
+	if err := taskDB.First(&taskInfo, "task_id = ?", taskID).Error; err != nil {
+		return nil, fmt.Errorf("find task info failed: %w", err)
+	}
+
+	err = taskDB.Transaction(func(tx *gorm.DB) error {
+		// 1. 清理该文件日志关联的标签关系
+		if err := tx.Exec("DELETE FROM log_tag_relations WHERE log_id IN (SELECT id FROM log_records WHERE source_file = ?)", fileName).Error; err != nil {
+			return fmt.Errorf("delete log tag relations failed: %w", err)
+		}
+		// 2. 清理日志记录
+		if err := tx.Where("source_file = ?", fileName).Delete(&model.LogRecord{}).Error; err != nil {
+			return fmt.Errorf("delete log records failed: %w", err)
+		}
+		// 3. 删除文件元记录
+		if err := tx.Delete(&model.TaskFile{}, "id = ?", fileID).Error; err != nil {
+			return fmt.Errorf("delete task file record failed: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// 联动 1: 刷新全部设备的日志量与匹配量
+	if err := s.refreshAllDeviceStats(taskDB); err != nil {
+		logger.Log.Warnf("[Task Service] refresh device stats failed after file deletion: %v", err)
+	}
+	// 联动 2: 同步设备数量
+	s.syncTaskDeviceCount(taskID, taskDB)
+
+	// 联动 3: 重新统计日志总行数与匹配行数
+	totalLogCount, matchedCount := recountTaskLogs(taskDB)
+
+	// 联动 4: 统计剩余文件数量
+	var remainingFiles int64
+	if err := taskDB.Model(&model.TaskFile{}).Count(&remainingFiles).Error; err != nil {
+		logger.Log.Warnf("[Task Service] count remaining task files failed: %v", err)
+	}
+
+	// 联动 5: 状态与 RCA 联动
+	if remainingFiles == 0 && totalLogCount == 0 {
+		s.CancelTaskRCA(taskID)
+		_ = taskDB.Where("id > 0").Delete(&model.RCAEvent{}).Error
+		s.updateTaskRCAState(taskID, model.RCAStatusPending, "", nil, 0)
+		s.finalizeTaskInfo(taskDB, &taskInfo, 0, 0, model.TaskStatusPending, "")
+	} else {
+		s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, "")
+		s.TriggerTaskRCA(taskID, true)
+	}
+
+	logger.Log.Infof("[Task Service] Task %s file %s (ID: %d) deleted, remaining files: %d, logs: %d",
+		taskID, fileName, fileID, remainingFiles, totalLogCount)
+
+	return &taskInfo, nil
+}
+
 // ImportLogs 导入/补充导入日志文件，支持全流程阶段进度实时追踪
 func (s *Service) ImportLogs(taskID string, items []FileUploadItem, conflictMode string, tracker ...*progress.JobTracker) (*model.TaskInfo, error) {
 	return s.ImportLogsWithDevice(taskID, 0, items, conflictMode, tracker...)

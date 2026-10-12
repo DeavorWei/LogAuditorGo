@@ -58,6 +58,8 @@ func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
 	}
 	if taskInfo.FinishTime != nil {
 		updates["finish_time"] = taskInfo.FinishTime
+	} else {
+		updates["finish_time"] = nil
 	}
 
 	if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
@@ -340,6 +342,8 @@ func (s *Service) finalizeTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo, lo
 	taskInfo.ErrorMessage = errMsg
 	if status == model.TaskStatusCompleted {
 		taskInfo.FinishTime = &now
+	} else if status == model.TaskStatusPending {
+		taskInfo.FinishTime = nil
 	}
 	s.persistTaskInfo(taskDB, taskInfo)
 }

@@ -1205,6 +1205,7 @@ func TestTaskAPIValidation(t *testing.T) {
 		}{
 			{"GET", "/api/v1/tasks/" + badID},
 			{"GET", "/api/v1/tasks/" + badID + "/files"},
+			{"DELETE", "/api/v1/tasks/" + badID + "/files/1"},
 			{"POST", "/api/v1/tasks/" + badID + "/import"},
 			{"GET", "/api/v1/tasks/" + badID + "/logs"},
 			{"GET", "/api/v1/tasks/" + badID + "/rca"},
@@ -1409,6 +1410,43 @@ func TestTaskPathImport(t *testing.T) {
 
 	if res2.Data.LogCount != 3 || res2.Data.FileCount != 3 {
 		t.Errorf("expected 3 logs and 3 files after import, got logs=%d, files=%d", res2.Data.LogCount, res2.Data.FileCount)
+	}
+
+	// 3. 测试通过 API 获取文件列表并删除一个文件
+	reqFiles, _ := http.NewRequest("GET", "/api/v1/tasks/"+res.Data.TaskID+"/files", nil)
+	recFiles := httptest.NewRecorder()
+	router.ServeHTTP(recFiles, reqFiles)
+	if recFiles.Code != http.StatusOK {
+		t.Fatalf("expected 200 for GetTaskFiles, got %d", recFiles.Code)
+	}
+	var resFiles struct {
+		Code int              `json:"code"`
+		Data []model.TaskFile `json:"data"`
+	}
+	if err := json.Unmarshal(recFiles.Body.Bytes(), &resFiles); err != nil {
+		t.Fatalf("unmarshal files failed: %v", err)
+	}
+	if len(resFiles.Data) != 3 {
+		t.Fatalf("expected 3 files, got %d", len(resFiles.Data))
+	}
+
+	targetDelFile := resFiles.Data[0]
+	reqDel, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/tasks/%s/files/%d", res.Data.TaskID, targetDelFile.ID), nil)
+	recDel := httptest.NewRecorder()
+	router.ServeHTTP(recDel, reqDel)
+	if recDel.Code != http.StatusOK {
+		t.Fatalf("expected 200 for DeleteTaskFile, got %d: %s", recDel.Code, recDel.Body.String())
+	}
+
+	var resDel struct {
+		Code int            `json:"code"`
+		Data model.TaskInfo `json:"data"`
+	}
+	if err := json.Unmarshal(recDel.Body.Bytes(), &resDel); err != nil {
+		t.Fatalf("unmarshal del response failed: %v", err)
+	}
+	if resDel.Data.FileCount != 2 {
+		t.Errorf("expected 2 files after delete, got %d", resDel.Data.FileCount)
 	}
 }
 
