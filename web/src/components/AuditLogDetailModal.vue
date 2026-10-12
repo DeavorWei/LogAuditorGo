@@ -109,8 +109,8 @@
                     暂无标签
                   </el-dropdown-item>
                   <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
-                    <el-icon color="#409eff"><Plus /></el-icon>
-                    <span style="color: #409eff; font-weight: 500;">+ 新增标签</span>
+                    <el-icon><Plus /></el-icon>
+                    <span>+ 新增标签</span>
                   </el-dropdown-item>
                 </el-dropdown-menu>
               </template>
@@ -128,7 +128,7 @@
         <div v-if="log.event_summary" class="section-box event-summary-box-wb">
           <div class="box-title">事件语义解析摘要</div>
           <div class="event-summary-highlight-wb">
-            <el-icon color="#0284c7" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
+            <el-icon color="var(--brand-600)" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
             <span class="summary-text-wb">{{ log.event_summary }}</span>
           </div>
         </div>
@@ -216,7 +216,7 @@
                     size="small"
                     active-text="现场参数注入"
                     inactive-text="原始文档"
-                    style="--el-switch-on-color: #10b981;"
+                    style="--el-switch-on-color: var(--success-strong);"
                     @update:model-value="$emit('update:contextualizeMode', $event)"
                   />
                 </div>
@@ -279,7 +279,7 @@
             <!-- 注释行提示 -->
             <div v-else-if="log.module === 'COMMENT'" class="comment-kb-card">
               <div class="comment-kb-header">
-                <el-icon color="#0284c7" size="18"><InfoFilled /></el-icon>
+                <el-icon color="var(--brand-600)" size="18"><InfoFilled /></el-icon>
                 <span class="comment-kb-title">注释性日志说明 (Comment / Metadata)</span>
               </div>
               <div class="comment-kb-body">
@@ -537,7 +537,7 @@ const handleCreateTag = () => {
       return
     }
     const colorIndex = tagStore.tags.length % PREDEFINE_TAG_COLORS.length
-    const color = PREDEFINE_TAG_COLORS[colorIndex] || '#409EFF'
+    const color = PREDEFINE_TAG_COLORS[colorIndex] || DEFAULT_TAG_COLOR
 
     const newTag = await tagStore.createTag(props.taskId, {
       name: tagName,
@@ -851,28 +851,28 @@ onBeforeUnmount(() => {
 
 <style>
 /* 保证 Teleport 到 body 后的 AuditLogDetailModal 尺寸与独立滚动生效 (修复 P0-1) */
-.audit-detail-modal-dialog {
-  border-radius: 10px;
+.audit-detail-modal-dialog.el-dialog {
+  border-radius: var(--radius-lg);
   overflow: hidden;
-  display: flex !important;
-  flex-direction: column !important;
-  height: 82vh !important;
-  max-height: 90vh !important;
+  display: flex;
+  flex-direction: column;
+  height: 82vh;
+  max-height: 90vh;
 }
 
 .audit-detail-modal-dialog .el-dialog__header {
-  padding: 12px 18px !important;
-  margin-right: 0 !important;
-  border-bottom: 1px solid var(--border-base) !important;
-  background: var(--bg-subtle) !important;
-  flex-shrink: 0 !important;
+  padding: 12px 18px;
+  margin-right: 0;
+  border-bottom: 1px solid var(--border-base);
+  background: var(--bg-subtle);
+  flex-shrink: 0;
 }
 
 .audit-detail-modal-dialog .el-dialog__body {
-  padding: 0 !important;
-  flex: 1 !important;
-  overflow: hidden !important;
-  height: calc(82vh - 55px) !important;
+  padding: 0;
+  flex: 1;
+  overflow: hidden;
+  height: calc(82vh - 55px);
 }
 
 /* 边界轻抖反馈动效 (修复 P2) */
@@ -888,33 +888,33 @@ onBeforeUnmount(() => {
 
 /* 窄视口双栏自动堆叠 (修复 P2 / §4.4.2) */
 @media (max-width: 1000px) {
-  .audit-detail-modal-dialog {
-    width: 95vw !important;
-    height: 90vh !important;
+  .audit-detail-modal-dialog.el-dialog {
+    width: 95vw;
+    height: 90vh;
   }
   .audit-detail-modal-dialog .el-dialog__body {
-    height: calc(90vh - 55px) !important;
-    overflow-y: auto !important;
+    height: calc(90vh - 55px);
+    overflow-y: auto;
   }
   .audit-detail-modal-dialog .modal-dual-container {
-    flex-direction: column !important;
-    height: auto !important;
+    flex-direction: column;
+    height: auto;
   }
   .audit-detail-modal-dialog .modal-pane-left,
   .audit-detail-modal-dialog .modal-pane-right {
-    width: 100% !important;
-    height: auto !important;
-    overflow-y: visible !important;
+    width: 100%;
+    height: auto;
+    overflow-y: visible;
   }
   .audit-detail-modal-dialog .modal-pane-left {
-    border-right: none !important;
+    border-right: none;
     border-bottom: 1px solid var(--border-base);
   }
 }
 
 /* 标签下拉菜单与单项悬浮删除按钮 */
-.tag-menu-item {
-  padding: 5px 10px !important;
+.el-dropdown-menu__item.tag-menu-item {
+  padding: 5px 10px;
 }
 
 .tag-item-row {
@@ -980,7 +980,7 @@ onBeforeUnmount(() => {
 }
 
 .create-tag-menu-item {
-  color: #409eff;
+  color: var(--brand-600);
   font-weight: 500;
   display: flex;
   align-items: center;

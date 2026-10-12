@@ -181,7 +181,7 @@ defineExpose({
 }
 
 .col-left.zen-mode {
-  width: 100% !important;
+  width: 100%;
   border-right: none;
 }
 

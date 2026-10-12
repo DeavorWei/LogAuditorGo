@@ -57,7 +57,7 @@
             <el-tag
               :color="row.color"
               effect="dark"
-              style="border: none; color: #fff; font-weight: 500"
+              style="border: none; color: var(--text-on-brand); font-weight: 500"
             >
               {{ row.name }}
             </el-tag>
@@ -219,7 +219,7 @@ const filterByTag = (tag) => {
   margin: 0 0 10px 0;
   color: var(--el-text-color-primary, var(--gray-800));
 }
-.tag-form {
-  margin-bottom: -18px;
+.tag-form :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 </style>

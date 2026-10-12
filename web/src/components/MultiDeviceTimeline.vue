@@ -5,7 +5,7 @@
       <div class="device-selector-row">
         <div class="selector-label">
           <strong>参与分析设备:</strong>
-          <span style="color: #64748b; font-size: 12px; margin-left: 8px;">(勾选 2~5 台路由器/交换机进行跨设备时序对比)</span>
+          <span class="selector-hint">(勾选 2~5 台路由器/交换机进行跨设备时序对比)</span>
         </div>
         <div class="device-checkbox-group">
           <el-checkbox
@@ -819,6 +819,11 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.selector-hint {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
+  margin-left: 8px;
 }
 .device-checkbox-group {
   display: flex;

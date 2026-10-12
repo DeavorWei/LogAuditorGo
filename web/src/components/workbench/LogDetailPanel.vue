@@ -3,7 +3,7 @@
     <!-- RCA 联动告警全局提示条 -->
     <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
       <div class="banner-left">
-        <el-icon color="#ea580c" size="18"><Aim /></el-icon>
+        <el-icon color="var(--warning-strong)" size="18"><Aim /></el-icon>
         <span class="banner-text">
           <strong>系统已识别 {{ rcaEvents.length }} 个协议联动事件</strong>
         </span>
@@ -51,7 +51,7 @@
                   class="tag-menu-item"
                 >
                   <div class="tag-item-row">
-                    <span class="tag-color-dot" :style="{ backgroundColor: t.color || '#409EFF' }"></span>
+                    <span class="tag-color-dot" :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"></span>
                     <span class="tag-name-text">{{ t.name }}</span>
                     <span v-if="isTagAssigned(t.id)" class="tag-assigned-badge">已添加</span>
                     <span
@@ -67,8 +67,8 @@
                   暂无标签
                 </el-dropdown-item>
                 <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
-                  <el-icon color="#409eff"><Plus /></el-icon>
-                  <span style="color: #409eff; font-weight: 500;">+ 新增标签</span>
+                  <el-icon color="var(--brand-600)"><Plus /></el-icon>
+                  <span style="color: var(--brand-600); font-weight: 500;">+ 新增标签</span>
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -86,7 +86,7 @@
       <div v-if="log.event_summary" class="section-box event-summary-box-wb">
         <div class="box-title">事件语义解析摘要</div>
         <div class="event-summary-highlight-wb">
-          <el-icon color="#0284c7" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
+          <el-icon color="var(--brand-600)" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
           <span class="summary-text-wb">{{ log.event_summary }}</span>
         </div>
       </div>
@@ -308,16 +308,16 @@ const openCreateTagPrompt = () => {
     message: () =>
       h('div', { class: 'create-tag-prompt-box' }, [
         h('div', { style: { marginBottom: '10px' } }, [
-          h('label', { style: { display: 'block', fontSize: '13px', marginBottom: '4px', color: '#334155' } }, '标签名称:'),
+          h('label', { style: { display: 'block', fontSize: 'var(--fs-md)', marginBottom: '4px', color: 'var(--text-regular)' } }, '标签名称:'),
           h('input', {
             class: 'el-input__inner',
-            style: { width: '100%', height: '32px', boxSizing: 'border-box', border: '1px solid #dcdfe6', borderRadius: '4px', padding: '0 8px' },
+            style: { width: '100%', height: '32px', boxSizing: 'border-box', border: '1px solid var(--border-base)', borderRadius: 'var(--radius-sm)', padding: '0 8px' },
             placeholder: '输入标签名称...',
             onInput: (e) => { tagNameInput = e.target.value }
           })
         ]),
         h('div', {}, [
-          h('label', { style: { display: 'block', fontSize: '13px', marginBottom: '6px', color: '#334155' } }, '选择颜色:'),
+          h('label', { style: { display: 'block', fontSize: 'var(--fs-md)', marginBottom: '6px', color: 'var(--text-regular)' } }, '选择颜色:'),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
             PREDEFINE_TAG_COLORS.map(c =>
               h('span', {
@@ -328,7 +328,7 @@ const openCreateTagPrompt = () => {
                   backgroundColor: c,
                   display: 'inline-block',
                   cursor: 'pointer',
-                  border: selectedColor === c ? '2px solid #000' : '2px solid transparent'
+                  border: selectedColor === c ? '2px solid var(--gray-900)' : '2px solid transparent'
                 },
                 onClick: () => { selectedColor = c }
               })

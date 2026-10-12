@@ -127,16 +127,11 @@
             :label="`${t.name} (${t.log_count || 0})`"
             :value="t.id"
           >
-            <div style="display: flex; align-items: center; justify-content: space-between">
+            <div class="filter-tag-option">
               <span>{{ t.name }}</span>
               <span
-                :style="{
-                  display: 'inline-block',
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  backgroundColor: t.color || '#409EFF'
-                }"
+                class="filter-tag-dot"
+                :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
               />
             </div>
           </el-option>
@@ -394,16 +389,11 @@
             :label="`${t.name} (${t.log_count || 0})`"
             :value="t.id"
           >
-            <div style="display: flex; align-items: center; justify-content: space-between">
+            <div class="filter-tag-option">
               <span>{{ t.name }}</span>
               <span
-                :style="{
-                  display: 'inline-block',
-                  width: '10px',
-                  height: '10px',
-                  borderRadius: '50%',
-                  backgroundColor: t.color || '#409EFF'
-                }"
+                class="filter-tag-dot"
+                :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
               />
             </div>
           </el-option>
@@ -452,6 +442,7 @@ import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
+import { DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import { ArrowDown, ArrowUp, FullScreen, Monitor, Close } from '@element-plus/icons-vue'
 
 const props = defineProps({
@@ -848,7 +839,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 
 :deep(.zen-filter-date.el-date-editor) {
   --el-date-editor-width: 146px;
-  width: 146px !important;
+  width: 146px;
 }
 
 :deep(.zen-filter-date .el-input__wrapper) {
@@ -1049,7 +1040,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 
 :deep(.triplet-item.el-date-editor) {
   --el-date-editor-width: 100%;
-  width: 100% !important;
+  width: 100%;
 }
 
 :deep(.triplet-item .el-input__wrapper) {
@@ -1150,5 +1141,20 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   line-height: 28px;
   padding: 0 10px;
   text-align: left;
+}
+
+.filter-tag-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.filter-tag-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 </style>

@@ -213,16 +213,11 @@
                 :label="t.name"
                 :value="t.id"
               >
-                <div style="display: flex; align-items: center; justify-content: space-between">
+                <div class="tag-option-item">
                   <span>{{ t.name }}</span>
                   <span
-                    :style="{
-                      display: 'inline-block',
-                      width: '12px',
-                      height: '12px',
-                      borderRadius: '50%',
-                      backgroundColor: t.color || '#409EFF'
-                    }"
+                    class="tag-dot-indicator"
+                    :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
                   />
                 </div>
               </el-option>
@@ -291,16 +286,11 @@
                 :label="`${t.name} (${t.log_count || 0})`"
                 :value="t.id"
               >
-                <div style="display: flex; align-items: center; justify-content: space-between">
+                <div class="tag-option-item">
                   <span>{{ t.name }}</span>
                   <span
-                    :style="{
-                      display: 'inline-block',
-                      width: '12px',
-                      height: '12px',
-                      borderRadius: '50%',
-                      backgroundColor: t.color || '#409EFF'
-                    }"
+                    class="tag-dot-indicator"
+                    :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
                   />
                 </div>
               </el-option>
@@ -337,7 +327,7 @@ import { ElMessage } from 'element-plus'
 import api from '@/api'
 import useFilterStore from '@/stores/filter'
 import useTagStore from '@/stores/tag'
-import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
+import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const props = defineProps({
@@ -900,5 +890,18 @@ const confirmBatchUntag = async () => {
   font-size: var(--fs-md);
   color: var(--gray-600);
   margin-bottom: 12px;
+}
+.tag-option-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+.tag-dot-indicator {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
 }
 </style>

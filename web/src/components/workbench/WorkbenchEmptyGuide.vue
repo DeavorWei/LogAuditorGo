@@ -2,7 +2,7 @@
   <div class="empty-task-guide">
     <el-card shadow="never" class="guide-card">
       <div class="guide-header">
-        <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
+        <el-icon size="48" color="var(--brand-600)"><FolderOpened /></el-icon>
         <h3>任务「{{ taskName }}」尚未导入日志数据</h3>
         <p>请选择以下方式之一，直接将本地日志导入到本任务中开始智能审计与 RCA 根因分析：</p>
       </div>

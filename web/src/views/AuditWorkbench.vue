@@ -392,10 +392,10 @@ onMounted(async () => {
 }
 
 .workbench-container.is-immersive {
-  height: 100vh !important;
-  border-radius: 0 !important;
-  box-shadow: none !important;
-  border: none !important;
+  height: 100vh;
+  border-radius: 0;
+  box-shadow: none;
+  border: none;
 }
 
 .workbench-sub-view {
@@ -431,17 +431,18 @@ onMounted(async () => {
   .workbench-body {
     flex-direction: column;
     overflow-y: auto;
+    --wb-col-left: 100%;
+    --wb-col-mid: 100%;
+    --wb-col-right: 100%;
   }
   .workbench-body :deep(.col-left) {
-    width: 100% !important;
     max-height: 48vh;
     border-right: none;
     border-bottom: 1px solid var(--border-base);
   }
   .workbench-body :deep(.col-middle),
   .workbench-body :deep(.col-right) {
-    width: 100% !important;
-    min-width: 0 !important;
+    min-width: 0;
     flex: 1 0 auto;
     border-right: none;
     border-bottom: 1px solid var(--border-base);

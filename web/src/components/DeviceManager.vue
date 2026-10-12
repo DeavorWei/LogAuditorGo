@@ -62,13 +62,13 @@
 
         <el-table-column prop="matched_count" label="知识匹配数" width="110" align="center">
           <template #default="{ row }">
-            <span style="color: #16a34a; font-weight: 600;">{{ row.matched_count }}</span>
+            <span class="matched-count-val">{{ row.matched_count }}</span>
           </template>
         </el-table-column>
 
         <el-table-column prop="description" label="描述" min-width="160" show-overflow-tooltip>
           <template #default="{ row }">
-            <span style="color: #64748b; font-size: 13px;">{{ row.description || '-' }}</span>
+            <span class="desc-val">{{ row.description || '-' }}</span>
           </template>
         </el-table-column>
 
@@ -93,7 +93,7 @@
 
       <!-- 空状态指引 -->
       <div v-if="!loading && deviceList.length === 0" class="empty-guide">
-        <el-icon size="42" color="#94a3b8"><Monitor /></el-icon>
+        <el-icon size="42" color="var(--gray-400)"><Monitor /></el-icon>
         <p>当前任务尚未创建设备</p>
         <div class="empty-actions">
           <el-button type="primary" icon="Plus" @click="openCreateDialog">立即创建设备</el-button>
@@ -204,7 +204,7 @@
             </div>
 
             <div class="imp-tip-bar">
-              <el-icon color="#0284c7"><InfoFilled /></el-icon>
+              <el-icon color="var(--brand-600)"><InfoFilled /></el-icon>
               <span>
                 文件与目录均由服务端进程直接读取，不经过浏览器上传；目录会按扩展名递归收集其中所有日志文件，当前支持
                 <strong>.log / .txt / .syslog</strong>。导入后日志将直接归属给「{{ targetDevice?.device_name }}」。
@@ -213,7 +213,7 @@
 
             <div class="imp-result-container">
               <div v-if="!selectedPaths.length" class="imp-state-box">
-                <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
+                <el-icon size="48" color="var(--gray-400)"><FolderOpened /></el-icon>
                 <div class="imp-state-title">请选择日志文件或目录</div>
                 <div class="imp-state-desc">
                   点击上方「浏览文件 / 目录」在服务端文件系统中选择，或直接粘贴绝对路径后点击「添加到列表」。
@@ -235,7 +235,7 @@
                     <span class="imp-selected-type" :class="p.is_dir ? 'is-dir' : 'is-file'">
                       {{ p.is_dir ? '目录' : '文件' }}
                     </span>
-                    <el-icon :color="p.is_dir ? '#d97706' : '#0284c7'">
+                    <el-icon :color="p.is_dir ? 'var(--warning-strong)' : 'var(--brand-600)'">
                       <Folder v-if="p.is_dir" /><Document v-else />
                     </el-icon>
                     <span class="imp-selected-name" :title="p.path">{{ pathBaseName(p.path) }}</span>
@@ -801,5 +801,13 @@ defineExpose({
   display: flex;
   gap: 12px;
   margin-top: 8px;
+}
+.matched-count-val {
+  color: var(--success-text);
+  font-weight: 600;
+}
+.desc-val {
+  color: var(--text-secondary);
+  font-size: var(--fs-sm);
 }
 </style>

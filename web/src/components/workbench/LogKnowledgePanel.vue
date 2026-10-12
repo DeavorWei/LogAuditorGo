@@ -13,7 +13,7 @@
                   size="small"
                   active-text="现场参数注入"
                   inactive-text="原始文档"
-                  style="--el-switch-on-color: #10b981;"
+                  style="--el-switch-on-color: var(--success-strong);"
                 />
               </div>
               <div class="kb-meta">

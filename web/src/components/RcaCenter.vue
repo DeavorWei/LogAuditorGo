@@ -106,8 +106,8 @@
     <!-- 首次计算中的骨架屏 (无历史事件) -->
     <el-card v-if="isRcaRunning && rcaList.length === 0" shadow="never" class="running-card">
       <div class="running-header">
-        <el-icon class="is-loading" size="44" color="#0284c7"><Loading /></el-icon>
-        <h3 style="margin: 12px 0 6px 0; color: #0f172a;">根因拓扑正在后台推导中...</h3>
+        <el-icon class="is-loading" size="44" color="var(--brand-600)"><Loading /></el-icon>
+        <h3 style="margin: 12px 0 6px 0; color: var(--gray-900);">根因拓扑正在后台推导中...</h3>
         <p v-if="taskInfo?.rca_status === 'QUEUED'" class="running-tip">
           当前任务正在排队等待并发计算槽位，工作台已就绪可正常审计浏览日志。
         </p>
@@ -169,7 +169,7 @@
 
             <div class="item-card-meta">
               <span><el-icon><Clock /></el-icon> {{ ev.root_timestamp }}</span>
-              <span v-if="ev.root_device_name" class="device-pill" :style="{ backgroundColor: ev.root_device_color || '#3B82F6' }">
+              <span v-if="ev.root_device_name" class="device-pill" :style="{ backgroundColor: ev.root_device_color || 'var(--brand-500)' }">
                 {{ ev.root_device_name }}
               </span>
             </div>
@@ -195,11 +195,11 @@
                 <span :class="['level-tag', selectedRCA.impact_level?.toLowerCase()]">
                   {{ selectedRCA.impact_level || 'HIGH' }}
                 </span>
-                <h3 style="margin: 0; font-size: 16px; color: #0f172a;">
+                <h3 style="margin: 0; font-size: var(--fs-xl); color: var(--gray-900);">
                   [{{ selectedRCA.root_module }}/{{ selectedRCA.root_brief }}] 根因联动故障推断
                 </h3>
               </div>
-              <p style="margin: 0; font-size: 13px; color: #64748b;">
+              <p style="margin: 0; font-size: var(--fs-md); color: var(--text-secondary);">
                 始发于 {{ selectedRCA.root_timestamp }}，触发了 {{ selectedRCA.correlated_count }} 条衍生告警，整体置信度为 {{ Math.round((selectedRCA.confidence || 0.8) * 100) }}%
               </p>
             </div>
@@ -232,7 +232,7 @@
                       <div class="step-header-left">
                         <span class="time-text">{{ selectedRCA.root_timestamp }}</span>
                         <span class="delay-tag zero">+0ms (始发)</span>
-                        <span v-if="selectedRCA.root_device_name" class="device-pill" :style="{ backgroundColor: selectedRCA.root_device_color || '#3B82F6' }">
+                        <span v-if="selectedRCA.root_device_name" class="device-pill" :style="{ backgroundColor: selectedRCA.root_device_color || 'var(--brand-500)' }">
                           {{ selectedRCA.root_device_name }}
                         </span>
                         <strong class="mod-brief">{{ selectedRCA.root_module }}/{{ selectedRCA.root_brief }}</strong>
@@ -269,7 +269,7 @@
                       <div class="step-header-left">
                         <span class="time-text">{{ impact.timestamp }}</span>
                         <span class="delay-tag">+{{ impact.delay_ms }}ms</span>
-                        <span v-if="impact.device_name" class="device-pill" :style="{ backgroundColor: impact.device_color || '#3B82F6' }">
+                        <span v-if="impact.device_name" class="device-pill" :style="{ backgroundColor: impact.device_color || 'var(--brand-500)' }">
                           {{ impact.device_name }}
                         </span>
                         <strong class="mod-brief">{{ impact.module }}/{{ impact.brief }}</strong>

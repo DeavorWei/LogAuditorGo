@@ -39,14 +39,14 @@
     <div v-if="!loading && docList.length === 0" class="empty-doc-guide">
       <el-card shadow="never" class="guide-card">
         <div class="guide-header">
-          <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
+          <el-icon size="48" color="var(--brand-600)"><FolderOpened /></el-icon>
           <h3>知识库尚未导入华为官方 HDX 产品文档</h3>
           <p>请选择包含华为官方 HDX 文档的本地文件夹，系统将自动递归扫描其下的所有 .hdx 压缩包与解压文档并完成跨版本去重与知识库构建：</p>
         </div>
 
         <div class="guide-actions">
           <button type="button" class="action-tile action-tile-single reset" @click="openGuidePicker">
-            <el-icon size="36" color="#0284c7"><FolderAdd /></el-icon>
+            <el-icon size="36" color="var(--brand-600)"><FolderAdd /></el-icon>
             <h4>选择 HDX 文档所在文件夹</h4>
             <p>支持任意本地文件夹，系统将自动递归扫描目录下的所有 .hdx 压缩包与 profile.xml 解压文档，一键批量入库</p>
             <span class="el-button el-button--primary">选择文件夹并开始扫描</span>
@@ -122,12 +122,12 @@
         <el-table-column prop="issue_date" label="发布日期" width="120" align="center" />
         <el-table-column prop="log_count" label="叶子日志数" width="110" align="center">
           <template #default="{ row }">
-            <span style="color: #0284c7; font-weight: bold;">{{ row.log_count }}</span>
+            <span style="color: var(--brand-600); font-weight: bold;">{{ row.log_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="alarm_count" label="叶子告警数" width="110" align="center">
           <template #default="{ row }">
-            <span style="color: #ea580c; font-weight: bold;">{{ row.alarm_count }}</span>
+            <span style="color: var(--warning-strong); font-weight: bold;">{{ row.alarm_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="imported_at" label="导入时间" width="160" align="center">
@@ -186,7 +186,7 @@
 
         <!-- 提示条 -->
         <div class="imp-tip-bar">
-          <el-icon color="#0284c7"><InfoFilled /></el-icon>
+          <el-icon color="var(--brand-600)"><InfoFilled /></el-icon>
           <span>选择文件夹后，系统将自动递归扫描该目录下的所有 <strong>.hdx 官方压缩包</strong> 与包含 <strong>profile.xml</strong> 的解压文档目录。</span>
         </div>
 
@@ -194,14 +194,14 @@
         <div class="imp-result-container">
           <!-- 正在扫描 -->
           <div v-if="scanning" class="imp-state-box">
-            <el-icon class="is-loading" size="36" color="#0284c7"><Loading /></el-icon>
+            <el-icon class="is-loading" size="36" color="var(--brand-600)"><Loading /></el-icon>
             <div class="imp-state-title">正在递归扫描文件夹...</div>
             <div class="imp-state-desc">正在解析目录结构与 HDX 压缩包内的 profile.xml 索引，请稍候</div>
           </div>
 
           <!-- 尚未选择或扫描 -->
           <div v-else-if="!scannedDone" class="imp-state-box">
-            <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
+            <el-icon size="48" color="var(--gray-400)"><FolderOpened /></el-icon>
             <div class="imp-state-title">请选择包含 HDX 文档的文件夹</div>
             <div class="imp-state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档并默认全选</div>
           </div>
@@ -275,7 +275,7 @@
               </el-table-column>
               <el-table-column label="大小" width="95" align="right">
                 <template #default="{ row }">
-                  <span style="color: #64748b; font-size: 11px;">{{ formatSize(row.size) }}</span>
+                  <span style="color: var(--text-secondary); font-size: var(--fs-xs);">{{ formatSize(row.size) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="状态" width="120" align="center">

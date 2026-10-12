@@ -209,8 +209,8 @@ onMounted(() => {
 .search-card {
   border-radius: var(--radius-lg);
 }
-.search-form {
-  margin-bottom: -18px;
+.search-form :deep(.el-form-item) {
+  margin-bottom: 0;
 }
 .results-container {
   background: var(--gray-0);

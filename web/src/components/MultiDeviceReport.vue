@@ -3,8 +3,8 @@
     <!-- 顶部操作栏 -->
     <div class="report-header-bar">
       <div class="header-left">
-        <h3 style="margin: 0; font-size: 16px; color: #0f172a;">多设备协同诊断与对比分析报告</h3>
-        <span style="font-size: 12px; color: #64748b;">
+        <h3 class="report-title">多设备协同诊断与对比分析报告</h3>
+        <span class="report-subtitle">
           综合评估多台路由器/交换机的协议交互时序、共性故障与级联事件
         </span>
       </div>
@@ -47,7 +47,7 @@
       <el-card shadow="never" class="section-card">
         <template #header>
           <div class="card-header-title">
-            <el-icon color="#0284c7"><Aim /></el-icon>
+            <el-icon color="var(--brand-600)"><Aim /></el-icon>
             <span>协同推断与专家排查结论</span>
           </div>
         </template>
@@ -60,7 +60,7 @@
       <el-card shadow="never" class="section-card">
         <template #header>
           <div class="card-header-title">
-            <el-icon color="#16a34a"><Monitor /></el-icon>
+            <el-icon color="var(--success-strong)"><Monitor /></el-icon>
             <span>参与协同审计设备概况 ({{ reportData.devices?.length || 0 }} 台)</span>
           </div>
         </template>
@@ -108,7 +108,7 @@
       <el-card v-if="(reportData.common_events && reportData.common_events.length > 0) || (reportData.clusters && reportData.clusters.length > 0)" shadow="never" class="section-card">
         <template #header>
           <div class="card-header-title">
-            <el-icon color="#f59e0b"><Connection /></el-icon>
+            <el-icon color="var(--warning-strong)"><Connection /></el-icon>
             <span>跨设备共性事件与协同传播簇</span>
           </div>
         </template>
@@ -272,6 +272,15 @@ defineExpose({
   padding: 12px 16px;
   border-radius: var(--radius-lg);
   border: 1px solid var(--border-base);
+}
+.report-title {
+  margin: 0;
+  font-size: var(--fs-lg);
+  color: var(--text-primary);
+}
+.report-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 .stats-grid {
   display: grid;

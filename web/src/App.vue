@@ -12,9 +12,6 @@
         mode="horizontal"
         router
         class="nav-menu"
-        background-color="#1e293b"
-        text-color="#94a3b8"
-        active-text-color="#38bdf8"
       >
         <el-menu-item index="/">
           <el-icon><Odometer /></el-icon>
@@ -161,8 +158,13 @@ onUnmounted(() => {
   border-left: 1px solid var(--gray-600);
 }
 
-.nav-menu {
-  border-bottom: none !important;
+.nav-menu.el-menu--horizontal {
+  --el-menu-bg-color: var(--bg-dark-2);
+  --el-menu-text-color: var(--text-on-dark-secondary);
+  --el-menu-active-color: var(--brand-400);
+  --el-menu-hover-bg-color: var(--bg-dark);
+  --el-menu-hover-text-color: var(--text-on-brand);
+  border-bottom: none;
   height: var(--app-header-h);
   flex: 1;
   min-width: 0;
@@ -193,7 +195,7 @@ onUnmounted(() => {
 }
 
 .app-main.is-immersive {
-  padding: 0 !important;
-  overflow: hidden !important;
+  padding: 0;
+  overflow: hidden;
 }
 </style>

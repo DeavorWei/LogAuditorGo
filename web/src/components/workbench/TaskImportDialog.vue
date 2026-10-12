@@ -41,7 +41,7 @@
 
             <!-- 规则提示条 -->
             <div class="imp-tip-bar">
-              <el-icon color="#0284c7"><InfoFilled /></el-icon>
+              <el-icon color="var(--brand-600)"><InfoFilled /></el-icon>
               <span>
                 文件与目录均由服务端进程直接读取，不经过浏览器上传；目录会按扩展名递归收集其中所有日志文件，当前支持
                 <strong>.log / .txt / .syslog / .gz</strong>。
@@ -51,7 +51,7 @@
             <!-- 已选清单：统计摘要 + 明细 -->
             <div class="imp-result-container">
               <div v-if="!selectedPaths.length" class="imp-state-box">
-                <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
+                <el-icon size="48" color="var(--gray-400)"><FolderOpened /></el-icon>
                 <div class="imp-state-title">请选择日志文件或目录</div>
                 <div class="imp-state-desc">
                   点击上方「浏览文件 / 目录」在服务端文件系统中选择，或直接粘贴绝对路径后点击「添加到列表」。
@@ -73,7 +73,7 @@
                     <span class="imp-selected-type" :class="p.is_dir ? 'is-dir' : 'is-file'">
                       {{ p.is_dir ? '目录' : '文件' }}
                     </span>
-                    <el-icon :color="p.is_dir ? '#d97706' : '#0284c7'">
+                    <el-icon :color="p.is_dir ? 'var(--warning-strong)' : 'var(--brand-600)'">
                       <Folder v-if="p.is_dir" /><Document v-else />
                     </el-icon>
                     <span class="imp-selected-name" :title="p.path">{{ pathBaseName(p.path) }}</span>
