@@ -75,6 +75,11 @@ type BrowseResult struct {
 	Offset    int     `json:"offset"`
 	Limit     int     `json:"limit"`
 	Truncated bool    `json:"truncated"`
+	// DirCount / FileCount 为过滤后、分页前的全量统计：
+	// 前端据此向用户展示"当前目录有多少个子文件夹、多少个符合条件的文件"，
+	// 避免只统计已加载页而给出偏小的数字。
+	DirCount  int `json:"dir_count"`
+	FileCount int `json:"file_count"`
 }
 
 // winsLongPathThreshold Windows 传统 MAX_PATH 限制
@@ -243,6 +248,15 @@ func Roots(extraShortcuts ...Root) RootsResult {
 
 	if home, err := os.UserHomeDir(); err == nil {
 		appendShortcut("用户主目录", home)
+		// 桌面是日志/文档导入的高频起点位置。
+		// 按中英文 Windows 常见目录名依次探测，命中即止，避免同一入口重复出现。
+		for _, name := range []string{"Desktop", "桌面"} {
+			desktop := filepath.Join(home, name)
+			if info, statErr := os.Stat(longPathSafe(desktop)); statErr == nil && info.IsDir() {
+				appendShortcut("桌面", desktop)
+				break
+			}
+		}
 	}
 	if wd, err := os.Getwd(); err == nil {
 		appendShortcut("程序运行目录", wd)
@@ -354,6 +368,8 @@ func Browse(opts BrowseOptions) (*BrowseResult, error) {
 
 	all := append(dirs, files...)
 	total := len(all)
+	dirCount := len(dirs)
+	fileCount := len(files)
 
 	end := offset + limit
 	if end > total {
@@ -383,6 +399,8 @@ func Browse(opts BrowseOptions) (*BrowseResult, error) {
 		Offset:    offset,
 		Limit:     limit,
 		Truncated: end < total,
+		DirCount:  dirCount,
+		FileCount: fileCount,
 	}, nil
 }
 

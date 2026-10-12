@@ -7,6 +7,8 @@ import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import App from './App.vue'
 import router from './router'
 import { registerGlobalIcons } from './plugins/icons'
+// 导入类弹窗（HDX 文档 / 任务日志 / 设备日志）共享样式令牌
+import './styles/import-dialog.css'
 
 const app = createApp(App)
 

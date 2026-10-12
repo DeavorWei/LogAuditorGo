@@ -10,7 +10,13 @@
     @open="handleOpen"
   >
     <div class="path-picker">
-      <!-- 顶部工具栏：导航 + 路径输入 -->
+      <!--
+        顶部工具栏：导航 + 智能路径条。
+        原实现为 el-breadcrumb + overflow-x:auto，长路径会出现横向滚动条并被拉伸。
+        现改为"段式芯片路径条"：超过阈值时自动折叠中间层级为 …，
+        点击 … 弹出完整层级列表；路径条右侧固定复制/编辑操作，
+        编辑态才展开输入框，避免常驻输入框挤占路径展示空间。
+      -->
       <div class="picker-toolbar">
         <el-button-group>
           <el-button size="small" :disabled="!parentPath" title="上级目录" @click="goParent">
@@ -21,24 +27,65 @@
           </el-button>
         </el-button-group>
 
-        <el-breadcrumb separator="/" class="picker-crumbs">
-          <el-breadcrumb-item v-for="c in crumbs" :key="c.path">
-            <a href="javascript:void(0)" @click="navigate(c.path)">{{ c.name }}</a>
-          </el-breadcrumb-item>
-        </el-breadcrumb>
+        <div v-if="!pathEditing" class="pathbar-track">
+          <span
+            class="pathbar-seg is-root"
+            :title="currentPath"
+            @click="rootSegment && navigate(rootSegment.path)"
+          >{{ rootSegment ? rootSegment.name : '...' }}</span>
+          <el-popover
+            v-if="collapsedCount > 0"
+            placement="bottom"
+            trigger="click"
+            :width="280"
+            :show-arrow="false"
+          >
+            <template #reference>
+              <span class="pathbar-seg is-ellipsis" :title="`展开已折叠的 ${collapsedCount} 个层级`">…</span>
+            </template>
+            <div class="pathbar-pop">
+              <div
+                v-for="c in collapsedSegments"
+                :key="c.path"
+                class="pathbar-pop-item"
+                :title="c.path"
+                @click="navigate(c.path)"
+              >
+                <el-icon><Folder /></el-icon>
+                <span>{{ c.name }}</span>
+              </div>
+            </div>
+          </el-popover>
+          <span
+            v-for="c in tailSegments"
+            :key="c.path"
+            class="pathbar-seg"
+            :class="{ 'is-current': c.path === currentPath }"
+            :title="c.path"
+            @click="navigate(c.path)"
+          >{{ c.name }}</span>
+          <span v-if="collapsedCount > 0" class="pathbar-fold-tip">已折叠 {{ collapsedCount }} 层</span>
+        </div>
 
         <el-input
+          v-else
+          ref="pathEditRef"
           v-model="pathInput"
           size="small"
-          placeholder="粘贴绝对路径后回车跳转"
+          placeholder="粘贴绝对路径后回车跳转，Esc 取消"
           class="picker-path-input"
-          clearable
           @keyup.enter="jumpToInput"
-        >
-          <template #append>
-            <el-button size="small" @click="jumpToInput">跳转</el-button>
-          </template>
-        </el-input>
+          @keyup.esc="pathEditing = false"
+        />
+
+        <div class="pathbar-actions">
+          <el-button size="small" :title="pathEditing ? '完成编辑' : '编辑路径'" @click="togglePathEdit">
+            <el-icon><Check v-if="pathEditing" /><EditPen v-else /></el-icon>
+          </el-button>
+          <el-button size="small" title="复制完整路径" @click="copyPath">
+            <el-icon><CopyDocument /></el-icon>
+          </el-button>
+        </div>
       </div>
 
       <div class="picker-body">
@@ -59,6 +106,17 @@
             <div v-if="!favorites.length" class="side-empty">暂无收藏</div>
           </div>
 
+          <!-- 最近访问：自动记录最近 navigate 过的 5 个目录，减少重复层级点击 -->
+          <div class="side-title">最近访问</div>
+          <div class="fav-list is-recent">
+            <div v-for="r in recents" :key="r.path" class="fav-item" @click="navigate(r.path)">
+              <el-icon class="recent-icon"><Clock /></el-icon>
+              <span class="fav-name" :title="r.path">{{ r.name }}</span>
+              <el-icon class="fav-del" @click.stop="removeRecent(r)"><Close /></el-icon>
+            </div>
+            <div v-if="!recents.length" class="side-empty">暂无记录</div>
+          </div>
+
           <div class="side-title">目录树</div>
           <div class="tree-box">
             <el-tree
@@ -73,6 +131,25 @@
 
         <!-- 右侧：条目列表 -->
         <div class="picker-main">
+          <!-- 当前目录统计条：进入目录后立即告知符合要求的文件/文件夹数量 -->
+          <div class="main-stats">
+            <span class="main-stats-item is-dir" title="当前目录下的子文件夹数量">
+              <el-icon><Folder /></el-icon>{{ dirCount }} 个文件夹
+            </span>
+            <span v-if="mode !== 'dir'" class="main-stats-item is-file" title="当前目录下符合扩展名要求的文件数量">
+              <el-icon><Document /></el-icon>{{ fileCount }} 个符合条件的文件
+            </span>
+            <span v-if="extsLabel.length" class="imp-ext-chips" title="程序可接受的文件扩展名">
+              <span class="imp-ext-chip" v-for="e in extsLabel" :key="e">{{ e }}</span>
+            </span>
+            <span v-if="!loading && dirCount === 0 && fileCount === 0" class="main-stats-hint">
+              该目录为空，可返回上级或切换其他位置
+            </span>
+            <span v-else-if="!loading && mode !== 'dir' && fileCount === 0" class="main-stats-hint">
+              当前目录没有符合条件的文件，可进入子文件夹继续浏览
+            </span>
+          </div>
+
           <div class="main-toolbar">
             <el-input
               v-model="keyword"
@@ -89,7 +166,7 @@
               :disabled="!selectableEntries.length"
               @click="selectCurrentPage"
             >
-              全选本页
+              {{ mode === 'both' ? '全选本页文件' : '全选本页' }}
             </el-button>
             <el-button
               v-if="mode === 'dir' || mode === 'both'"
@@ -142,9 +219,11 @@
 
             <div v-if="loading" class="list-tip">加载中…</div>
             <div v-else-if="hasMore" class="list-tip">
-              向下滚动加载更多（共 {{ total }} 项，已载入 {{ entries.length }} 项）
+              向下滚动加载更多（{{ statsText }}，已载入 {{ entries.length }} / {{ total }} 项）
             </div>
-            <div v-else-if="entries.length" class="list-tip">已全部加载（共 {{ total }} 项）</div>
+            <div v-else-if="entries.length" class="list-tip">
+              已全部加载（{{ statsText }}）
+            </div>
             <div v-else class="list-tip">该目录为空或没有匹配项</div>
           </div>
         </div>
@@ -164,8 +243,10 @@
             :key="p"
             closable
             size="small"
+            :type="selectedMeta[p] ? (selectedMeta[p].is_dir ? 'warning' : 'primary') : 'info'"
             @close="removeSelected(p)"
           >
+            <el-icon class="chip-icon"><Folder v-if="selectedMeta[p] && selectedMeta[p].is_dir" /><Document v-else /></el-icon>
             {{ shortName(p) }}
           </el-tag>
           <span v-if="selected.length > 8" class="more-tip">…等共 {{ selected.length }} 项</span>
@@ -225,17 +306,27 @@ const total = ref(0)
 const offset = ref(0)
 const loading = ref(false)
 const hasMore = ref(false)
+// 当前目录的全量统计（分页前）：子文件夹数 / 符合条件的文件数
+const dirCount = ref(0)
+const fileCount = ref(0)
 const selected = ref([])
+// 已选路径的类型元数据（path → { is_dir }），用于 chips 与已选清单展示文件/目录图标
+const selectedMeta = ref({})
 const favorites = ref([])
+const recents = ref([])
 const roots = ref([])
 const listRef = ref(null)
+// 智能路径条：编辑态与输入框引用
+const pathEditing = ref(false)
+const pathEditRef = ref(null)
 
 const treeProps = { label: 'name', children: 'children', isLeaf: 'leaf' }
 
 const favStorageKey = () => `fsx_favorites_${props.favoriteKey}`
 const lastPathKey = () => `fsx_last_path_${props.favoriteKey}`
+const recentStorageKey = () => `fsx_recent_${props.favoriteKey}`
 
-// ---------- 路径与面包屑 ----------
+// ---------- 路径与智能路径条 ----------
 
 const isWindowsPath = p => /^[A-Za-z]:[\\/]/.test(p)
 
@@ -264,6 +355,65 @@ const crumbs = computed(() => {
 const parentPath = computed(() => {
   const c = crumbs.value
   return c.length > 1 ? c[c.length - 2].path : ''
+})
+
+// 路径条最多展示的层级段数（含根段）；超出时中间层级折叠为 …
+const MAX_VISIBLE_SEGMENTS = 4
+
+const rootSegment = computed(() => crumbs.value[0] || null)
+
+const collapsedCount = computed(() => Math.max(0, crumbs.value.length - MAX_VISIBLE_SEGMENTS))
+
+const collapsedSegments = computed(() => {
+  const list = crumbs.value
+  if (collapsedCount.value === 0) return []
+  return list.slice(1, 1 + collapsedCount.value)
+})
+
+const tailSegments = computed(() => {
+  const list = crumbs.value
+  if (collapsedCount.value === 0) return list.slice(1)
+  return list.slice(1 + collapsedCount.value)
+})
+
+const togglePathEdit = () => {
+  pathEditing.value = !pathEditing.value
+  if (pathEditing.value) {
+    pathInput.value = currentPath.value
+    nextTick(() => pathEditRef.value?.focus())
+  }
+}
+
+const copyPath = async () => {
+  const p = currentPath.value
+  if (!p) return
+  try {
+    await navigator.clipboard.writeText(p)
+    ElMessage.success('已复制完整路径')
+  } catch (e) {
+    // 剪贴板 API 在非安全上下文下不可用，回退为选中输入框内容供手动复制
+    pathInput.value = p
+    pathEditing.value = true
+    nextTick(() => {
+      pathEditRef.value?.focus()
+      pathEditRef.value?.select?.()
+    })
+    ElMessage.info('浏览器不支持自动复制，已选中路径请按 Ctrl+C')
+  }
+}
+
+// 扩展名提示 chips（统一补上前导点）
+const extsLabel = computed(() =>
+  (props.exts || [])
+    .map(e => String(e).trim())
+    .filter(Boolean)
+    .map(e => (e.startsWith('.') ? e : '.' + e))
+)
+
+// 当前目录统计文案：目录模式（dirsOnly）不统计文件，避免展示无意义的 0
+const statsText = computed(() => {
+  if (props.mode === 'dir') return `${dirCount.value} 个文件夹`
+  return `${dirCount.value} 个文件夹 · ${fileCount.value} 个符合条件的文件`
 })
 
 const shortName = p => {
@@ -349,8 +499,12 @@ const loadDir = async (reset = true) => {
 
     const d = res.data || {}
     total.value = d.total || 0
+    dirCount.value = d.dir_count || 0
+    fileCount.value = d.file_count || 0
     hasMore.value = !!d.truncated
     entries.value = reset ? (d.entries || []) : entries.value.concat(d.entries || [])
+    // 回填已选路径的类型元数据，使已选 chips 能正确展示文件/目录图标
+    backfillSelectedMeta(d.entries || [])
     // UI-08: 限制内存内保留的条目数，避免"滚动数十页后 DOM 节点破万"导致页面卡死
     if (entries.value.length > MAX_KEPT_ENTRIES) {
       entries.value = entries.value.slice(entries.value.length - MAX_KEPT_ENTRIES)
@@ -360,10 +514,25 @@ const loadDir = async (reset = true) => {
     pathInput.value = currentPath.value
     if (reset && localStorage) {
       try { localStorage.setItem(lastPathKey(), currentPath.value) } catch (e) {}
+      // 记录最近访问，便于快速回到高频目录
+      pushRecent(currentPath.value)
     }
   } finally {
     loading.value = false
   }
+}
+
+// 将目录页中出现的已选路径回填类型元数据
+const backfillSelectedMeta = list => {
+  const meta = { ...selectedMeta.value }
+  let changed = false
+  for (const e of list) {
+    if (selected.value.includes(e.path) && !meta[e.path]) {
+      meta[e.path] = { is_dir: !!e.is_dir }
+      changed = true
+    }
+  }
+  if (changed) selectedMeta.value = meta
 }
 
 const loadMore = () => {
@@ -430,8 +599,11 @@ const initRoots = async () => {
 
 const handleOpen = async () => {
   selected.value = [...props.modelValue]
+  selectedMeta.value = {}
   keyword.value = ''
+  pathEditing.value = false
   loadFavorites()
+  loadRecents()
   // UI-08: 弹窗打开后测量可视区高度，供窗口化渲染使用
   nextTick(syncViewportHeight)
 
@@ -485,7 +657,6 @@ const loadFavorites = () => {
     favorites.value = []
   }
 }
-
 const addFavorite = () => {
   if (!currentPath.value) return
   if (favorites.value.some(f => f.path === currentPath.value)) {
@@ -501,6 +672,33 @@ const removeFavorite = f => {
   try { localStorage.setItem(favStorageKey(), JSON.stringify(favorites.value)) } catch (e) {}
 }
 
+// ---------- 最近访问 ----------
+
+const MAX_RECENTS = 5
+
+const loadRecents = () => {
+  try {
+    recents.value = JSON.parse(localStorage.getItem(recentStorageKey()) || '[]')
+  } catch (e) {
+    recents.value = []
+  }
+}
+
+const pushRecent = path => {
+  if (!path || !localStorage) return
+  const next = [
+    { name: shortName(path), path },
+    ...recents.value.filter(r => r.path !== path)
+  ].slice(0, MAX_RECENTS)
+  recents.value = next
+  try { localStorage.setItem(recentStorageKey(), JSON.stringify(next)) } catch (e) {}
+}
+
+const removeRecent = r => {
+  recents.value = recents.value.filter(x => x.path !== r.path)
+  try { localStorage.setItem(recentStorageKey(), JSON.stringify(recents.value)) } catch (e) {}
+}
+
 // ---------- 选择 ----------
 
 const canCheck = e => {
@@ -514,13 +712,22 @@ const selectableEntries = computed(() => entries.value.filter(canCheck))
 
 const isSelected = p => selected.value.includes(p)
 
+const recordMeta = (path, isDir) => {
+  if (selectedMeta.value[path]) return
+  selectedMeta.value = { ...selectedMeta.value, [path]: { is_dir: !!isDir } }
+}
+
 const toggleSelect = e => {
   if (props.multiple) {
-    selected.value = isSelected(e.path)
-      ? selected.value.filter(x => x !== e.path)
-      : selected.value.concat(e.path)
+    if (isSelected(e.path)) {
+      selected.value = selected.value.filter(x => x !== e.path)
+    } else {
+      selected.value = selected.value.concat(e.path)
+      recordMeta(e.path, e.is_dir)
+    }
   } else {
     selected.value = isSelected(e.path) ? [] : [e.path]
+    if (selected.value.length) recordMeta(e.path, e.is_dir)
   }
 }
 
@@ -533,17 +740,29 @@ const onRowDblClick = e => {
 }
 
 const selectCurrentPage = () => {
-  const targets = selectableEntries.value.map(e => e.path)
+  // both 模式下只全选本页文件：目录的选择交给"选择当前目录"，
+  // 避免同时勾选目录与其子文件造成重复收集。
+  const pool = props.mode === 'both'
+    ? entries.value.filter(e => !e.is_dir && canCheck(e))
+    : selectableEntries.value
+  const targets = pool.map(e => e.path)
   const merged = new Set(selected.value.concat(targets))
   selected.value = Array.from(merged)
+  pool.forEach(e => recordMeta(e.path, e.is_dir))
 }
 
 const removeSelected = p => {
   selected.value = selected.value.filter(x => x !== p)
+  if (selectedMeta.value[p]) {
+    const meta = { ...selectedMeta.value }
+    delete meta[p]
+    selectedMeta.value = meta
+  }
 }
 
 const clearSelected = () => {
   selected.value = []
+  selectedMeta.value = {}
 }
 
 const visibleSelected = computed(() => selected.value.slice(0, 8))
@@ -556,14 +775,17 @@ const selectCurrentDir = () => {
     } else {
       selected.value = [currentPath.value]
     }
+    recordMeta(currentPath.value, true)
   }
 }
 
 // ---------- 提交 ----------
 
 const confirm = () => {
-  let picked = [...selected.value]
-  if (picked.length === 0 && (props.mode === 'dir' || props.mode === 'both') && currentPath.value) {
+  let picked = [...selected]
+  // 仅目录模式允许"未勾选但确认当前目录"；both 模式必须显式勾选，
+  // 避免用户只是浏览到某目录就被动导入了整个目录。
+  if (picked.length === 0 && props.mode === 'dir' && currentPath.value) {
     picked = [currentPath.value]
   }
   emit('update:modelValue', picked)
@@ -597,6 +819,7 @@ onMounted(() => {
 watch(() => props.visible, v => {
   if (v) {
     loadFavorites()
+    loadRecents()
     nextTick(syncViewportHeight)
   }
 })
@@ -616,26 +839,110 @@ watch(() => props.visible, v => {
 }
 
 .picker-path-input {
-  width: 320px;
-  margin-left: auto;
-}
-
-.picker-crumbs {
   flex: 1;
   min-width: 0;
-  overflow-x: auto;
+}
+
+/* 智能路径条：段式芯片 + 中间折叠 + 右侧操作 */
+.pathbar-track {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 8px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  overflow: hidden;
   white-space: nowrap;
-  font-size: 13px;
-  padding: 2px 0;
 }
 
-.picker-crumbs a {
+.pathbar-seg {
+  display: inline-flex;
+  align-items: center;
+  max-width: 180px;
+  min-width: 0;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  color: #334155;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+}
+
+.pathbar-seg.is-root,
+.pathbar-seg.is-ellipsis {
+  flex-shrink: 0;
+}
+
+.pathbar-seg:hover {
+  background: #f1f5f9;
   color: #0284c7;
-  text-decoration: none;
 }
 
-.picker-crumbs a:hover {
-  text-decoration: underline;
+.pathbar-seg.is-root {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.pathbar-seg.is-current {
+  background: #e0f2fe;
+  color: #0369a1;
+  font-weight: 600;
+}
+
+.pathbar-seg.is-ellipsis {
+  color: #64748b;
+  letter-spacing: 1px;
+  padding: 2px 8px;
+}
+
+.pathbar-fold-tip {
+  margin-left: auto;
+  font-size: 11px;
+  color: #94a3b8;
+  flex-shrink: 0;
+  padding-left: 8px;
+}
+
+.pathbar-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.pathbar-pop {
+  display: flex;
+  flex-direction: column;
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.pathbar-pop-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: #334155;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.pathbar-pop-item:hover {
+  background: #f1f5f9;
+  color: #0284c7;
+}
+
+.pathbar-pop-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .picker-body {
@@ -667,9 +974,18 @@ watch(() => props.visible, v => {
 }
 
 .fav-list {
-  max-height: 150px;
+  max-height: 108px;
   overflow-y: auto;
   padding: 4px 0;
+}
+
+.fav-list.is-recent {
+  border-top: 1px solid #e2e8f0;
+}
+
+.recent-icon {
+  color: #0284c7;
+  font-size: 13px;
 }
 
 .fav-item {
@@ -734,6 +1050,48 @@ watch(() => props.visible, v => {
 
 .filter-input {
   flex: 1;
+}
+
+/* 当前目录统计条 */
+.main-stats {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 6px 10px;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 12px;
+  color: #475569;
+}
+
+.main-stats-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.main-stats-item.is-dir {
+  color: #92400e;
+}
+
+.main-stats-item.is-file {
+  color: #0369a1;
+}
+
+.main-stats-hint {
+  color: #94a3b8;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip-icon {
+  margin-right: 2px;
+  vertical-align: -0.15em;
 }
 
 .entry-list {

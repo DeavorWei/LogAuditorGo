@@ -1,0 +1,303 @@
+/*
+ * 导入类弹窗共享样式（HDX 文档导入 / 任务日志导入 / 设备日志导入）。
+ * 以「导入 HDX 文档」弹窗为视觉基准抽取的设计令牌与公共类，
+ * 保证三个导入入口的弹窗结构、配色、间距、交互反馈完全一致。
+ * 该文件为全局样式，在 main.js 中统一引入。
+ */
+
+:root {
+  /* 主色与功能色（对齐 element-plus primary #0284c7 体系） */
+  --imp-primary: #0284c7;
+  --imp-primary-dark: #0369a1;
+  --imp-primary-bg: #f0f9ff;
+  --imp-primary-border: #bae6fd;
+  --imp-success: #16a34a;
+  --imp-success-bg: #f0fdf4;
+  --imp-success-border: #bbf7d0;
+  --imp-warning: #d97706;
+  --imp-warning-bg: #fffbeb;
+  --imp-warning-border: #fde68a;
+  --imp-danger: #ef4444;
+  --imp-danger-bg: #fef2f2;
+  --imp-danger-border: #fecaca;
+
+  /* 中性色 */
+  --imp-text: #1e293b;
+  --imp-text-secondary: #475569;
+  --imp-text-muted: #64748b;
+  --imp-text-faint: #94a3b8;
+  --imp-border: #e2e8f0;
+  --imp-bg: #f8fafc;
+  --imp-bg-hover: #f1f5f9;
+  --imp-bg-selected: #e0f2fe;
+
+  --imp-radius: 8px;
+  --imp-radius-sm: 6px;
+}
+
+/* ---------- 弹窗主体骨架 ---------- */
+
+.imp-dialog-content {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 顶部来源选择行：输入框 + 主操作 + 次操作 */
+.imp-source-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.imp-source-row .el-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 蓝色提示条：说明导入规则与支持的范围 */
+.imp-tip-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--imp-text-secondary);
+  background: var(--imp-primary-bg);
+  border: 1px solid var(--imp-primary-border);
+  border-radius: var(--imp-radius-sm);
+  padding: 8px 14px;
+  line-height: 1.6;
+}
+
+.imp-tip-bar strong {
+  color: var(--imp-primary-dark);
+}
+
+/* 结果/内容容器 */
+.imp-result-container {
+  border: 1px solid var(--imp-border);
+  border-radius: var(--imp-radius);
+  background: var(--imp-bg);
+  min-height: 380px;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 统计摘要栏 ---------- */
+
+.imp-summary-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--imp-text-secondary);
+  padding: 2px 4px;
+}
+
+.imp-summary-left {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.imp-summary-left strong {
+  color: var(--imp-primary);
+  font-weight: 600;
+}
+
+.imp-count-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.imp-count-badge.is-dir {
+  background: var(--imp-warning-bg);
+  border: 1px solid var(--imp-warning-border);
+  color: #92400e;
+}
+
+.imp-count-badge.is-file {
+  background: var(--imp-primary-bg);
+  border: 1px solid var(--imp-primary-border);
+  color: var(--imp-primary-dark);
+}
+
+.imp-count-badge.is-selected {
+  background: var(--imp-success-bg);
+  border: 1px solid var(--imp-success-border);
+  color: #15803d;
+}
+
+/* 扩展名提示 chips（如 .log .txt .syslog） */
+.imp-ext-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.imp-ext-chip {
+  font-size: 11px;
+  font-family: monospace;
+  background: var(--imp-bg-hover);
+  color: var(--imp-text-secondary);
+  border-radius: 3px;
+  padding: 1px 5px;
+  white-space: nowrap;
+}
+
+/* ---------- 空态 / 加载态 ---------- */
+
+.imp-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  text-align: center;
+  flex: 1;
+}
+
+.imp-state-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--imp-text);
+  margin-top: 14px;
+}
+
+.imp-state-desc {
+  font-size: 13px;
+  color: var(--imp-text-muted);
+  margin-top: 6px;
+  max-width: 480px;
+  line-height: 1.6;
+}
+
+/* ---------- 已选清单 ---------- */
+
+.imp-selected-box {
+  border: 1px solid var(--imp-border);
+  border-radius: var(--imp-radius-sm);
+  background: #fff;
+  overflow: hidden;
+}
+
+/* 嵌入结果容器内时去掉自身边框，由容器统一提供外框 */
+.imp-selected-box.is-embedded {
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.imp-selected-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 13px;
+  color: var(--imp-text-secondary);
+  padding: 8px 12px;
+  background: var(--imp-bg);
+  border-bottom: 1px solid var(--imp-border);
+}
+
+.imp-selected-header strong {
+  color: var(--imp-primary);
+}
+
+.imp-selected-list {
+  max-height: 168px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.imp-selected-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--imp-border);
+  font-size: 12px;
+}
+
+.imp-selected-item:last-child {
+  border-bottom: none;
+}
+
+.imp-selected-item:hover {
+  background: var(--imp-bg);
+}
+
+.imp-selected-type {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.imp-selected-type.is-dir {
+  background: var(--imp-warning-bg);
+  border: 1px solid var(--imp-warning-border);
+  color: #92400e;
+}
+
+.imp-selected-type.is-file {
+  background: var(--imp-primary-bg);
+  border: 1px solid var(--imp-primary-border);
+  color: var(--imp-primary-dark);
+}
+
+.imp-selected-name {
+  font-weight: 600;
+  color: var(--imp-text);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.imp-selected-path {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--imp-text-muted);
+  font-family: monospace;
+}
+
+.imp-selected-size {
+  flex-shrink: 0;
+  color: var(--imp-text-faint);
+}
+
+.imp-selected-remove {
+  flex-shrink: 0;
+  cursor: pointer;
+  color: var(--imp-text-faint);
+  transition: color 0.2s;
+}
+
+.imp-selected-remove:hover {
+  color: var(--imp-danger);
+}
+
+/* ---------- 结果表格 ---------- */
+
+.imp-table {
+  border-radius: var(--imp-radius-sm);
+  overflow: hidden;
+  background: #fff;
+}

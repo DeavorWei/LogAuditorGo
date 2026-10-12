@@ -165,95 +165,140 @@
       </template>
     </el-dialog>
 
-    <!-- 向设备导入日志对话框 -->
+    <!-- 向设备导入日志对话框（样式基准：导入 HDX 文档弹窗） -->
     <el-dialog
       v-model="showImportDialog"
       :title="`向设备「${targetDevice?.device_name}」导入日志`"
-      width="620px"
+      width="1000px"
+      top="6vh"
       destroy-on-close
     >
-      <el-tabs v-model="importTab">
-        <el-tab-pane label="从本机目录导入" name="dir">
-          <div class="path-import-pane">
-            <el-icon size="36" color="#16a34a"><folder-add /></el-icon>
-            <div class="pane-title">选择该设备的日志目录</div>
-            <p class="pane-desc">
-              目录由服务端进程直接读取，不经过浏览器上传。导入后日志将直接归属给「{{ targetDevice?.device_name }}」
-            </p>
-            <el-button type="success" size="small" @click="openPicker('dir')">选择日志目录</el-button>
+      <el-tabs v-model="importTab" type="border-card">
+        <!-- 从本机导入：文件与目录合并为一个入口 -->
+        <el-tab-pane label="从本机导入" name="paths">
+          <div class="imp-dialog-content">
+            <div class="imp-source-row">
+              <el-input
+                v-model="manualPathInput"
+                placeholder="输入或粘贴日志文件 / 目录的绝对路径，如 D:\Logs\switch01.log 或 D:\Logs"
+                clearable
+                @keyup.enter="addManualPath"
+              >
+                <template #prepend>
+                  <el-icon><Folder /></el-icon>
+                  <span style="margin-left: 4px;">路径</span>
+                </template>
+              </el-input>
+              <el-button type="primary" plain icon="FolderOpened" @click="openPicker">
+                浏览文件 / 目录
+              </el-button>
+              <el-button
+                type="primary"
+                :disabled="!manualPathInput.trim()"
+                :loading="statting"
+                @click="addManualPath"
+              >
+                <el-icon style="margin-right: 4px"><Plus /></el-icon>
+                添加到列表
+              </el-button>
+            </div>
+
+            <div class="imp-tip-bar">
+              <el-icon color="#0284c7"><InfoFilled /></el-icon>
+              <span>
+                文件与目录均由服务端进程直接读取，不经过浏览器上传；目录会按扩展名递归收集其中所有日志文件，当前支持
+                <strong>.log / .txt / .syslog</strong>。导入后日志将直接归属给「{{ targetDevice?.device_name }}」。
+              </span>
+            </div>
+
+            <div class="imp-result-container">
+              <div v-if="!selectedPaths.length" class="imp-state-box">
+                <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
+                <div class="imp-state-title">请选择日志文件或目录</div>
+                <div class="imp-state-desc">
+                  点击上方「浏览文件 / 目录」在服务端文件系统中选择，或直接粘贴绝对路径后点击「添加到列表」。
+                  可同时选择多个文件与多个目录，一次完成导入。
+                </div>
+              </div>
+
+              <div v-else class="imp-selected-box is-embedded">
+                <div class="imp-selected-header">
+                  <span>
+                    已选 <strong>{{ selectedPaths.length }}</strong> 个路径
+                    <span class="imp-count-badge is-file">{{ selectedFileCount }} 个文件</span>
+                    <span class="imp-count-badge is-dir">{{ selectedDirCount }} 个目录</span>
+                  </span>
+                  <el-button link type="danger" size="small" @click="clearPaths">清空</el-button>
+                </div>
+                <div class="imp-selected-list">
+                  <div v-for="(p, idx) in selectedPaths" :key="p.path" class="imp-selected-item">
+                    <span class="imp-selected-type" :class="p.is_dir ? 'is-dir' : 'is-file'">
+                      {{ p.is_dir ? '目录' : '文件' }}
+                    </span>
+                    <el-icon :color="p.is_dir ? '#d97706' : '#0284c7'">
+                      <Folder v-if="p.is_dir" /><Document v-else />
+                    </el-icon>
+                    <span class="imp-selected-name" :title="p.path">{{ pathBaseName(p.path) }}</span>
+                    <span class="imp-selected-path" :title="p.path">{{ p.path }}</span>
+                    <span class="imp-selected-size">{{ p.is_dir ? '递归收集' : formatSize(p.size) }}</span>
+                    <el-icon class="imp-selected-remove" @click="removePath(idx)"><Close /></el-icon>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!--
+              UI-12: 冲突策略选择器。
+              原先两处导入路径都把 conflictMode 写死为 'overwrite'，
+              重复导入会静默覆盖同名文件已解析的结果（含人工确认过的归属），
+              且与文档导入页提供的 skip/overwrite/rename 选择体验不一致。
+            -->
+            <div class="conflict-strategy-box">
+              <span class="conflict-label">同名文件冲突策略</span>
+              <el-radio-group v-model="importConflictMode" size="small">
+                <el-radio-button value="rename">重命名保留</el-radio-button>
+                <el-radio-button value="skip">跳过同名</el-radio-button>
+                <el-radio-button value="overwrite">覆盖重解析</el-radio-button>
+              </el-radio-group>
+              <span class="conflict-hint">{{ conflictModeHint }}</span>
+            </div>
           </div>
         </el-tab-pane>
 
-        <el-tab-pane label="从本机文件导入" name="file">
-          <div class="path-import-pane">
-            <el-icon size="36" color="#0284c7"><upload-filled /></el-icon>
-            <div class="pane-title">选择该设备的日志文件</div>
-            <p class="pane-desc">
-              支持 .log / .txt / .syslog 等常见格式，可同时选择多个文件
-            </p>
-            <el-button type="primary" size="small" @click="openPicker('file')">选择日志文件</el-button>
-          </div>
-        </el-tab-pane>
-
-        <el-tab-pane label="直接粘贴文本" name="text">
+        <!-- 直接粘贴文本 -->
+        <el-tab-pane label="输入日志文本" name="text">
           <el-input
             v-model="textLogContent"
             type="textarea"
-            :rows="8"
+            :rows="14"
             placeholder="直接在此处粘贴 Syslog 原始日志报文文本..."
           />
+          <div class="text-meta-row">
+            <span>{{ textLogContent.length }} 字符</span>
+            <span v-if="!textLogContent.trim()">内容为空时无法导入</span>
+          </div>
         </el-tab-pane>
       </el-tabs>
-
-      <!--
-        UI-12: 冲突策略选择器。
-        原先两处导入路径都把 conflictMode 写死为 'overwrite'，
-        重复导入会静默覆盖同名文件已解析的结果（含人工确认过的归属），
-        且与文档导入页提供的 skip/overwrite/rename 选择体验不一致。
-      -->
-      <div class="conflict-strategy-box">
-        <span class="conflict-label">同名文件冲突策略</span>
-        <el-radio-group v-model="importConflictMode" size="small">
-          <el-radio-button value="rename">重命名保留</el-radio-button>
-          <el-radio-button value="skip">跳过同名</el-radio-button>
-          <el-radio-button value="overwrite">覆盖重解析</el-radio-button>
-        </el-radio-group>
-        <span class="conflict-hint">{{ conflictModeHint }}</span>
-      </div>
-
-      <!-- 已选路径清单 -->
-      <div v-if="selectedPaths.length > 0 && importTab !== 'text'" class="pending-paths-box">
-        <div class="pending-paths-header">
-          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
-          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
-        </div>
-        <div class="pending-paths-list">
-          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
-            <span class="path-value" :title="p">📁 {{ p }}</span>
-            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
-          </div>
-        </div>
-      </div>
 
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showImportDialog = false">取消</el-button>
-          <el-button type="primary" :loading="importing" @click="submitImportLogs">
-            开始导入分析
+          <el-button type="primary" :loading="importing" :disabled="!canImport" @click="submitImportLogs">
+            开始导入分析 ({{ pendingCount }})
           </el-button>
         </span>
       </template>
     </el-dialog>
 
-    <!-- 服务端本地路径选择器（设备日志导入专用） -->
+    <!-- 服务端本地路径选择器（设备日志导入专用，文件与目录均可选） -->
     <ServerPathPicker
-      v-model="selectedPaths"
       v-model:visible="showPathPicker"
-      :mode="pickerMode"
+      mode="both"
       :exts="logExts"
       :multiple="true"
       favorite-key="device-logs"
-      :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
+      title="选择日志文件或目录"
+      @confirm="onPickerConfirm"
     />
   </div>
 </template>
@@ -263,9 +308,10 @@
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { DEVICE_FORM_TYPE_OPTIONS, DEFAULT_DEVICE_FORM_TYPE, deviceTypeLabel } from '@/constants/deviceTypes'
 import { ElMessage } from 'element-plus'
-import { Monitor, UploadFilled, FolderAdd, Close } from '@element-plus/icons-vue'
+import { Monitor, Folder, Document, Close, Plus, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
+import { formatSize as sharedFormatSize } from '@/utils/format'
 
 const props = defineProps({
   taskId: {
@@ -350,10 +396,13 @@ const deviceFormRules = {
 
 const showImportDialog = ref(false)
 const targetDevice = ref(null)
-const importTab = ref('dir')
+// paths: 从本机导入（文件 + 目录合并入口）；text: 手动输入日志文本
+const importTab = ref('paths')
+// 已选路径清单，元素为 { path, is_dir, size }
 const selectedPaths = ref([])
+const manualPathInput = ref('')
+const statting = ref(false)
 const showPathPicker = ref(false)
-const pickerMode = ref('dir')
 const logExts = ['.log', '.txt', '.syslog']
 const textLogContent = ref('')
 
@@ -482,21 +531,112 @@ const handleDelete = async (deviceId) => {
 const openImportDialog = (row) => {
   targetDevice.value = row
   selectedPaths.value = []
+  manualPathInput.value = ''
   textLogContent.value = ''
-  importTab.value = 'dir'
+  importTab.value = 'paths'
   showImportDialog.value = true
 }
 
-// 打开服务端本地路径选择器（dir: 目录模式，file: 文件模式）
-const openPicker = mode => {
-  pickerMode.value = mode
-  importTab.value = mode
+// fsStat 单次上限 500 条，超出时分批校验
+const STAT_CHUNK = 400
+
+const statPaths = async paths => {
+  const result = []
+  for (let i = 0; i < paths.length; i += STAT_CHUNK) {
+    const chunk = paths.slice(i, i + STAT_CHUNK)
+    const res = await api.fsStat(chunk)
+    if (res.code === 0) {
+      result.push(...(res.data?.entries || []))
+    }
+  }
+  return result
+}
+
+// 将路径并入已选清单：自动识别文件/目录与大小，去重
+const mergePaths = async paths => {
+  const incoming = (paths || []).filter(p => p && !selectedPaths.value.some(x => x.path === p))
+  if (!incoming.length) return
+  statting.value = true
+  try {
+    const entries = await statPaths(incoming)
+    const byPath = new Map(entries.map(e => [e.path, e]))
+    const missing = []
+    const added = []
+    for (const p of incoming) {
+      const e = byPath.get(p)
+      if (e && e.exists) {
+        added.push({ path: e.path, is_dir: !!e.is_dir, size: e.size || 0 })
+      } else {
+        missing.push(p)
+      }
+    }
+    if (added.length) {
+      selectedPaths.value = selectedPaths.value.concat(added)
+    }
+    if (missing.length) {
+      ElMessage.warning(`有 ${missing.length} 个路径不存在或不可访问：${missing[0]}${missing.length > 1 ? ' 等' : ''}`)
+    }
+  } catch (e) {
+    console.error('Stat paths failed:', e)
+    ElMessage.error('路径校验失败，请检查路径是否正确')
+  } finally {
+    statting.value = false
+  }
+}
+
+// 打开服务端本地路径选择器（文件与目录均可选）
+const openPicker = () => {
   showPathPicker.value = true
+}
+
+const onPickerConfirm = paths => {
+  mergePaths(Array.isArray(paths) ? paths : [paths])
+}
+
+const addManualPath = async () => {
+  const p = (manualPathInput.value || '').trim()
+  if (!p) {
+    ElMessage.warning('请输入文件或目录的绝对路径')
+    return
+  }
+  if (selectedPaths.value.some(x => x.path === p)) {
+    ElMessage.info('该路径已在列表中')
+    return
+  }
+  await mergePaths([p])
+  if (selectedPaths.value.some(x => x.path === p)) {
+    manualPathInput.value = ''
+  }
 }
 
 const removePath = index => {
   selectedPaths.value.splice(index, 1)
 }
+
+const clearPaths = () => {
+  selectedPaths.value = []
+}
+
+const pathBaseName = p => {
+  if (!p) return ''
+  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
+  return segs.length ? segs[segs.length - 1] : p
+}
+
+const selectedFileCount = computed(() => selectedPaths.value.filter(p => !p.is_dir).length)
+const selectedDirCount = computed(() => selectedPaths.value.filter(p => p.is_dir).length)
+
+const pendingCount = computed(() =>
+  importTab.value === 'text' ? (textLogContent.value.trim() ? 1 : 0) : selectedPaths.value.length
+)
+
+const canImport = computed(() =>
+  !importing.value &&
+  !statting.value &&
+  (importTab.value === 'text' ? textLogContent.value.trim() !== '' : selectedPaths.value.length > 0)
+)
+
+const formatSize = bytes => sharedFormatSize(bytes, '')
 
 const submitImportLogs = async () => {
   if (!targetDevice.value) return
@@ -530,14 +670,14 @@ const submitImportLogs = async () => {
   }
 
   if (selectedPaths.value.length === 0) {
-    ElMessage.warning('请选择至少一个日志目录或日志文件')
+    ElMessage.warning('请选择至少一个日志文件或目录')
     return
   }
 
   importing.value = true
   try {
     const res = await api.importDeviceLogsByPaths(props.taskId, targetDevice.value.id, {
-      paths: selectedPaths.value,
+      paths: selectedPaths.value.map(p => p.path),
       exts: logExts,
       recursive: true,
       conflictMode: importConflictMode.value
@@ -576,30 +716,6 @@ defineExpose({
 </script>
 
 <style scoped>
-/* 路径导入面板 */
-.path-import-pane {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 20px 16px;
-  text-align: center;
-  background: #f8fafc;
-}
-
-.pane-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 8px 0 6px 0;
-}
-
-.pane-desc {
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.7;
-  margin: 0 auto 14px auto;
-  max-width: 440px;
-}
-
 /* UI-12: 同名文件冲突策略选择器 */
 .conflict-strategy-box {
   margin-top: 14px;
@@ -627,62 +743,12 @@ defineExpose({
   min-width: 200px;
 }
 
-/* 已选路径清单 */
-.pending-paths-box {
-  margin-top: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 10px 12px;
-  background: #f8fafc;
-}
-
-.pending-paths-header {
+.text-meta-row {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-  color: #334155;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.pending-paths-list {
-  max-height: 140px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pending-path-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
   font-size: 12px;
-  background: #fff;
-  padding: 5px 8px;
-  border-radius: 4px;
-  border: 1px solid #e2e8f0;
-}
-
-.pending-path-item .path-value {
-  flex: 1;
-  font-weight: 500;
-  color: #1e293b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.pending-path-item .del-btn {
   color: #94a3b8;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.pending-path-item .del-btn:hover {
-  color: #ef4444;
+  margin-top: 4px;
 }
 
 .device-manager-container {

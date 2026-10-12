@@ -55,7 +55,7 @@
       <WorkbenchEmptyGuide
         v-if="isTaskEmpty"
         :task-name="currentTask?.task_name"
-        @open-picker="(mode) => importDialogRef?.openWithPicker(mode)"
+        @open-picker="() => importDialogRef?.openWithPicker()"
         @open-text="importDialogRef?.open('text')"
       />
 
@@ -337,7 +337,7 @@ useWorkbenchHotkeys({
 const handleTaskCreated = async ({ taskId, needImport }) => {
   await handleTaskChange(taskId)
   if (needImport) {
-    importDialogRef.value?.open('dir')
+    importDialogRef.value?.open('paths')
   }
 }
 

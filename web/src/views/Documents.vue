@@ -155,13 +155,14 @@
       top="6vh"
       destroy-on-close
     >
-      <div class="import-dialog-content">
+      <div class="imp-dialog-content">
         <!-- 文件夹选择行 -->
-        <div class="folder-select-row">
+        <div class="imp-source-row">
           <el-input
             v-model="selectedFolder"
             placeholder="输入或粘贴包含 HDX 文档的本地文件夹绝对路径，如 D:\HuaweiHDX..."
             clearable
+            autofocus
             @keyup.enter="handleScan"
           >
             <template #prepend>
@@ -184,29 +185,29 @@
         </div>
 
         <!-- 提示条 -->
-        <div class="folder-select-tip">
+        <div class="imp-tip-bar">
           <el-icon color="#0284c7"><InfoFilled /></el-icon>
           <span>选择文件夹后，系统将自动递归扫描该目录下的所有 <strong>.hdx 官方压缩包</strong> 与包含 <strong>profile.xml</strong> 的解压文档目录。</span>
         </div>
 
         <!-- 扫描结果区域 -->
-        <div class="scan-result-container">
+        <div class="imp-result-container">
           <!-- 正在扫描 -->
-          <div v-if="scanning" class="scan-state-box scanning-box">
+          <div v-if="scanning" class="imp-state-box">
             <el-icon class="is-loading" size="36" color="#0284c7"><Loading /></el-icon>
-            <div class="state-title">正在递归扫描文件夹...</div>
-            <div class="state-desc">正在解析目录结构与 HDX 压缩包内的 profile.xml 索引，请稍候</div>
+            <div class="imp-state-title">正在递归扫描文件夹...</div>
+            <div class="imp-state-desc">正在解析目录结构与 HDX 压缩包内的 profile.xml 索引，请稍候</div>
           </div>
 
           <!-- 尚未选择或扫描 -->
-          <div v-else-if="!scannedDone" class="scan-state-box unscanned-box">
+          <div v-else-if="!scannedDone" class="imp-state-box">
             <el-icon size="48" color="#94a3b8"><FolderOpened /></el-icon>
-            <div class="state-title">请选择包含 HDX 文档的文件夹</div>
-            <div class="state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档并默认全选</div>
+            <div class="imp-state-title">请选择包含 HDX 文档的文件夹</div>
+            <div class="imp-state-desc">点击上方「浏览文件夹」或粘贴路径后点击「扫描」，系统将自动发现全部待入库文档并默认全选</div>
           </div>
 
           <!-- 扫描完成但未发现文档 -->
-          <div v-else-if="scannedItems.length === 0" class="scan-state-box empty-box">
+          <div v-else-if="scannedItems.length === 0" class="imp-state-box">
             <el-empty description="该文件夹下未检测到包含 profile.xml 的文档目录或 .hdx 压缩包" :image-size="80">
               <el-button size="small" @click="openServerFolderPicker">重新选择文件夹</el-button>
             </el-empty>
@@ -215,11 +216,11 @@
           <!-- 扫描完成并发现文档列表 -->
           <div v-else class="scanned-items-view">
             <!-- 统计摘要与全选控制 -->
-            <div class="scan-summary-bar">
-              <div class="summary-left">
+            <div class="imp-summary-bar">
+              <div class="imp-summary-left">
                 <span>共扫描发现 <strong>{{ scannedItems.length }}</strong> 个文档包</span>
-                <span class="count-badge archive-badge">{{ archiveCount }} 个压缩包</span>
-                <span class="count-badge dir-badge">{{ dirCount }} 个解压目录</span>
+                <span class="imp-count-badge is-file">{{ archiveCount }} 个压缩包</span>
+                <span class="imp-count-badge is-dir">{{ dirCount }} 个解压目录</span>
                 <span class="selected-tip">（已勾选 <strong>{{ selectedItems.length }}</strong> / {{ scannedItems.length }} 项）</span>
                 <el-button size="small" type="primary" link @click="toggleSelectAllScanned">
                   {{ isAllScannedSelected ? '取消全选' : '全选所有' }}
@@ -245,7 +246,7 @@
               border
               max-height="440px"
               @selection-change="handleScanSelectionChange"
-              class="scan-table"
+              class="imp-table"
             >
               <el-table-column type="selection" width="45" align="center" />
               <el-table-column label="类型" width="115" align="center">
@@ -848,68 +849,9 @@ onMounted(() => {
   margin-bottom: 16px;
 }
 
-/* 统一导入弹窗样式 (1000px 宽体大弹窗) */
-.import-dialog-content {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.folder-select-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.folder-select-row .el-input {
-  flex: 1;
-}
-
-.folder-select-tip {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: #475569;
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  border-radius: 6px;
-  padding: 8px 14px;
-}
-
-.scan-result-container {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-  min-height: 380px;
-  display: flex;
-  flex-direction: column;
-}
-
-.scan-state-box {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: 60px 20px;
-  text-align: center;
-  flex: 1;
-}
-
-.state-title {
-  font-size: 15px;
-  font-weight: 600;
-  color: #1e293b;
-  margin-top: 14px;
-}
-
-.state-desc {
-  font-size: 13px;
-  color: #64748b;
-  margin-top: 6px;
-  max-width: 480px;
-  line-height: 1.6;
-}
+/* 统一导入弹窗样式：骨架 / 提示条 / 统计栏 / 状态框等公共类
+   已抽取至 @/styles/import-dialog.css（与日志导入、设备导入弹窗共享），
+   此处仅保留 HDX 文档导入特有的样式。 */
 
 .scanned-items-view {
   display: flex;
@@ -918,47 +860,14 @@ onMounted(() => {
   gap: 10px;
 }
 
-.scan-summary-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 13px;
-  color: #334155;
-  padding: 2px 4px;
-}
-
-.summary-left {
+.summary-right {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.count-badge {
-  font-size: 11px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.archive-badge {
-  background: #e0f2fe;
-  color: #0369a1;
-}
-
-.dir-badge {
-  background: #dcfce7;
-  color: #15803d;
 }
 
 .selected-tip {
   font-size: 13px;
   color: #475569;
-}
-
-.scan-table {
-  border-radius: 6px;
-  overflow: hidden;
-  background: #fff;
 }
 
 .doc-title-cell {

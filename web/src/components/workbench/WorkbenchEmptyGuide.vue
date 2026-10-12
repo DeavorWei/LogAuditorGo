@@ -8,18 +8,11 @@
       </div>
 
       <div class="guide-actions">
-        <div class="action-tile" @click="$emit('open-picker', 'files')">
-          <el-icon size="32" color="#0284c7"><Files /></el-icon>
-          <h4>选择日志文件</h4>
-          <p>直接选择服务端本机上的 .log / .txt / .syslog 日志文件，支持多选</p>
-          <el-button type="primary" size="small">选择多个文件</el-button>
-        </div>
-
-        <div class="action-tile" @click="$emit('open-picker', 'dir')">
-          <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-          <h4>选择日志目录</h4>
-          <p>选择日志归档目录，由服务端递归收集其中全部日志文件</p>
-          <el-button type="success" size="small">选择日志目录</el-button>
+        <div class="action-tile" @click="$emit('open-picker', 'both')">
+          <el-icon size="32" color="#0284c7"><FolderOpened /></el-icon>
+          <h4>选择文件或目录</h4>
+          <p>在服务端本机选择 .log / .txt / .syslog 日志文件或归档目录，支持文件与目录混合多选，目录将递归收集其中全部日志</p>
+          <el-button type="primary" size="small">选择文件 / 目录</el-button>
         </div>
 
         <div class="action-tile" @click="$emit('open-text')">
@@ -34,7 +27,7 @@
 </template>
 
 <script setup>
-import { FolderOpened, Files, FolderAdd, DocumentCopy } from '@element-plus/icons-vue'
+import { FolderOpened, DocumentCopy } from '@element-plus/icons-vue'
 
 defineProps({
   taskName: {
