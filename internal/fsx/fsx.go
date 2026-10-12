@@ -250,7 +250,7 @@ func Roots(extraShortcuts ...Root) RootsResult {
 		appendShortcut("用户主目录", home)
 		// 桌面是日志/文档导入的高频起点位置。
 		// 按中英文 Windows 常见目录名依次探测，命中即止，避免同一入口重复出现。
-		for _, name := range []string{"Desktop", "桌面"} {
+		for _, name := range []string{"Desktop", "桌面", filepath.Join("OneDrive", "Desktop"), filepath.Join("OneDrive", "桌面")} {
 			desktop := filepath.Join(home, name)
 			if info, statErr := os.Stat(longPathSafe(desktop)); statErr == nil && info.IsDir() {
 				appendShortcut("桌面", desktop)

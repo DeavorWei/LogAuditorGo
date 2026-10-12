@@ -30,6 +30,7 @@
         <div v-if="!pathEditing" class="pathbar-track">
           <span
             class="pathbar-seg is-root"
+            :class="{ 'is-current': rootSegment && rootSegment.path === currentPath }"
             :title="currentPath"
             @click="rootSegment && navigate(rootSegment.path)"
           >{{ rootSegment ? rootSegment.name : '...' }}</span>
@@ -377,8 +378,10 @@ const tailSegments = computed(() => {
 })
 
 const togglePathEdit = () => {
-  pathEditing.value = !pathEditing.value
   if (pathEditing.value) {
+    jumpToInput()
+  } else {
+    pathEditing.value = true
     pathInput.value = currentPath.value
     nextTick(() => pathEditRef.value?.focus())
   }
@@ -569,6 +572,7 @@ const refresh = () => loadDir(true)
 const jumpToInput = async () => {
   const p = (pathInput.value || '').trim()
   if (!p) return
+  pathEditing.value = false
   currentPath.value = p
   keyword.value = ''
   await loadDir(true)
@@ -782,7 +786,7 @@ const selectCurrentDir = () => {
 // ---------- 提交 ----------
 
 const confirm = () => {
-  let picked = [...selected]
+  let picked = [...selected.value]
   // 仅目录模式允许"未勾选但确认当前目录"；both 模式必须显式勾选，
   // 避免用户只是浏览到某目录就被动导入了整个目录。
   if (picked.length === 0 && props.mode === 'dir' && currentPath.value) {

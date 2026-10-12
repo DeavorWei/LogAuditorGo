@@ -308,7 +308,7 @@
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
 import { DEVICE_FORM_TYPE_OPTIONS, DEFAULT_DEVICE_FORM_TYPE, deviceTypeLabel } from '@/constants/deviceTypes'
 import { ElMessage } from 'element-plus'
-import { Monitor, Folder, Document, Close, Plus, InfoFilled } from '@element-plus/icons-vue'
+import { Monitor, Folder, FolderOpened, Document, Close, Plus, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import { formatSize as sharedFormatSize } from '@/utils/format'
@@ -552,18 +552,21 @@ const statPaths = async paths => {
   return result
 }
 
+const normPath = p => (p ? String(p).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase() : '')
+
 // 将路径并入已选清单：自动识别文件/目录与大小，去重
 const mergePaths = async paths => {
-  const incoming = (paths || []).filter(p => p && !selectedPaths.value.some(x => x.path === p))
+  const incoming = (paths || []).filter(p => p && !selectedPaths.value.some(x => normPath(x.path) === normPath(p)))
   if (!incoming.length) return
   statting.value = true
   try {
     const entries = await statPaths(incoming)
-    const byPath = new Map(entries.map(e => [e.path, e]))
+    const byPath = new Map(entries.map((e, idx) => [normPath(e.path), e]))
     const missing = []
     const added = []
-    for (const p of incoming) {
-      const e = byPath.get(p)
+    for (let i = 0; i < incoming.length; i++) {
+      const p = incoming[i]
+      const e = byPath.get(normPath(p)) || entries[i]
       if (e && e.exists) {
         added.push({ path: e.path, is_dir: !!e.is_dir, size: e.size || 0 })
       } else {
@@ -599,12 +602,12 @@ const addManualPath = async () => {
     ElMessage.warning('请输入文件或目录的绝对路径')
     return
   }
-  if (selectedPaths.value.some(x => x.path === p)) {
+  if (selectedPaths.value.some(x => normPath(x.path) === normPath(p))) {
     ElMessage.info('该路径已在列表中')
     return
   }
   await mergePaths([p])
-  if (selectedPaths.value.some(x => x.path === p)) {
+  if (selectedPaths.value.some(x => normPath(x.path) === normPath(p))) {
     manualPathInput.value = ''
   }
 }
