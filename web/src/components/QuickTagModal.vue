@@ -119,6 +119,7 @@ import { ref, computed, nextTick } from 'vue'
 import { Search } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useTagStore } from '@/stores/tag'
+import { useTaskStore } from '@/stores/task'
 import api from '@/api'
 
 const PREDEFINE_TAG_COLORS = [
@@ -145,6 +146,7 @@ const props = defineProps({
 const emit = defineEmits(['update:visible', 'tag-added', 'tag-removed'])
 
 const tagStore = useTagStore()
+const taskStore = useTaskStore()
 const inputRef = ref(null)
 const inputKeyword = ref('')
 const creatingTag = ref(false)
@@ -204,15 +206,16 @@ const handleAddExistingTag = async (tag) => {
     const res = await api.addLogTag(props.taskId, props.log.id, tag.id)
     if (res.code === 0) {
       ElMessage.success(`已打上标签「${tag.name}」`)
-      if (!props.log.tags) props.log.tags = []
-      if (!props.log.tags.some(t => t.id === tag.id)) {
-        props.log.tags.push(tag)
+      const currentTags = [...(props.log.tags || [])]
+      if (!currentTags.some(t => t.id === tag.id)) {
+        currentTags.push(tag)
       }
+      taskStore.updateLogTags(props.log.id, currentTags)
       emit('tag-added', props.log, tag)
       await tagStore.fetchTags(props.taskId)
     }
   } catch (e) {
-    // 错误统一由 api 处理
+    console.error('Quick tag add failed:', e)
   }
 }
 
@@ -223,14 +226,13 @@ const handleRemoveTag = async (tagId) => {
     const res = await api.removeLogTag(props.taskId, props.log.id, tagId)
     if (res.code === 0) {
       ElMessage.success('已移除标签')
-      if (props.log.tags) {
-        props.log.tags = props.log.tags.filter(t => t.id !== tagId)
-      }
+      const nextTags = (props.log.tags || []).filter(t => t.id !== tagId)
+      taskStore.updateLogTags(props.log.id, nextTags)
       emit('tag-removed', props.log, tagId)
       await tagStore.fetchTags(props.taskId)
     }
   } catch (e) {
-    // 错误统一由 api 处理
+    console.error('Quick tag remove failed:', e)
   }
 }
 

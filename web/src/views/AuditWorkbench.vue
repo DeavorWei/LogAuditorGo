@@ -1,632 +1,121 @@
 <template>
   <div class="workbench-container" :class="{ 'is-immersive': workbenchUIStore.isImmersive }">
-    <!-- 顶部工作台状态栏 (沉浸模式/物理全屏下隐藏) -->
-    <div v-show="!workbenchUIStore.isImmersive" class="workbench-header">
-      <div class="header-left">
-        <el-select
-          v-model="currentTaskId"
-          placeholder="选择审计任务"
-          style="width: 280px;"
-          @change="handleTaskChange"
-        >
-          <el-option
-            v-for="t in taskList"
-            :key="t.task_id"
-            :label="`${t.task_name} (${t.task_id.substring(0, 8)})`"
-            :value="t.task_id"
-          />
-        </el-select>
-        <template v-if="currentTask">
-          <span class="task-badge">设备: {{ currentTask.device_type }}</span>
-          <el-tag v-if="currentTask.status === 'PENDING'" type="warning" size="small" effect="dark">
-            待导入日志
-          </el-tag>
-          <span v-else class="task-badge">
-            匹配率: {{ ((currentTask.matched_count / (currentTask.log_count || 1)) * 100).toFixed(1) }}%
-          </span>
-          <el-button
-            size="small"
-            type="info"
-            plain
-            icon="Files"
-            style="margin-left: 4px;"
-            @click="showFilesDialog = true"
-          >
-            已导入 {{ taskFiles.length }} 个文件 ({{ currentTask.log_count }} 行)
-          </el-button>
-        </template>
+    <!-- 1. 顶栏操作区 (任务选择、新建/分析/导出按钮) -->
+    <WorkbenchHeader
+      ref="headerRef"
+      v-show="!workbenchUIStore.isImmersive"
+      @task-change="handleTaskChange"
+      @task-created="handleTaskCreated"
+      @refresh-logs="fetchLogs"
+      @open-files="taskFilesDialogRef?.open"
+      @reanalyze="handleReanalyzeTask"
+      @open-import="importDialogRef?.open"
+    />
+
+    <!-- 2. 主视图模式导航栏 (WORKBENCH / DEVICES / MULTI_TIMELINE / RCA / MULTI_REPORT) -->
+    <WorkbenchNavBar
+      v-if="currentTaskId && !workbenchUIStore.isImmersive"
+      v-model="currentViewMode"
+    />
+
+    <!-- 3. 子视图区域 (非主工作台审计模式时按需挂载并保活) -->
+    <template v-if="currentTaskId && currentViewMode !== VIEW_MODE.WORKBENCH">
+      <div class="workbench-sub-view">
+        <DeviceManager
+          v-if="currentViewMode === VIEW_MODE.DEVICES"
+          :ref="subViewRefs.deviceManagerRef"
+          :task-id="currentTaskId"
+          @devices-updated="handleDeviceUpdated"
+        />
+        <MultiDeviceTimeline
+          v-else-if="currentViewMode === VIEW_MODE.MULTI_TIMELINE"
+          :ref="subViewRefs.timelineRef"
+          :task-id="currentTaskId"
+          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+        />
+        <RcaCenter
+          v-else-if="currentViewMode === VIEW_MODE.RCA"
+          :ref="subViewRefs.rcaCenterRef"
+          :task-id="currentTaskId"
+          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+          @task-updated="handleTaskMetadataUpdated"
+        />
+        <MultiDeviceReport
+          v-else-if="currentViewMode === VIEW_MODE.MULTI_REPORT"
+          :ref="subViewRefs.multiReportRef"
+          :task-id="currentTaskId"
+          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+        />
       </div>
-      <div class="header-right">
-        <el-button-group>
-          <el-button icon="Refresh" :disabled="!currentTaskId" @click="fetchLogs">刷新日志</el-button>
-          <el-button type="warning" icon="Opportunity" :disabled="!currentTaskId || currentTask?.status === 'PENDING' || currentTask?.log_count === 0" @click="handleReanalyzeTask">
-            重新分析
-          </el-button>
-          <el-button type="primary" icon="Upload" :disabled="!currentTaskId" @click="openImportDialog">
-            {{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}
-          </el-button>
-          <el-dropdown trigger="click" :disabled="!currentTaskId || currentTask?.status === 'PENDING'" @command="handleExportCommand">
-            <el-button type="success" icon="Download" :loading="exportingReport" :disabled="!currentTaskId || currentTask?.status === 'PENDING'">
-              导出报告 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
-            </el-button>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item command="subset_html">
-                  📄 导出筛选结果 (HTML)
-                </el-dropdown-item>
-                <el-dropdown-item command="subset_csv">
-                  📊 导出筛选结果 (CSV)
-                </el-dropdown-item>
-                <el-dropdown-item divided command="full_html">
-                  📦 导出全量报告 (HTML)
-                </el-dropdown-item>
-                <el-dropdown-item command="full_csv">
-                  📑 导出全量明细 (CSV)
-                </el-dropdown-item>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">新建任务</el-button>
-        </el-button-group>
-      </div>
-    </div>
+    </template>
 
-    <!-- 功能视图切换导航 (沉浸模式/物理全屏下隐藏) -->
-    <div v-if="currentTaskId && !workbenchUIStore.isImmersive" class="workbench-nav-bar">
-      <!--
-        WEB-16: 视图模式改为由常量驱动。
-        原先 label 是 5 个裸字符串，与下面 v-if 的判断条件各写各的，
-        改一处漏一处就会渲染成空白视图。现在统一取自 VIEW_MODE_OPTIONS。
-      -->
-      <el-radio-group v-model="currentViewMode" size="default">
-        <el-radio-button :label="VIEW_MODE.WORKBENCH">
-          <el-icon style="margin-right: 4px; vertical-align: middle;"><Document /></el-icon>
-          <span>日志审计工作台</span>
-        </el-radio-button>
-        <el-radio-button :label="VIEW_MODE.DEVICES">
-          <el-icon style="margin-right: 4px; vertical-align: middle;"><Monitor /></el-icon>
-          <span>设备管理</span>
-          <span v-if="currentTask && currentTask.device_count" class="nav-count-badge">
-            {{ currentTask.device_count }}
-          </span>
-        </el-radio-button>
-        <el-radio-button :label="VIEW_MODE.MULTI_TIMELINE">
-          <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
-          <span>多设备协同时间线</span>
-        </el-radio-button>
-        <el-radio-button :label="VIEW_MODE.RCA">
-          <el-icon style="margin-right: 4px; vertical-align: middle;"><Aim /></el-icon>
-          <span>RCA 故障联动</span>
-          <el-tooltip
-            v-if="currentTask && (currentTask.rca_status === 'QUEUED' || currentTask.rca_status === 'RUNNING')"
-            content="根因拓扑正在后台推导中，工作台已就绪可正常审计"
-            placement="top"
-          >
-            <el-icon class="is-loading" style="margin-left: 6px; color: #409eff; vertical-align: middle;"><Loading /></el-icon>
-          </el-tooltip>
-          <el-tooltip
-            v-else-if="currentTask && currentTask.rca_status === 'TIMEOUT'"
-            :content="`根因拓扑分析超时截断，已推导出 ${currentTask.rca_count || 0} 个事件`"
-            placement="top"
-          >
-            <span class="nav-count-badge warning">
-              {{ currentTask.rca_count || 0 }}!
-            </span>
-          </el-tooltip>
-          <span
-            v-else-if="currentTask && currentTask.rca_count"
-            class="nav-count-badge danger"
-          >
-            {{ currentTask.rca_count }}
-          </span>
-        </el-radio-button>
-        <el-radio-button :label="VIEW_MODE.MULTI_REPORT">
-          <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
-          <span>多设备对比诊断报告</span>
-        </el-radio-button>
-      </el-radio-group>
-    </div>
-
-    <!--
-      视图切换说明（WEB-02）：
-      原实现外层用 v-show 控制显隐、内层 v-if 只判断 currentTaskId，
-      导致选中任务后 4 个子组件被**同时挂载**（各自 onMounted 立即发请求），
-      首屏并发 10+ 请求（含 500 条时间线数据），且 4 个重型组件常驻内存。
-      现将显隐条件收敛到 v-if 上，未激活的视图不创建实例、不发请求；
-      同时去掉 refreshTrigger 拼 key 的强制重挂载，改由子组件的 refresh() 方法刷新。
-    -->
-
-    <!-- 视图 1：设备管理视图 -->
-    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.DEVICES" class="workbench-sub-view">
-      <DeviceManager
-        ref="deviceManagerRef"
-        :task-id="currentTaskId"
-        @device-updated="handleDeviceUpdated"
-        @open-progress="openProgressModalWithId"
+    <!-- 4. 核心工作台主视口 (三栏审计模式) -->
+    <div v-else class="workbench-main-view">
+      <!-- 4.1 空任务待导入引导卡片 -->
+      <WorkbenchEmptyGuide
+        v-if="isTaskEmpty"
+        :task-name="currentTask?.task_name"
+        @open-picker="(mode) => importDialogRef?.openWithPicker(mode)"
+        @open-text="importDialogRef?.open('text')"
       />
-    </div>
 
-    <!-- 视图 2：多设备时间线视图 -->
-    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.MULTI_TIMELINE" class="workbench-sub-view">
-      <MultiDeviceTimeline
-        ref="timelineRef"
-        :task-id="currentTaskId"
-      />
-    </div>
-
-    <!-- 视图 3：独立 RCA 故障联动分析中心 -->
-    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.RCA" class="workbench-sub-view">
-      <RcaCenter
-        ref="rcaCenterRef"
-        :task-id="currentTaskId"
-        @jump-to-log="handleJumpToLog"
-        @task-updated="handleTaskMetadataUpdated"
-      />
-    </div>
-
-    <!-- 视图 4：多设备对比诊断报告视图 -->
-    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.MULTI_REPORT" class="workbench-sub-view">
-      <MultiDeviceReport
-        ref="multiReportRef"
-        :task-id="currentTaskId"
-      />
-    </div>
-
-    <!-- 视图 5：经典日志审计工作台视图 -->
-    <div v-show="currentTaskId && (currentViewMode === VIEW_MODE.WORKBENCH || !currentViewMode)" class="workbench-main-view">
-      <!-- 空任务（尚未导入日志）引导卡片 -->
-      <div v-if="isTaskEmpty" class="empty-task-guide">
-        <el-card shadow="never" class="guide-card">
-          <div class="guide-header">
-            <el-icon size="48" color="#0284c7"><FolderOpened /></el-icon>
-            <h3>任务「{{ currentTask.task_name }}」尚未导入日志数据</h3>
-            <p>请选择以下方式之一，直接将本地日志导入到本任务中开始智能审计与 RCA 根因分析：</p>
-          </div>
-
-          <div class="guide-actions">
-            <div class="action-tile" @click="openGuidePicker('files')">
-              <el-icon size="32" color="#0284c7"><Files /></el-icon>
-              <h4>选择日志文件</h4>
-              <p>直接选择服务端本机上的 .log / .txt / .syslog 日志文件，支持多选</p>
-              <el-button type="primary" size="small">选择多个文件</el-button>
-            </div>
-
-            <div class="action-tile" @click="openGuidePicker('dir')">
-              <el-icon size="32" color="#16a34a"><FolderAdd /></el-icon>
-              <h4>选择日志目录</h4>
-              <p>选择日志归档目录，由服务端递归收集其中全部日志文件</p>
-              <el-button type="success" size="small">选择日志目录</el-button>
-            </div>
-
-            <div class="action-tile" @click="openImportTextTab">
-              <el-icon size="32" color="#ea580c"><DocumentCopy /></el-icon>
-              <h4>粘贴 Syslog 日志文本</h4>
-              <p>直接在网页中粘贴 syslog 报文文本开始分析</p>
-              <el-button type="warning" size="small">粘贴日志文本</el-button>
-            </div>
-          </div>
-        </el-card>
-      </div>
-
-      <!-- 核心三栏交互工作台 (任务就绪时展示) -->
+      <!-- 4.2 经典三栏协同审计区 -->
       <div v-else class="workbench-body">
-        <div class="col-left" :class="{ 'zen-mode': workbenchUIStore.isImmersive }">
-          <AuditFilterBar
-            :task-devices="taskDevices"
-            :selected-log="selectedLog"
-            :latest-log-time="latestLogTimestamp"
-            @change="onFilterChange"
-            @reset="handleResetFilters"
-          />
+        <!-- 左栏：筛选面板 + 日志卡片流与 Zen 自适应网格 -->
+        <WorkbenchLogStream
+          ref="logStreamRef"
+          :task-devices="taskDevices"
+          :selected-log="selectedLog"
+          :latest-log-time="latestLogTimestamp"
+          :log-records="logRecords"
+          :total-logs="totalLogs"
+          :loading="loadingLogs"
+          :has-active-filter="hasActiveFilter"
+          @filter-change="onFilterChange"
+          @filter-reset="handleResetFilters"
+          @open-advanced-filter="advFilterDrawerRef?.open"
+          @select="handleLogCardClick"
+          @hover-enter="handleLogHoverEnter"
+          @hover-leave="handleLogHoverLeave"
+          @page-change="fetchLogs"
+          @size-change="fetchLogs"
+        />
 
-        <!-- 日志流顶部高级筛选操作条 (纵向紧凑化) -->
-        <div class="log-stream-toolbar">
-          <span class="log-total-text">共 {{ totalLogs }} 条日志</span>
-          <el-badge
-            :value="filterStore.activeAdvancedCount()"
-            :hidden="filterStore.activeAdvancedCount() === 0"
-            type="danger"
-          >
-            <el-button
-              size="small"
-              :type="filterStore.activeAdvancedCount() > 0 ? 'primary' : 'default'"
-              plain
-              class="adv-filter-btn"
-              @click="openAdvFilterDrawer"
-            >
-              ⚡ 高级筛选
-            </el-button>
-          </el-badge>
-        </div>
+        <!-- 中栏：结构化报文解析与参数卡片 (严格保持 v-show 保活滚动位置) -->
+        <LogDetailPanel
+          v-show="!workbenchUIStore.isImmersive"
+          :log="selectedLog"
+          :task-id="currentTaskId"
+          :rca-events="rcaEvents"
+          :matched-rca="matchedRCA"
+          @view-rca="currentViewMode = VIEW_MODE.RCA"
+          @tag-changed="fetchLogs"
+        />
 
-        <div
-          class="log-stream-list"
-          :class="{ 'is-zen-grid': workbenchUIStore.isImmersive }"
-          :style="workbenchUIStore.isImmersive ? { '--zen-cols': workbenchUIStore.ui.zenColumns || 3 } : {}"
-          v-loading="loadingLogs"
-        >
-          <AuditLogCard
-            v-for="rec in logRecords"
-            :key="rec.id"
-            :record="rec"
-            :active="selectedLog && selectedLog.id === rec.id"
-            @click="handleLogCardClick(rec)"
-            @hover-enter="handleLogHoverEnter(rec)"
-            @hover-leave="handleLogHoverLeave(rec)"
-          />
-          <el-empty
-            v-if="!loadingLogs && logRecords.length === 0"
-            :description="hasActiveFilter ? '未找到符合条件的日志' : '暂无匹配日志'"
-          >
-            <el-button v-if="hasActiveFilter" type="primary" size="small" plain @click="handleResetFilters">
-              清空筛选条件
-            </el-button>
-          </el-empty>
-        </div>
-
-        <div class="pagination-bar">
-          <div class="pagination-center">
-            <el-pagination
-              v-model:current-page="filter.page"
-              :page-size="filter.pageSize"
-              :total="totalLogs"
-              layout="prev, pager, next"
-              small
-              @current-change="fetchLogs"
-            />
-          </div>
-          <div class="page-size-selector">
-            <el-select
-              v-model="filter.pageSize"
-              size="small"
-              class="page-size-select"
-              title="调整单页显示日志数量"
-              @change="handlePageSizeChange"
-            >
-              <el-option label="50 条/页" :value="50" />
-              <el-option label="100 条/页" :value="100" />
-              <el-option label="200 条/页" :value="200" />
-              <el-option label="300 条/页" :value="300" />
-              <el-option label="500 条/页" :value="500" />
-            </el-select>
-          </div>
-        </div>
+        <!-- 右栏：官方知识库指南与 RCA 因果拓扑 (严格保持 v-show 保活激活 Tab) -->
+        <LogKnowledgePanel
+          v-show="!workbenchUIStore.isImmersive"
+          :log="selectedLog"
+          :matched-rca="matchedRCA"
+        />
       </div>
 
-      <!-- 中栏：结构化报文与动态参数解析 (36%) -->
-      <div v-show="!workbenchUIStore.isImmersive" class="col-middle">
-        <!-- RCA 联动告警全局提示条 -->
-        <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
-          <div class="banner-left">
-            <el-icon color="#ea580c" size="18"><Aim /></el-icon>
-            <span class="banner-text">
-              <strong>系统已识别 {{ rcaEvents.length }} 个协议联动事件</strong>
-            </span>
-          </div>
-          <el-button type="warning" link size="small" icon="ArrowRight" @click="currentViewMode = VIEW_MODE.RCA">
-            查看 RCA 全景分析
-          </el-button>
-        </div>
-
-        <div v-if="selectedLog" class="detail-container">
-          <div class="panel-title">
-            <span>📄 日志报文结构化解析 (#{{ selectedLog.id }})</span>
-            <el-tag v-if="selectedLog.module === 'COMMENT'" size="small" type="info" effect="plain">
-              注释/元数据
-            </el-tag>
-            <el-tag v-else size="small" :type="selectedLog.knowledge_id ? 'success' : 'info'">
-              {{ selectedLog.knowledge_id ? `知识库已匹配 (${(selectedLog.match_confidence * 100).toFixed(0)}%)` : '未匹配' }}
-            </el-tag>
-          </div>
-
-          <!-- 标签展示与单条打标/摘标操作 -->
-          <div class="log-detail-tags-bar">
-            <span class="detail-tags-label">🏷 标签:</span>
-            <div class="detail-tags-list">
-              <el-tag
-                v-for="t in (selectedLog.tags || [])"
-                :key="t.id"
-                size="small"
-                closable
-                effect="dark"
-                :color="t.color || '#409EFF'"
-                class="detail-tag-pill"
-                @close="handleRemoveLogTag(selectedLog.id, t.id)"
-              >
-                {{ t.name }}
-              </el-tag>
-              <el-dropdown trigger="click" @command="handleTagDropdownCommand">
-                <el-button size="small" type="primary" plain class="add-log-tag-btn">+ 打标签</el-button>
-                <template #dropdown>
-                  <el-dropdown-menu class="tag-dropdown-menu">
-                    <el-dropdown-item
-                      v-for="t in tagStore.tags"
-                      :key="t.id"
-                      :command="t.id"
-                      class="tag-menu-item"
-                    >
-                      <div class="tag-item-row">
-                        <span class="tag-color-dot" :style="{ backgroundColor: t.color || '#409EFF' }"></span>
-                        <span class="tag-name-text">{{ t.name }}</span>
-                        <span v-if="isTagAssignedToSelected(t.id)" class="tag-assigned-badge">已添加</span>
-                        <span
-                          class="tag-delete-x"
-                          title="删除该标签"
-                          @click.stop="handleDeleteTag(t)"
-                        >
-                          <el-icon><Close /></el-icon>
-                        </span>
-                      </div>
-                    </el-dropdown-item>
-                    <el-dropdown-item v-if="tagStore.tags.length === 0" disabled>
-                      暂无标签
-                    </el-dropdown-item>
-                    <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
-                      <el-icon color="#409eff"><Plus /></el-icon>
-                      <span style="color: #409eff; font-weight: 500;">+ 新增标签</span>
-                    </el-dropdown-item>
-                  </el-dropdown-menu>
-                </template>
-              </el-dropdown>
-            </div>
-          </div>
-
-          <!-- 原始日志 -->
-          <div class="section-box">
-            <div class="box-title">原始 Syslog 报文</div>
-            <div class="raw-code">{{ selectedLog.raw_log }}</div>
-          </div>
-
-          <!-- 事件语义解析摘要 -->
-          <div v-if="selectedLog.event_summary" class="section-box event-summary-box-wb">
-            <div class="box-title">事件语义解析摘要</div>
-            <div class="event-summary-highlight-wb">
-              <el-icon color="#0284c7" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
-              <span class="summary-text-wb">{{ selectedLog.event_summary }}</span>
-            </div>
-          </div>
-
-          <!-- 结构化字段表格 -->
-          <div class="section-box">
-            <div class="box-title">核心结构化字段</div>
-            <el-descriptions :column="2" border size="small">
-              <el-descriptions-item label="设备主机名">{{ selectedLog.hostname || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="时间戳">{{ formatLogTime(selectedLog) }}</el-descriptions-item>
-              <el-descriptions-item label="所属模块">{{ selectedLog.module }}</el-descriptions-item>
-              <el-descriptions-item label="事件简名">{{ selectedLog.brief }}</el-descriptions-item>
-              <el-descriptions-item label="日志级别">
-                <span :class="['sev-tag', getSevClass(selectedLog.severity)]">
-                  Level {{ selectedLog.severity }}{{ selectedLog.module === 'COMMENT' ? ' (注释信息)' : '' }}
-                </span>
-              </el-descriptions-item>
-              <el-descriptions-item label="来源文件">{{ selectedLog.source_file || '-' }}</el-descriptions-item>
-              <el-descriptions-item label="槽位/序列号">{{ selectedLog.slot_info || '-' }}</el-descriptions-item>
-            </el-descriptions>
-          </div>
-
-          <!-- 动态提取参数与文档说明融合 -->
-          <div class="section-box">
-            <div class="box-title flex-between">
-              <span>动态提取变量与文档说明 (Parameters & Documentation)</span>
-              <span v-if="enrichedParameters.length > 0" class="param-count-badge">
-                已提取 {{ enrichedParameters.length }} 个变量
-                <template v-if="matchedParamCount > 0">（已匹配 {{ matchedParamCount }} 条文档说明）</template>
-              </span>
-            </div>
-            <div v-if="enrichedParameters && enrichedParameters.length > 0" class="param-grid-enhanced">
-              <div
-                v-for="p in enrichedParameters"
-                :key="p.name"
-                :class="['param-card', { 'has-desc': !!p.description }]"
-              >
-                <div class="param-card-top">
-                  <span class="p-key">{{ p.name }}</span>
-                  <el-tooltip
-                    v-if="p.description"
-                    placement="top"
-                    raw-content
-                    :content="formatTooltipHtml(p.description)"
-                  >
-                    <span class="p-desc-badge">📖 {{ p.description }}</span>
-                  </el-tooltip>
-                </div>
-                <div class="p-val-box">
-                  <span v-if="p.value !== '' && p.value !== null && p.value !== undefined" class="p-val">{{ p.value }}</span>
-                  <span v-else class="p-val-empty">&lt;空&gt;</span>
-                </div>
-              </div>
-            </div>
-            <div v-else class="empty-hint">
-              {{ selectedLog.module === 'COMMENT' ? '此条记录为设备系统注释或文件导出元数据，非设备故障告警，无需提取业务动态键值。' : '该日志未解析出结构化动态键值变量' }}
-            </div>
-          </div>
-
-          <!-- 消息模板动态实例化对照 -->
-          <div v-if="selectedLog.knowledge && selectedLog.knowledge.message" class="section-box">
-            <div class="box-title flex-between">
-              <span>📋 官方日志消息模板实例化 (Template Instantiation)</span>
-              <el-tag size="small" type="success" effect="plain">变量已注入</el-tag>
-            </div>
-            <div class="template-box">
-              <div class="template-rendered" v-html="renderedTemplateHtml"></div>
-              <div class="template-raw-sub">
-                <span class="sub-label">官方原始模板:</span>
-                <code>{{ selectedLog.knowledge.message }}</code>
-              </div>
-            </div>
-          </div>
-
-          <!-- 关联根因提示 -->
-          <div v-if="matchedRCA" class="rca-alert">
-            <div class="rca-alert-title">🚨 关联根因事件预警</div>
-            <div>{{ matchedRCA.root_cause_summary }}</div>
-          </div>
-        </div>
-        <div v-else class="empty-state">
-          <el-empty description="请从左侧日志列表中选择一条日志查看结构化解析" />
-        </div>
-      </div>
-
-      <!-- 右栏：华为官方知识库排查指导与 RCA 拓扑 (36%) -->
-      <div v-show="!workbenchUIStore.isImmersive" class="col-right">
-        <div v-if="selectedLog" class="knowledge-container">
-          <el-tabs v-model="activeTab" class="custom-tabs">
-            <el-tab-pane label="官方知识与处理步骤" name="knowledge">
-              <div v-if="selectedLog.knowledge" class="kb-content">
-                <div class="kb-header-card">
-                  <div class="kb-header-top">
-                    <div class="kb-title">{{ selectedLog.knowledge.module }}/{{ selectedLog.knowledge.brief }}</div>
-                    <el-switch
-                      v-model="contextualizeMode"
-                      size="small"
-                      active-text="现场参数注入"
-                      inactive-text="原始文档"
-                      style="--el-switch-on-color: #10b981;"
-                    />
-                  </div>
-                  <div class="kb-meta">
-                    <span class="badge-tier">匹配层级: {{ selectedLog.match_tier }}</span>
-                    <span class="badge-conf">置信度: {{ (selectedLog.match_confidence * 100).toFixed(0) }}%</span>
-                    <span v-if="contextualizeMode && matchedParamCount > 0" class="badge-ctx">
-                      ✨ 已将现场 {{ matchedParamCount }} 个参数动态注入至排查步骤
-                    </span>
-                  </div>
-                </div>
-
-                <!-- 含义 -->
-                <div class="kb-block">
-                  <div class="kb-subtitle">📖 日志/告警含义解释</div>
-                  <div
-                    class="kb-text"
-                    v-html="renderedKnowledgeHtml.description"
-                  ></div>
-                </div>
-
-                <!-- 官方可能原因 -->
-                <div class="kb-block">
-                  <div class="kb-subtitle">🔍 官方可能原因</div>
-                  <div
-                    class="kb-text cause-text"
-                    v-html="renderedKnowledgeHtml.cause"
-                  ></div>
-                </div>
-
-                <!-- 官方建议处理步骤 -->
-                <div class="kb-block">
-                  <div class="kb-subtitle">🛠️ 官方处理排错步骤</div>
-                  <div
-                    class="kb-text action-box"
-                    v-html="renderedKnowledgeHtml.action"
-                  ></div>
-                </div>
-
-                <!-- 系统影响 -->
-                <div v-if="selectedLog.knowledge.impact" class="kb-block">
-                  <div class="kb-subtitle">⚠️ 对系统的影响</div>
-                  <div
-                    class="kb-text"
-                    v-html="renderedKnowledgeHtml.impact"
-                  ></div>
-                </div>
-
-                <!-- 官方参数定义字典与现场对照表 -->
-                <div v-if="kbParamDefs.length > 0" class="kb-block">
-                  <div class="kb-subtitle flex-between">
-                    <span>📚 官方参数字典与现场实际值对照</span>
-                    <span class="dict-count-tag">共 {{ kbParamDefs.length }} 项参数定义</span>
-                  </div>
-                  <el-table :data="kbParamDefs" size="small" border style="width: 100%; margin-top: 6px;">
-                    <el-table-column prop="name" label="参数名称" width="130">
-                      <template #default="{ row }">
-                        <span class="dict-pname">{{ row.name }}</span>
-                      </template>
-                    </el-table-column>
-                    <el-table-column prop="description" label="官方含义说明" min-width="140" />
-                    <el-table-column label="现场实际值" width="130">
-                      <template #default="{ row }">
-                        <span v-if="row.actualValue !== undefined" class="dict-pval">{{ row.actualValue }}</span>
-                        <span v-else class="dict-pnone">未捕获</span>
-                      </template>
-                    </el-table-column>
-                  </el-table>
-                </div>
-              </div>
-              <div v-else-if="selectedLog.module === 'COMMENT'" class="comment-kb-card">
-                <div class="comment-kb-header">
-                  <el-icon color="#0284c7" size="18"><InfoFilled /></el-icon>
-                  <span class="comment-kb-title">💡 注释性日志说明 (Comment / Metadata)</span>
-                </div>
-                <div class="comment-kb-body">
-                  <div class="comment-item">
-                    <span class="c-label">日志类型：</span>
-                    <span class="c-val">网络设备系统注释或日志文件导出元数据行（以 <code>#</code> 开头）</span>
-                  </div>
-                  <div class="comment-item">
-                    <span class="c-label">业务影响：</span>
-                    <span class="c-val">非网络故障、协议异常或系统告警事件，对网络业务及设备运行无负面影响</span>
-                  </div>
-                  <div class="comment-item">
-                    <span class="c-label">典型用途：</span>
-                    <span class="c-val">记录日志生成槽位与运行环境、设备型号及固件版本、防篡改哈希校验（Digest）或文件归档记录，用于日志审计溯源与文件完整性校验</span>
-                  </div>
-                  <div class="comment-item">
-                    <span class="c-label">运维建议：</span>
-                    <span class="c-val">系统已自动归档为注释性记录，运维人员无需进行故障排查或处置</span>
-                  </div>
-                </div>
-              </div>
-              <div v-else class="empty-kb">
-                <el-empty description="该日志未命中官方知识库，可在知识库中心使用语义搜索进行检索" />
-              </div>
-            </el-tab-pane>
-
-            <el-tab-pane label="根因传播拓扑 (RCA)" name="rca">
-              <div v-if="matchedRCA" class="rca-tab-content">
-                <RcaGraph :rcaEvent="matchedRCA" />
-                <div class="rca-guide">
-                  <div class="guide-title">💡 根因处置指南</div>
-                  <div>{{ matchedRCA.recommended_action }}</div>
-                </div>
-              </div>
-              <div v-else class="empty-kb">
-                <el-empty description="当前选中日志未触发协议级连环故障传播链路" />
-              </div>
-            </el-tab-pane>
-          </el-tabs>
-        </div>
-        <div v-else class="empty-state">
-          <el-empty description="请选择日志查看官方故障知识库与排查建议" />
-        </div>
-      </div>
-      <!-- 全屏沉浸模式下居中双栏深度解析弹窗 (需求 5) -->
+      <!-- 5. 全屏沉浸式居中双栏深度解析弹窗 -->
       <AuditLogDetailModal
         v-model:visible="showLogDetailModal"
-        v-model:contextualize-mode="contextualizeMode"
         :log="selectedLog"
         :task-id="currentTaskId"
         :current-index="currentLogIndex"
         :total-count="logRecords.length"
         :matched-rca="matchedRCA"
-        :rendered-template-html="renderedTemplateHtml"
-        :rendered-knowledge-html="renderedKnowledgeHtml"
-        :enriched-parameters="enrichedParameters"
-        :matched-param-count="matchedParamCount"
-        :kb-param-defs="kbParamDefs"
         @prev="handlePrevLog"
         @next="handleNextLog"
-        @add-tag="handleAddLogTag"
-        @remove-tag="handleRemoveLogTag"
-        @delete-tag="handleDeleteTag"
+        @add-tag="fetchLogs"
+        @remove-tag="fetchLogs"
+        @delete-tag="fetchLogs"
       />
 
-      <!-- [保留组件与逻辑] 网格模式下空格键快速预览单例浮层 -->
-      <LogQuickLookPopover
-        :visible="quickLookVisible"
-        :log="hoveredLog"
-        :anchor-pos="quickLookAnchorPos"
-      />
-
-      <!-- 空格键快速打标签弹窗 (支持悬浮日志与选中日志) -->
+      <!-- 6. 快捷打标签弹窗 (空格键触发) -->
       <QuickTagModal
         v-model:visible="showQuickTagModal"
         :log="quickTagTargetLog"
@@ -635,1544 +124,97 @@
         @tag-removed="onQuickTagRemoved"
       />
     </div>
-  </div>
 
-    <!-- 已导入日志文件居中弹窗 -->
-    <el-dialog
-      v-model="showFilesDialog"
-      title="已导入日志文件清单"
-      width="780px"
-      align-center
-      destroy-on-close
-      class="task-files-dialog"
-    >
-      <div class="files-dialog-content">
-        <div class="files-dialog-summary">
-          <div class="summary-stats">
-            <span class="stat-pill">
-              共 <strong>{{ taskFiles.length }}</strong> 个日志文件
-            </span>
-            <span class="stat-pill">
-              累计 <strong>{{ (currentTask?.log_count ?? totalFileLines).toLocaleString() }}</strong> 行日志
-            </span>
-            <span class="stat-pill">
-              总大小 <strong>{{ totalFilesSize }}</strong>
-            </span>
-          </div>
-          <el-button type="primary" size="small" icon="Upload" @click="openImportDialog">补充导入日志</el-button>
-        </div>
+    <!-- 7. 业务弹窗群 (已分析文件清单、导入向导、高级筛选、分析进度) -->
+    <TaskFilesDialog
+      ref="taskFilesDialogRef"
+      :task-id="currentTaskId"
+      @open-import="importDialogRef?.open"
+      @file-deleted="handleFileDeleted"
+    />
 
-        <el-table
-          :data="taskFiles"
-          border
-          stripe
-          size="small"
-          style="width: 100%;"
-          max-height="400px"
-          empty-text="暂无已导入日志文件"
-        >
-          <el-table-column prop="file_name" label="文件名" min-width="190" show-overflow-tooltip>
-            <template #default="{ row }">
-              <span style="font-weight: 600; color: #0284c7;">📄 {{ row.file_name }}</span>
-            </template>
-          </el-table-column>
-          <el-table-column prop="line_count" label="日志行数" width="105" align="center">
-            <template #default="{ row }">
-              <el-tag size="small" type="info">{{ (row.line_count || 0).toLocaleString() }} 行</el-tag>
-            </template>
-          </el-table-column>
-          <el-table-column prop="file_size" label="大小" width="90" align="center">
-            <template #default="{ row }">{{ formatSize(row.file_size) }}</template>
-          </el-table-column>
-          <el-table-column prop="created_at" label="导入时间" width="140" align="center">
-            <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
-          </el-table-column>
-          <el-table-column label="操作" width="85" align="center" fixed="right">
-            <template #default="{ row }">
-              <el-button
-                type="danger"
-                link
-                size="small"
-                icon="Delete"
-                :loading="deletingFileId === row.id"
-                @click="handleDeleteFile(row)"
-              >
-                删除
-              </el-button>
-            </template>
-          </el-table-column>
-        </el-table>
-      </div>
-      <template #footer>
-        <div class="dialog-footer">
-          <el-button @click="showFilesDialog = false">关闭</el-button>
-        </div>
-      </template>
-    </el-dialog>
+    <TaskImportDialog
+      ref="importDialogRef"
+      :task-id="currentTaskId"
+      :task-name="currentTask?.task_name"
+      @job-started="openProgressModalWithId"
+      @import-settled="handleLogImportCompleted"
+    />
 
-    <!-- 新建任务弹窗 -->
-    <el-dialog v-model="showNewTaskDialog" title="新建日志审计任务" width="620px">
-      <el-form label-position="top">
-        <el-form-item label="任务名称">
-          <el-input v-model="newTaskForm.taskName" placeholder="例如: Core-SW-01排查-20260415" />
-        </el-form-item>
-        <el-form-item label="设备类型">
-          <!-- WEB-16: 选项统一取自常量，与 Dashboard 保持同一口径（原先此处只有 3 项） -->
-          <el-select v-model="newTaskForm.deviceType" style="width: 100%;">
-            <el-option
-              v-for="opt in DEVICE_TYPE_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showNewTaskDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleCreateEmptyTask">仅创建任务 (稍后导入)</el-button>
-        <el-button type="success" :loading="submitting" @click="handleCreateAndOpenImport">创建并立即导入日志</el-button>
-      </template>
-    </el-dialog>
+    <AdvancedFilterDrawer
+      ref="advFilterDrawerRef"
+      :task-devices="taskDevices"
+      @apply="fetchLogs"
+      @reset="fetchLogs"
+    />
 
-    <!-- 导入 / 补充导入日志弹窗 -->
-    <el-dialog v-model="showImportDialog" :title="`导入日志 - ${currentTask?.task_name || ''}`" width="620px">
-      <el-tabs v-model="importTab" type="border-card">
-        <!-- 标签页 1: 从本机目录导入 -->
-        <el-tab-pane label="从本机目录导入" name="dir">
-          <div class="path-import-pane">
-            <el-icon size="40" color="#16a34a"><FolderAdd /></el-icon>
-            <div class="pane-title">选择存放日志文件的目录</div>
-            <p class="pane-desc">
-              目录由服务端进程直接读取，不经过浏览器上传。可一次选择多个目录，
-              并按扩展名递归收集其中所有日志文件。
-            </p>
-            <el-button type="success" size="small" @click="openPicker('dir')">选择日志目录</el-button>
-          </div>
-        </el-tab-pane>
-
-        <!-- 标签页 2: 从本机文件导入 -->
-        <el-tab-pane label="从本机文件导入" name="files">
-          <div class="path-import-pane">
-            <el-icon size="40" color="#0284c7"><Files /></el-icon>
-            <div class="pane-title">选择一个或多个日志文件</div>
-            <p class="pane-desc">
-              直接选择服务端本机上的日志文件，支持 .log / .txt / .syslog 等常见格式。
-            </p>
-            <el-button type="primary" size="small" @click="openPicker('file')">选择日志文件</el-button>
-          </div>
-        </el-tab-pane>
-
-        <!-- 标签页 3: 粘贴 Syslog 文本 -->
-        <el-tab-pane label="输入日志文本" name="text">
-          <el-form label-position="top">
-            <el-form-item label="自定义日志文件名 (可选)">
-              <el-input v-model="manualFileName" placeholder="例如: manual_syslog.txt" />
-            </el-form-item>
-            <el-form-item label="Syslog 报文内容">
-              <el-input
-                v-model="manualLogText"
-                type="textarea"
-                :rows="7"
-                placeholder="粘贴 Syslog 原始日志报文文本..."
-              />
-            </el-form-item>
-          </el-form>
-        </el-tab-pane>
-      </el-tabs>
-
-      <!-- 已选路径清单 -->
-      <div v-if="selectedPaths.length > 0 && importTab !== 'text'" class="pending-paths-box">
-        <div class="pending-paths-header">
-          <span>已选择 <strong>{{ selectedPaths.length }}</strong> 个路径</span>
-          <el-button type="danger" link size="small" @click="selectedPaths = []">清空</el-button>
-        </div>
-        <div class="pending-paths-list">
-          <div v-for="(p, idx) in selectedPaths" :key="p" class="pending-path-item">
-            <span class="path-value" :title="p">📁 {{ p }}</span>
-            <el-icon class="del-btn" @click="removePath(idx)"><Close /></el-icon>
-          </div>
-        </div>
-      </div>
-
-      <template #footer>
-        <el-button @click="showImportDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" :disabled="!canStartImport" @click="handleCheckAndStartImport">
-          开始导入并分析
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 同名文件冲突处理弹窗 -->
-    <el-dialog v-model="showConflictDialog" title="⚠️ 检测到同名日志文件" width="520px">
-      <div class="conflict-dialog-body">
-        <p style="margin-bottom: 12px; line-height: 1.6; color: #334155;">
-          当前任务中已存在以下 <strong>{{ conflictingFileNames.length }}</strong> 个同名日志文件：
-        </p>
-        <div class="conflict-file-list">
-          <div v-for="name in conflictingFileNames" :key="name" class="conflict-item">
-            ⚠️ <strong>{{ name }}</strong>
-          </div>
-        </div>
-        <p style="margin-top: 14px; font-size: 13px; color: #64748b;">
-          请选择冲突文件的处理方式：
-        </p>
-      </div>
-      <template #footer>
-        <el-button @click="showConflictDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="executeImportWithConflict('rename')">
-          自动重命名共存 (推荐)
-        </el-button>
-        <el-button type="warning" :loading="submitting" @click="executeImportWithConflict('skip')">
-          跳过同名文件
-        </el-button>
-        <el-button type="danger" :loading="submitting" @click="executeImportWithConflict('overwrite')">
-          覆盖已有文件
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 全流程阶段进度实时追踪弹窗 -->
     <ImportProgressModal
       v-model="showProgressModal"
       :job-id="currentJobId"
-      title="日志智能审计与 RCA 根因分析流水线"
       @completed="handleLogImportCompleted"
-    />
-
-    <!-- 服务端本地路径选择器（日志导入专用） -->
-    <ServerPathPicker
-      v-model="selectedPaths"
-      v-model:visible="showPathPicker"
-      :mode="pickerMode"
-      :exts="logExts"
-      :multiple="true"
-      favorite-key="task-logs"
-      :title="pickerMode === 'dir' ? '选择日志目录' : '选择日志文件'"
-    />
-
-    <!-- 高级筛选抽屉 -->
-    <AdvancedFilterDrawer
-      ref="advFilterDrawerRef"
-      :task-id="currentTaskId || ''"
-      @apply="fetchLogs"
     />
   </div>
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { ref, provide, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { FolderOpened, Files, FolderAdd, DocumentCopy, Close, Document, Monitor, Histogram, DataAnalysis, Aim, ArrowRight, ArrowDown, Opportunity, Loading, Plus } from '@element-plus/icons-vue'
-import api from '@/api'
-import RcaGraph from '@/components/RcaGraph.vue'
-import ImportProgressModal from '@/components/ImportProgressModal.vue'
-import DeviceManager from '@/components/DeviceManager.vue'
-import ServerPathPicker from '@/components/ServerPathPicker.vue'
-import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
-import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
-import RcaCenter from '@/components/RcaCenter.vue'
-import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
-import AuditFilterBar from '@/components/AuditFilterBar.vue'
-import AuditLogCard from '@/components/AuditLogCard.vue'
-import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
-import LogQuickLookPopover from '@/components/LogQuickLookPopover.vue'
-import QuickTagModal from '@/components/QuickTagModal.vue'
-import { useFilterStore } from '@/stores/filter'
-import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTaskStore } from '@/stores/task'
-import { useTagStore } from '@/stores/tag'
-import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
-import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
-import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
-import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
+import { useWorkbenchUIStore } from '@/stores/workbenchUI'
+import { VIEW_MODE } from '@/constants/viewModes'
+import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
+import { useSubViewRouter } from '@/composables/useSubViewRouter'
+import { useWorkbenchHotkeys } from '@/composables/useWorkbenchHotkeys'
+import { useRcaPolling } from '@/composables/useRcaPolling'
 import { useReanalyze } from '@/composables/useReanalyze'
+import { useWorkbenchTaskContext } from '@/composables/useWorkbenchTaskContext'
+
+// 专有子组件
+import WorkbenchHeader from '@/components/workbench/WorkbenchHeader.vue'
+import WorkbenchNavBar from '@/components/workbench/WorkbenchNavBar.vue'
+import WorkbenchEmptyGuide from '@/components/workbench/WorkbenchEmptyGuide.vue'
+import WorkbenchLogStream from '@/components/workbench/WorkbenchLogStream.vue'
+import LogDetailPanel from '@/components/workbench/LogDetailPanel.vue'
+import LogKnowledgePanel from '@/components/workbench/LogKnowledgePanel.vue'
+import TaskFilesDialog from '@/components/workbench/TaskFilesDialog.vue'
+import TaskImportDialog from '@/components/workbench/TaskImportDialog.vue'
+
+// 通用组件
+import DeviceManager from '@/components/DeviceManager.vue'
+import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
+import RcaCenter from '@/components/RcaCenter.vue'
+import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
+import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
+import QuickTagModal from '@/components/QuickTagModal.vue'
+import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
+import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const route = useRoute()
-
-const filterStore = useFilterStore()
-const workbenchUIStore = useWorkbenchUIStore()
-const filter = computed(() => filterStore.filters)
 const taskStore = useTaskStore()
-const tagStore = useTagStore()
-const rcaEvents = computed(() => taskStore.rcaEvents)
+const workbenchUIStore = useWorkbenchUIStore()
 
+// 1. 子视图路由与实例刷新
+const { currentViewMode, subViewRefs, refreshActiveSubView } = useSubViewRouter()
+
+// 2. 实例引用与弹窗状态
+const headerRef = ref(null)
+const taskFilesDialogRef = ref(null)
+const importDialogRef = ref(null)
 const advFilterDrawerRef = ref(null)
+const logStreamRef = ref(null)
 
-const openAdvFilterDrawer = () => {
-  if (advFilterDrawerRef.value) {
-    advFilterDrawerRef.value.open()
-  }
-}
-
-const taskList = ref([])
-const currentTaskId = ref('')
-const currentTask = ref(null)
-/**
- * 视图模式：优先恢复上次使用的视图（持久化在 filter store），
- * 并用 isValidViewMode 校验外部输入——localStorage 可能被手工改坏，
- * 脏值回退到默认视图，避免出现"什么都渲染不出来"的空白页面。
- */
-const currentViewMode = ref(
-  isValidViewMode(filterStore.filters.viewMode)
-    ? filterStore.filters.viewMode
-    : DEFAULT_VIEW_MODE
-)
-
-// 视图切换即落盘，下次进入工作台直接回到上次的分析视图
-watch(currentViewMode, (mode) => {
-  filterStore.filters.viewMode = mode
-})
-const taskFiles = ref([])
-const showFilesDialog = ref(false)
-const deletingFileId = ref(null)
-
-const totalFileLines = computed(() => {
-  return taskFiles.value.reduce((acc, f) => acc + (f.line_count || 0), 0)
-})
-
-const totalFilesSize = computed(() => {
-  const bytes = taskFiles.value.reduce((acc, f) => acc + (f.file_size || 0), 0)
-  return formatSize(bytes)
-})
-const deviceManagerRef = ref(null)
-const timelineRef = ref(null)
-const rcaCenterRef = ref(null)
-const multiReportRef = ref(null)
-
-// 主动刷新当前激活的子视图。
-// 原实现靠 refreshTrigger++ 触发 :key 变化来"销毁重建"子组件，代价是丢失滚动位置与内部筛选状态；
-// 现改为调用子组件暴露的 refresh()，仅在子视图已挂载时生效（未激活的视图本就不该拉数据）。
-const refreshActiveSubView = async () => {
-  const target = {
-    [VIEW_MODE.DEVICES]: deviceManagerRef,
-    [VIEW_MODE.MULTI_TIMELINE]: timelineRef,
-    [VIEW_MODE.RCA]: rcaCenterRef,
-    [VIEW_MODE.MULTI_REPORT]: multiReportRef
-  }[currentViewMode.value]
-  try {
-    await target?.value?.refresh?.()
-  } catch (e) {
-    // 子组件尚未实现 refresh() 时静默降级，不影响主流程
-  }
-}
-
-const handleDeviceUpdated = async (devices) => {
-  if (currentTask.value) {
-    currentTask.value.device_count = devices ? devices.length : 0
-  }
-  taskDevices.value = devices || []
-  await refreshActiveSubView()
-}
-
-const openProgressModalWithId = (jobId) => {
-  currentJobId.value = jobId
-  showProgressModal.value = true
-}
-
-const handleJumpToLog = async (logId) => {
-  currentViewMode.value = DEFAULT_VIEW_MODE
-  try {
-    const res = await api.queryTaskLogs(currentTaskId.value, {
-      page: 1,
-      page_size: 50,
-      keyword: `#${logId}`
-    })
-    if (res.code === 0 && res.data?.records?.length > 0) {
-      selectLog(res.data.records[0])
-    }
-  } catch (e) {
-    console.error('Jump to log failed:', e)
-  }
-}
-
-const logRecords = ref([])
-const totalLogs = ref(0)
-const loadingLogs = ref(false)
-const selectedLog = ref(null)
-const activeTab = ref('knowledge')
-
-// 动态提取当前已拉取日志流的最新有效时间戳（取全页最大有效时戳，修复 N2 / §6.2）
-const latestLogTimestamp = computed(() => {
-  if (!logRecords.value || logRecords.value.length === 0) return null
-  let maxTs = null
-  let maxTimeMs = -Infinity
-  for (const item of logRecords.value) {
-    const ts = item?.timestamp
-    if (ts && !String(ts).startsWith('0001-01-01')) {
-      const ms = new Date(ts).getTime()
-      if (!isNaN(ms) && ms > maxTimeMs) {
-        maxTimeMs = ms
-        maxTs = ts
-      }
-    }
-  }
-  return maxTs
-})
-
-const taskDevices = ref([])
-
-// 新建任务相关
-const showNewTaskDialog = ref(false)
-const submitting = ref(false)
-const newTaskForm = ref({
-  taskName: '',
-  deviceType: DEFAULT_DEVICE_TYPE
-})
-
-// 导入相关
-const showImportDialog = ref(false)
-const importTab = ref('dir')
-const manualFileName = ref('')
-const manualLogText = ref('')
-const selectedPaths = ref([])
-const showPathPicker = ref(false)
-const pickerMode = ref('dir')
-const logExts = ['.log', '.txt', '.syslog']
-
-// 进度追踪相关
+const showLogDetailModal = ref(false)
+const showQuickTagModal = ref(false)
+const quickTagTargetLog = ref(null)
 const showProgressModal = ref(false)
 const currentJobId = ref('')
 
-// WEB-14: filesInputRef / dirInputRef / guideFilesInputRef / guideDirInputRef
-// 四个 ref 原先只出现在定义处，模板与脚本均无引用（历史遗留的 input[type=file] 方案残留），
-// 已一并移除。当前的文件选择统一走 ServerPathPicker 服务端直读模式。
-
-// 冲突弹窗
-const showConflictDialog = ref(false)
-const conflictingFileNames = ref([])
-
-const parsedParameters = computed(() => {
-  if (!selectedLog.value || !selectedLog.value.parameters_json) return {}
-  try {
-    return JSON.parse(selectedLog.value.parameters_json)
-  } catch (e) {
-    return {}
-  }
+// 3. RCA 状态轮询与重新分析
+const { checkAndPollRcaStatus, stopRcaPolling } = useRcaPolling({
+  onTaskUpdated: (updated) => handleTaskMetadataUpdated(updated),
+  onRcaCompleted: async (taskId) => { await taskStore.fetchRCA(taskId) }
 })
 
-// 规范化辅助函数：忽略大小写、空格与下划线
-const normalizeParamKey = (k) => {
-  return (k || '').toString().toLowerCase().replace(/[-_\s]/g, '')
-}
-
-// HTML 转义防 XSS
-const escapeHtml = (text) => {
-  if (!text) return ''
-  return String(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;')
-}
-
-// 格式化 tooltip 内容，支持换行并限制最大显示范围
-const formatTooltipHtml = (text) => {
-  if (!text) return ''
-  const escaped = escapeHtml(text).replace(/\r?\n/g, '<br/>')
-  return `<div style="max-width: 420px; max-height: 280px; overflow-y: auto; white-space: normal; line-height: 1.6; font-size: 12px; padding: 2px 4px;"><strong>官方文档定义:</strong><br/>${escaped}</div>`
-}
-
-// 动态变量与官方文档参数定义融合
-const enrichedParameters = computed(() => {
-  if (!selectedLog.value) return []
-  
-  // 如果后端已经返回 enriched_parameters (阶段二/三)，优先直接使用
-  if (Array.isArray(selectedLog.value.enriched_parameters) && selectedLog.value.enriched_parameters.length > 0) {
-    return selectedLog.value.enriched_parameters.map(p => ({
-      name: p.name || p.Name,
-      value: p.value || p.Value,
-      description: p.description || p.Description || '',
-      matched: !!(p.description || p.Description)
-    }))
-  }
-
-  const rawParams = parsedParameters.value || {}
-  const kb = selectedLog.value.knowledge
-  let defs = []
-  if (kb && kb.parameters) {
-    try {
-      const parsed = typeof kb.parameters === 'string' ? JSON.parse(kb.parameters) : kb.parameters
-      if (Array.isArray(parsed)) {
-        defs = parsed
-      }
-    } catch (e) {}
-  }
-
-  // 构建精确查找字典与规范化模糊查找字典
-  const exactMap = new Map()
-  const normalizedMap = new Map()
-  for (const d of defs) {
-    const name = d.name || d.Name || ''
-    const desc = d.description || d.Description || ''
-    if (name) {
-      exactMap.set(name, desc)
-      normalizedMap.set(normalizeParamKey(name), desc)
-    }
-  }
-
-  const result = []
-  for (const [key, val] of Object.entries(rawParams)) {
-    let desc = exactMap.get(key)
-    if (!desc) {
-      desc = normalizedMap.get(normalizeParamKey(key)) || ''
-    }
-    result.push({
-      name: key,
-      value: val,
-      description: desc,
-      matched: !!desc
-    })
-  }
-
-  return result
-})
-
-const matchedParamCount = computed(() => {
-  return enrichedParameters.value.filter(p => p.matched).length
-})
-
-// 官方日志消息模板实例化（将占位符替换为提取的真实值并高亮）
-const renderedTemplateHtml = computed(() => {
-  const log = selectedLog.value
-  if (!log || !log.knowledge || !log.knowledge.message) return ''
-
-  const rawTemplate = log.knowledge.message
-
-  // 1. 构建所有可用参数字典，融合 enrichedParameters 与 parsedParameters
-  const params = { ...(parsedParameters.value || {}) }
-  if (Array.isArray(enrichedParameters.value)) {
-    for (const ep of enrichedParameters.value) {
-      if (ep.name && ep.value !== undefined && ep.value !== '') {
-        params[ep.name] = ep.value
-      }
-    }
-  }
-
-  // 2. 构建规范化映射表
-  const normParams = new Map()
-  for (const [k, v] of Object.entries(params)) {
-    normParams.set(normalizeParamKey(k), v)
-  }
-
-  // 后端作为单一事实源：enrichedParameters 已融合官方捕获与三级角色别名匹配，
-  // 前端无需硬拷贝 aliasGroups，更不应使用易产生误配的双向描述子串模糊匹配
-  const findActualVal = (keyName) => {
-    if (!keyName) return undefined
-    // 优先精确匹配
-    if (params[keyName] !== undefined) return params[keyName]
-    const normK = normalizeParamKey(keyName)
-    if (normParams.has(normK)) return normParams.get(normK)
-    return undefined
-  }
-
-  // 3. 允许括号内包含空格的占位符正则，支持 [Var], <Var>, {Var}, %Var%, $Var
-  const placeholderRegex = /(\[\s*([a-zA-Z0-9_\-\s]+?)\s*\]|<\s*([a-zA-Z0-9_\-\s]+?)\s*>|\{\s*([a-zA-Z0-9_\-\s]+?)\s*\}|%\s*([a-zA-Z0-9_\-\s]+?)\s*%|\$\s*([a-zA-Z0-9_\-]+))/g
-
-  let lastIdx = 0
-  let html = ''
-  let match
-
-  while ((match = placeholderRegex.exec(rawTemplate)) !== null) {
-    const start = match.index
-    const end = placeholderRegex.lastIndex
-    const fullMatch = match[0]
-    const rawKey = match[2] || match[3] || match[4] || match[5] || match[6]
-    const keyName = rawKey ? rawKey.trim() : ''
-
-    // 添加前面的普通文本
-    html += escapeHtml(rawTemplate.substring(lastIdx, start))
-
-    // 查找实际值
-    const actualVal = findActualVal(keyName)
-    if (actualVal !== undefined) {
-      html += `<span class="inst-param-injected" title="参数: ${escapeHtml(keyName)} = ${escapeHtml(actualVal)}">${escapeHtml(actualVal)}</span>`
-    } else {
-      // 保持原占位符样式
-      html += `<span class="inst-param-placeholder">${escapeHtml(fullMatch)}</span>`
-    }
-
-    lastIdx = end
-  }
-
-  // 添加剩余文本
-  html += escapeHtml(rawTemplate.substring(lastIdx))
-
-  return html
-})
-
-// 现场排查上下文参数注入开关
-const contextualizeMode = ref(true)
-
-/**
- * 换行符归一化（处理字面量 \n 与 \r\n），并对"步骤/原因序号"智能补换行。
- * 抽成独立函数后可供 renderContextualizedHtml 与其 computed 缓存共用。
- */
-const normalizeLineBreaks = (raw) => {
-  let normalized = String(raw)
-    .replace(/\\r\\n/g, '\n')
-    .replace(/\\n/g, '\n')
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-
-  if (!normalized.includes('\n')) {
-    normalized = normalized
-      .replace(/(\s+)(\d+[\.、]\s*)/g, '\n$2')
-      .replace(/(\s+)(步骤\s*\d+[\.、:：]?\s*)/g, '\n$2')
-      .replace(/(\s+)(原因\s*\d+[\.、:：]?\s*)/g, '\n$2')
-      .trim()
-  }
-  return normalized
-}
-
-// 对排查步骤、可能原因等文本进行现场参数动态注入与高亮渲染，并保证换行清晰展示
-const renderContextualizedHtml = (text) => {
-  if (!text) return ''
-  if (!contextualizeMode.value) {
-    // 关闭注入时无需占位符处理，走纯转义路径
-    return escapeHtml(normalizeLineBreaks(String(text))).replace(/\n/g, '<br/>')
-  }
-
-  const normalized = normalizeLineBreaks(text)
-
-  // 统一数据源：融合 parsedParameters 与后端富化下发的 enrichedParameters（包含官方捕获参数）
-  const params = { ...(parsedParameters.value || {}) }
-  if (Array.isArray(enrichedParameters.value)) {
-    for (const ep of enrichedParameters.value) {
-      if (ep.name && ep.value !== undefined && ep.value !== '') {
-        params[ep.name] = ep.value
-      }
-    }
-  }
-
-  const normParams = new Map()
-  for (const [k, v] of Object.entries(params)) {
-    normParams.set(normalizeParamKey(k), v)
-  }
-
-  const placeholderRegex = /(\[([a-zA-Z0-9_\-]+)\]|<([a-zA-Z0-9_\-]+)>|\{([a-zA-Z0-9_\-]+)\}|%([a-zA-Z0-9_\-]+)%|\$([a-zA-Z0-9_\-]+))/g
-
-  let lastIdx = 0
-  let html = ''
-  let match
-
-  while ((match = placeholderRegex.exec(normalized)) !== null) {
-    const start = match.index
-    const end = placeholderRegex.lastIndex
-    const fullMatch = match[0]
-    const keyName = match[2] || match[3] || match[4] || match[5] || match[6]
-
-    html += escapeHtml(normalized.substring(lastIdx, start)).replace(/\n/g, '<br/>')
-
-    let actualVal = params[keyName]
-    if (actualVal === undefined) {
-      actualVal = normParams.get(normalizeParamKey(keyName))
-    }
-
-    if (actualVal !== undefined) {
-      html += `<span class="inst-param-injected" title="现场变量: ${escapeHtml(keyName)} = ${escapeHtml(actualVal)}">${escapeHtml(actualVal)}</span>`
-    } else {
-      html += `<span class="inst-param-placeholder">${escapeHtml(fullMatch)}</span>`
-    }
-
-    lastIdx = end
-  }
-
-  html += escapeHtml(normalized.substring(lastIdx)).replace(/\n/g, '<br/>')
-  return html
-}
-
-/**
- * WEB-11: 知识面板四段长文本的渲染结果缓存。
- *
- * 原实现在模板里直接调用 renderContextualizedHtml(...) 共 4 处，
- * 该函数内含多次 replace + 正则 while 循环 + escapeHtml，
- * 组件每次重渲染（例如切换分页、勾选筛选）都会把四段长文本全部重算一遍
- * 并重建 4 个 v-html 子树。改为 computed 后只在
- * selectedLog / contextualizeMode / parsedParameters 变化时才重算。
- */
-const renderedKnowledgeHtml = computed(() => {
-  const kb = selectedLog.value?.knowledge
-  if (!kb) {
-    return { description: '', cause: '', action: '', impact: '' }
-  }
-  return {
-    description: renderContextualizedHtml(kb.description || kb.message),
-    cause: renderContextualizedHtml(kb.cause || '官方文档未提供特定原因'),
-    action: renderContextualizedHtml(kb.action || '按标准网络排错规范处理'),
-    impact: renderContextualizedHtml(kb.impact)
-  }
-})
-
-// 官方知识库参数字典与现场实际值对照列表
-const kbParamDefs = computed(() => {
-  const kb = selectedLog.value?.knowledge
-  if (!kb || !kb.parameters) return []
-
-  let defs = []
-  try {
-    const parsed = typeof kb.parameters === 'string' ? JSON.parse(kb.parameters) : kb.parameters
-    if (Array.isArray(parsed)) {
-      defs = parsed
-    }
-  } catch (e) {
-    return []
-  }
-
-  // 统一数据源：融合 parsedParameters 与后端富化下发的 enrichedParameters（包含官方捕获参数）
-  const params = { ...(parsedParameters.value || {}) }
-  if (Array.isArray(enrichedParameters.value)) {
-    for (const ep of enrichedParameters.value) {
-      if (ep.name && ep.value !== undefined && ep.value !== '') {
-        params[ep.name] = ep.value
-      }
-    }
-  }
-
-  const normParams = new Map()
-  for (const [k, v] of Object.entries(params)) {
-    normParams.set(normalizeParamKey(k), v)
-  }
-
-  return defs.map(d => {
-    const name = d.name || d.Name || ''
-    const desc = d.description || d.Description || ''
-    let actualVal = params[name]
-    if (actualVal === undefined) {
-      actualVal = normParams.get(normalizeParamKey(name))
-    }
-
-    return {
-      name,
-      description: desc,
-      actualValue: actualVal
-    }
-  })
-})
-
-// WEB-13: 由 store 预建的 logId -> rcaEvent 倒排索引直接命中，O(1) 查询。
-// 旧实现每次渲染都要遍历全部 RCA 事件并 JSON.parse 其关联日志列表。
-const matchedRCA = computed(() => {
-  const logId = selectedLog.value?.id
-  if (!logId) return null
-  return taskStore.rcaOfLog(logId)
-})
-
-/**
- * WEB-06: 只负责拉取任务列表，不再顺带触发一次完整加载。
- *
- * 原实现在拿到列表后会内部再调用 `handleTaskChange(...)`，
- * 而调用方（导入完成、创建任务）紧接着又调一次，
- * 于是一次操作发出 8+ 个请求、页面反复闪烁 loading。
- * 现在"拉列表"与"切任务"职责分离，由调用方显式编排。
- */
-const fetchTasks = async () => {
-  try {
-    const res = await api.getTasks()
-    if (res.code !== 0) return
-    taskList.value = res.data || []
-    if (route.params.id) {
-      currentTaskId.value = route.params.id
-    } else if (taskList.value.length > 0 && !currentTaskId.value) {
-      currentTaskId.value = taskList.value[0].task_id
-    }
-    // 同步 currentTask 快照，避免列表刷新后标题栏仍显示旧任务名
-    currentTask.value = taskList.value.find(t => t.task_id === currentTaskId.value) || null
-    checkAndPollRcaStatus()
-  } catch (e) {
-    // 错误已由 api 拦截器统一弹出
-  }
-}
-
-let rcaPollTimer = null
-let rcaPollFailCount = 0
-
-const stopRcaPolling = () => {
-  if (rcaPollTimer) {
-    clearInterval(rcaPollTimer)
-    rcaPollTimer = null
-  }
-  rcaPollFailCount = 0
-}
-
-const checkAndPollRcaStatus = () => {
-  stopRcaPolling()
-  if (currentTask.value && (currentTask.value.rca_status === 'QUEUED' || currentTask.value.rca_status === 'RUNNING')) {
-    rcaPollTimer = setInterval(async () => {
-      const pollingId = currentTaskId.value
-      if (!pollingId) return
-      try {
-        const res = await api.getTask(pollingId)
-        rcaPollFailCount = 0
-        if (pollingId !== currentTaskId.value) return
-        if (res && res.code === 0) {
-          handleTaskMetadataUpdated(res.data)
-          if (res.data.rca_status !== 'QUEUED' && res.data.rca_status !== 'RUNNING') {
-            stopRcaPolling()
-            await fetchRCA()
-          }
-        }
-      } catch (e) {
-        rcaPollFailCount++
-        if (rcaPollFailCount >= 5) {
-          stopRcaPolling()
-          ElMessage.warning('轮询任务状态失败次数过多，已暂停自动轮询')
-        }
-      }
-    }, 3000)
-  }
-}
-
-const handleTaskMetadataUpdated = (updatedTask) => {
-  if (!updatedTask || updatedTask.task_id !== currentTaskId.value) return
-  currentTask.value = updatedTask
-  const idx = taskList.value.findIndex(t => t.task_id === updatedTask.task_id)
-  if (idx !== -1) {
-    taskList.value[idx] = { ...taskList.value[idx], ...updatedTask }
-  }
-}
-
-onUnmounted(() => {
-  stopRcaPolling()
-})
-
-const handleTaskChange = async (taskId) => {
-  currentTaskId.value = taskId
-  currentTask.value = taskList.value.find(t => t.task_id === taskId)
-  checkAndPollRcaStatus()
-  filterStore.clearTaskScopedFilters()
-  filter.value.page = 1
-  filter.value.timeStart = null
-  filter.value.timeEnd = null
-  selectedLog.value = null
-
-  /**
-   * WEB-12: 文件 / 设备 / RCA / 标签 四个维度彼此独立，旧实现串行 await 需要 3 个 RTT。
-   * 这里改为并发拉取；日志列表依赖设备与文件下拉框就绪，仍放在最后串行执行。
-   */
-  await Promise.all([fetchTaskFiles(), fetchTaskDevices(), fetchRCA(), tagStore.fetchTags(taskId)])
-  await fetchLogs()
-}
-
-const fetchTaskFiles = async () => {
-  if (!currentTaskId.value) return
-  try {
-    const res = await api.getTaskFiles(currentTaskId.value)
-    if (res.code === 0) {
-      taskFiles.value = res.data || []
-    }
-  } catch (e) {}
-}
-
-const handleDeleteFile = async (row) => {
-  if (!row || !currentTaskId.value) return
-  try {
-    await ElMessageBox.confirm(
-      `确定要删除日志文件「${row.file_name}」吗？\n删除后将同步移除该文件的 ${row.line_count || 0} 行日志记录，并更新设备日志统计及 RCA 分析结果。此操作无法撤销。`,
-      '删除日志文件确认',
-      {
-        confirmButtonText: '确认删除',
-        cancelButtonText: '取消',
-        type: 'warning',
-        confirmButtonClass: 'el-button--danger',
-        distinguishCancelAndClose: true
-      }
-    )
-  } catch (action) {
-    return
-  }
-
-  deletingFileId.value = row.id
-  try {
-    const res = await api.deleteTaskFile(currentTaskId.value, row.id)
-    if (res && res.code === 0) {
-      ElMessage.success(`文件「${row.file_name}」已成功删除`)
-
-      // 1. 周边联动：如果当前选中的单条日志属于被删除文件，清除选中状态
-      if (selectedLog.value && selectedLog.value.source_file === row.file_name) {
-        selectedLog.value = null
-      }
-      if (hoveredLog.value && hoveredLog.value.source_file === row.file_name) {
-        hoveredLog.value = null
-      }
-
-      // 2. 周边联动：如果当前筛选中有针对该文件的过滤条件，予以清除
-      if (filterStore.filters.sourceFile === row.file_name) {
-        filterStore.filters.sourceFile = ''
-      }
-
-      // 3. 周边联动：重新获取任务文件清单
-      await fetchTaskFiles()
-
-      // 4. 周边联动：同步最新任务元数据 (log_count, matched_count, status, file_count 等)
-      if (res.data) {
-        handleTaskMetadataUpdated(res.data)
-      } else {
-        const tRes = await api.getTask(currentTaskId.value)
-        if (tRes && tRes.code === 0) {
-          handleTaskMetadataUpdated(tRes.data)
-        }
-      }
-
-      // 5. 周边联动：刷新设备统计与当前激活的子视图 (DeviceManager / Timeline / RCA)
-      await fetchTaskDevices()
-      await refreshActiveSubView()
-
-      // 6. 周边联动：刷新标签系统的标签统计 (tagStore)
-      await tagStore.fetchTags(currentTaskId.value)
-
-      // 7. 周边联动：工作台日志列表重新查询
-      filter.value.page = 1
-      await fetchLogs()
-
-      // 8. 周边联动：重新检测/轮询 RCA 状态或拉取 RCA 拓扑
-      checkAndPollRcaStatus()
-      if (currentTask.value?.rca_status !== 'QUEUED' && currentTask.value?.rca_status !== 'RUNNING') {
-        await fetchRCA()
-      }
-
-      // 9. 如果全部文件已清空，关闭弹窗以展示空任务待导入引导界面
-      if (taskFiles.value.length === 0) {
-        showFilesDialog.value = false
-      }
-    } else {
-      ElMessage.error(res?.message || '删除日志文件失败')
-    }
-  } catch (err) {
-    ElMessage.error(err.message || '删除日志文件失败')
-  } finally {
-    deletingFileId.value = null
-  }
-}
-
-const fetchTaskDevices = async () => {
-  if (!currentTaskId.value) return
-  try {
-    const res = await api.getDevices(currentTaskId.value)
-    if (res.code === 0) {
-      taskDevices.value = res.data || []
-    }
-  } catch (e) {
-    console.error('Fetch task devices failed:', e)
-  }
-}
-
-/**
- * 任务是否尚未导入任何日志数据。
- * 注意：必须且仅能依据任务本身的元信息（PENDING 状态、总日志行数与文件清单）判定，
- * 严禁混用根据当前过滤条件返回的 totalLogs 进行判定；否则搜索无匹配结果（totalLogs === 0）时，
- * 会把正常任务误判为未导入数据，导致工作台被替换且筛选栏消失。
- */
-const isTaskEmpty = computed(() => {
-  if (!currentTask.value) return false
-  if (currentTask.value.status === 'PENDING') return true
-  if (typeof currentTask.value.log_count === 'number' && currentTask.value.log_count === 0 && taskFiles.value.length === 0) {
-    return true
-  }
-  return false
-})
-
-const hasActiveFilter = computed(() => {
-  return filterStore.activeFilterCount() > 0 || filterStore.filters.sortBy !== 'time' || filterStore.filters.order !== 'asc'
-})
-
-const handleResetFilters = async () => {
-  filterStore.resetFilters()
-  await fetchLogs()
-}
-
-
-const onFilterChange = async () => {
-  filter.value.page = 1
-  await fetchLogs()
-}
-
-const handlePageSizeChange = async () => {
-  filter.value.page = 1
-  await fetchLogs()
-}
-
-const fetchLogs = async () => {
-  if (!currentTaskId.value) return
-  loadingLogs.value = true
-  try {
-    // 使用统一查询请求体 (包含高级筛选与标签过滤)
-    const body = filterStore.toLogQueryBody(filter.value.page, filter.value.pageSize)
-    const res = await api.queryTaskLogsUnified(currentTaskId.value, body)
-    if (res.code === 0) {
-      logRecords.value = res.data?.records || []
-      totalLogs.value = res.data?.total || 0
-      if (logRecords.value.length > 0) {
-        const found = selectedLog.value && logRecords.value.some(r => r.id === selectedLog.value.id)
-        if (!found) {
-          selectLog(logRecords.value[0])
-        } else {
-          // 同步最新的日志引用（含 tags）
-          const updated = logRecords.value.find(r => r.id === selectedLog.value.id)
-          if (updated) selectLog(updated)
-        }
-      } else {
-        selectedLog.value = null
-      }
-    }
-  } finally {
-    loadingLogs.value = false
-  }
-}
-
-const isTagAssignedToSelected = (tagId) => {
-  return Boolean(selectedLog.value?.tags && selectedLog.value.tags.some(t => t.id === tagId))
-}
-
-const handleTagDropdownCommand = async (cmd) => {
-  if (cmd === '__create__') {
-    openCreateTagPrompt()
-  } else if (cmd) {
-    const tagId = Number(cmd)
-    if (isTagAssignedToSelected(tagId)) {
-      ElMessage.info('当前日志已包含此标签')
-    } else {
-      await handleAddLogTag(tagId)
-    }
-  }
-}
-
-const handleDeleteTag = (tag) => {
-  ElMessageBox.confirm(
-    `确定要彻底删除标签「${tag.name}」吗？此操作将从所有关联日志中移除该标签。`,
-    '删除标签',
-    {
-      confirmButtonText: '删除',
-      cancelButtonText: '取消',
-      type: 'warning',
-      confirmButtonClass: 'el-button--danger'
-    }
-  ).then(async () => {
-    const success = await tagStore.deleteTag(currentTaskId.value, tag.id)
-    if (success) {
-      if (selectedLog.value && selectedLog.value.tags) {
-        selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tag.id)
-      }
-      const recordInList = logRecords.value.find(r => r.id === selectedLog.value?.id)
-      if (recordInList && recordInList.tags) {
-        recordInList.tags = recordInList.tags.filter(t => t.id !== tag.id)
-      }
-      if (filterStore.filters.tagIds.includes(tag.id)) {
-        filterStore.filters.tagIds = filterStore.filters.tagIds.filter(id => id !== tag.id)
-        await fetchLogs()
-      }
-    }
-  }).catch(() => {})
-}
-
-const openCreateTagPrompt = () => {
-  if (!currentTaskId.value) {
-    ElMessage.warning('请先选择审计任务')
-    return
-  }
-  ElMessageBox.prompt('请输入新标签名称 (≤32字符)：', '新增标签', {
-    confirmButtonText: '创建并打标',
-    cancelButtonText: '取消',
-    inputPattern: /\S+/,
-    inputErrorMessage: '标签名称不能为空',
-    inputPlaceholder: '例如: 接口震荡 / 核心设备',
-    maxlength: 32
-  }).then(async ({ value }) => {
-    const tagName = value.trim()
-    if (!tagName) return
-    const exists = tagStore.tags.some(t => t.name.toLowerCase() === tagName.toLowerCase())
-    if (exists) {
-      ElMessage.warning(`已存在同名标签「${tagName}」`)
-      return
-    }
-    const colorIndex = tagStore.tags.length % PREDEFINE_TAG_COLORS.length
-    const color = PREDEFINE_TAG_COLORS[colorIndex] || '#409EFF'
-
-    const newTag = await tagStore.createTag(currentTaskId.value, {
-      name: tagName,
-      color,
-      remark: ''
-    })
-    if (newTag && selectedLog.value) {
-      await handleAddLogTag(newTag.id)
-    }
-  }).catch(() => {})
-}
-
-const handleAddLogTag = async (tagId) => {
-  if (!currentTaskId.value || !selectedLog.value || !tagId) return
-  try {
-    const res = await api.addLogTag(currentTaskId.value, selectedLog.value.id, tagId)
-    if (res.code === 0) {
-      ElMessage.success('标签添加成功')
-      const tag = tagStore.tags.find(t => t.id === tagId)
-      if (tag) {
-        if (!selectedLog.value.tags) selectedLog.value.tags = []
-        if (!selectedLog.value.tags.some(t => t.id === tagId)) {
-          selectedLog.value.tags.push(tag)
-        }
-        const recordInList = logRecords.value.find(r => r.id === selectedLog.value.id)
-        if (recordInList) {
-          if (!recordInList.tags) recordInList.tags = []
-          if (!recordInList.tags.some(t => t.id === tagId)) {
-            recordInList.tags.push(tag)
-          }
-        }
-      }
-      await tagStore.fetchTags(currentTaskId.value)
-    }
-  } catch (e) {
-    // 错误已由 api 统一拦截提示
-  }
-}
-
-const handleRemoveLogTag = async (logId, tagId) => {
-  if (!currentTaskId.value || !logId || !tagId) return
-  try {
-    const res = await api.removeLogTag(currentTaskId.value, logId, tagId)
-    if (res.code === 0) {
-      ElMessage.success('标签已移除')
-      if (selectedLog.value && selectedLog.value.id === logId && selectedLog.value.tags) {
-        selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tagId)
-      }
-      const recordInList = logRecords.value.find(r => r.id === logId)
-      if (recordInList && recordInList.tags) {
-        recordInList.tags = recordInList.tags.filter(t => t.id !== tagId)
-      }
-      await tagStore.fetchTags(currentTaskId.value)
-    }
-  } catch (e) {
-    // 错误已由 api 统一拦截提示
-  }
-}
-
-const fetchRCA = async () => {
-  if (!currentTaskId.value) return
-  // 交由 task store 统一拉取，并在内部同步构建 logId -> rcaEvent 倒排索引 (WEB-13)
-  try {
-    await taskStore.fetchRCA(currentTaskId.value)
-  } catch (e) {
-    console.error('Fetch RCA events failed:', e)
-  }
-}
-
-const selectLog = (log) => {
-  selectedLog.value = log
-}
-
-// 全屏模式下居中双栏深度解析弹窗与 QuickLook 状态 (需求 5 & 建议 3)
-const showLogDetailModal = ref(false)
-const quickLookVisible = ref(false)
-const hoveredLog = ref(null)
-const quickLookAnchorPos = ref(null)
-
-// 快速打标签弹窗状态 (空格键触发)
-const showQuickTagModal = ref(false)
-const quickTagTargetLog = ref(null)
-
-const openQuickTagModal = (log) => {
-  if (!log || !currentTaskId.value) return
-  quickTagTargetLog.value = log
-  showQuickTagModal.value = true
-}
-
-const onQuickTagAdded = (log, tag) => {
-  if (selectedLog.value && selectedLog.value.id === log.id) {
-    if (!selectedLog.value.tags) selectedLog.value.tags = []
-    if (!selectedLog.value.tags.some(t => t.id === tag.id)) {
-      selectedLog.value.tags.push(tag)
-    }
-  }
-  const recordInList = logRecords.value.find(r => r.id === log.id)
-  if (recordInList) {
-    if (!recordInList.tags) recordInList.tags = []
-    if (!recordInList.tags.some(t => t.id === tag.id)) {
-      recordInList.tags.push(tag)
-    }
-  }
-}
-
-const onQuickTagRemoved = (log, tagId) => {
-  if (selectedLog.value && selectedLog.value.id === log.id && selectedLog.value.tags) {
-    selectedLog.value.tags = selectedLog.value.tags.filter(t => t.id !== tagId)
-  }
-  const recordInList = logRecords.value.find(r => r.id === log.id)
-  if (recordInList && recordInList.tags) {
-    recordInList.tags = recordInList.tags.filter(t => t.id !== tagId)
-  }
-}
-
-const currentLogIndex = computed(() => {
-  if (!selectedLog.value || !logRecords.value.length) return 0
-  const idx = logRecords.value.findIndex(r => r.id === selectedLog.value.id)
-  return idx >= 0 ? idx : 0
-})
-
-// 滚动对齐当前选中日志至视口居中 (§4.4.4 / P2, 修复 N9)
-const scrollSelectedLogIntoView = () => {
-  nextTick(() => {
-    if (!selectedLog.value) return
-    const selector = selectedLog.value.id !== undefined && selectedLog.value.id !== null
-      ? `.audit-log-card[data-log-id="${selectedLog.value.id}"]`
-      : '.audit-log-card.active'
-    const el = document.querySelector(selector) || document.querySelector('.audit-log-card.active')
-    if (el) {
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-    }
-  })
-}
-
-// 弹窗关闭时自动回显视口滚动
-watch(showLogDetailModal, (val) => {
-  if (!val) {
-    scrollSelectedLogIntoView()
-  }
-})
-
-const handlePrevLog = () => {
-  if (currentLogIndex.value > 0) {
-    selectLog(logRecords.value[currentLogIndex.value - 1])
-    scrollSelectedLogIntoView()
-  }
-}
-
-const handleNextLog = () => {
-  if (currentLogIndex.value < logRecords.value.length - 1) {
-    selectLog(logRecords.value[currentLogIndex.value + 1])
-    scrollSelectedLogIntoView()
-  }
-}
-
-const handleLogCardClick = (rec) => {
-  selectLog(rec)
-  if (workbenchUIStore.isImmersive) {
-    showLogDetailModal.value = true
-  }
-}
-
-const handleLogHoverEnter = (rec, e) => {
-  hoveredLog.value = rec
-  if (e && typeof e.clientX === 'number') {
-    quickLookAnchorPos.value = { x: e.clientX, y: e.clientY }
-  } else {
-    const el = document.querySelector(`.audit-log-card.active`)
-    if (el) {
-      const rect = el.getBoundingClientRect()
-      quickLookAnchorPos.value = { x: rect.left + rect.width / 2, y: rect.top }
-    }
-  }
-}
-
-const handleLogHoverLeave = (rec) => {
-  if (hoveredLog.value && hoveredLog.value.id === rec.id) {
-    hoveredLog.value = null
-    quickLookVisible.value = false
-    quickLookAnchorPos.value = null
-  }
-}
-
-// 浏览器物理全屏联动支持 (收敛至 workbenchUIStore，修复 P0-4, N8)
-const toggleBrowserFullscreen = () => {
-  workbenchUIStore.toggleBrowserFullscreen()
-}
-
-// 全局按键守卫分发引擎 (修复 P0-2, P0-4, P1-3, P1-4, P1-6)
-const onGlobalKeydown = (e) => {
-  // 1. 视图与空任务守卫：非工作台主审计视图或无有效任务时不响应快捷键
-  if (currentViewMode.value !== VIEW_MODE.WORKBENCH || !currentTaskId.value) return
-
-  // 2. 输入框控件焦点守卫
-  const target = e.target
-  const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
-  if (isInput) return
-
-  // 3. 浮层/抽屉层级守卫 (修复 P1-3, N1)：其他弹窗或抽屉打开时不劫持快捷键
-  const hasActiveOverlay =
-    Boolean(advFilterDrawerRef.value?.visible) ||
-    showQuickTagModal.value ||
-    showNewTaskDialog.value ||
-    showImportDialog.value ||
-    showProgressModal.value ||
-    showPathPicker.value ||
-    showFilesDialog.value ||
-    showConflictDialog.value
-  if (hasActiveOverlay) return
-
-  // 4. 长按连发拦截 (修复 P1-4)
-  if (e.repeat) return
-
-  // 5. 空格键：悬浮/选中日志快速打标签 (Quick Tag Modal)
-  // [代码预留] 原空格键快速预览 (QuickLook) 触发逻辑已停用并预留如下：
-  // /*
-  // if (e.code === 'Space') {
-  //   if (workbenchUIStore.isImmersive && hoveredLog.value && !showLogDetailModal.value) {
-  //     e.preventDefault()
-  //     quickLookVisible.value = true
-  //     return
-  //   }
-  // }
-  // */
-  if (e.code === 'Space') {
-    const target = hoveredLog.value || selectedLog.value
-    if (target && !showQuickTagModal.value && !showLogDetailModal.value) {
-      e.preventDefault()
-      openQuickTagModal(target)
-      return
-    }
-  }
-
-  // 6. Shift + F: 浏览器物理全屏 (修复 P0-4)
-  if (e.shiftKey && (e.key === 'F' || e.key === 'f')) {
-    e.preventDefault()
-    toggleBrowserFullscreen()
-    return
-  }
-
-  // 7. f 键: 应用内 Zen Mode 沉浸全屏切换 (无 Shift 且未打开弹窗)
-  if (!e.shiftKey && (e.key === 'f' || e.key === 'F')) {
-    if (!showLogDetailModal.value) {
-      e.preventDefault()
-      workbenchUIStore.toggleZenMode()
-      scrollSelectedLogIntoView()
-      return
-    }
-  }
-
-  // 8. Esc 键分层退出 (优先关闭快速打标 -> 其次关闭预览 -> 其次关闭详情弹窗 -> 最后退出沉浸全屏)
-  if (e.key === 'Escape') {
-    if (showQuickTagModal.value) {
-      e.preventDefault()
-      showQuickTagModal.value = false
-    } else if (quickLookVisible.value) {
-      e.preventDefault()
-      quickLookVisible.value = false
-    } else if (showLogDetailModal.value) {
-      e.preventDefault()
-      showLogDetailModal.value = false
-      // watch(showLogDetailModal) 在关闭时已单点触发 scrollSelectedLogIntoView，此处避免重复调用 (修复 N9)
-    } else if (workbenchUIStore.isImmersive) {
-      e.preventDefault()
-      workbenchUIStore.exitImmersive()
-      scrollSelectedLogIntoView()
-    }
-  }
-}
-
-const onGlobalKeyup = (e) => {
-  // [代码预留] 原松开空格关闭 QuickLook 逻辑已停用并预留如下：
-  // if (e.code === 'Space') {
-  //   quickLookVisible.value = false
-  // }
-}
-
-
-const exportingReport = ref(false)
-const handleExportCommand = async (cmd) => {
-  if (!currentTaskId.value || exportingReport.value) return
-  exportingReport.value = true
-  try {
-    if (cmd === 'subset_html') {
-      const body = filterStore.toLogQueryBody()
-      await api.downloadTaskReport(currentTaskId.value, 'html', body)
-      ElMessage.success('已成功导出当前筛选子集 HTML 报告')
-    } else if (cmd === 'subset_csv') {
-      const body = filterStore.toLogQueryBody()
-      await api.downloadTaskReport(currentTaskId.value, 'csv', body)
-      ElMessage.success('已成功导出当前筛选子集 CSV 明细')
-    } else if (cmd === 'full_html') {
-      await api.downloadTaskReport(currentTaskId.value, 'html')
-      ElMessage.success('已成功导出全量任务 HTML 报告')
-    } else if (cmd === 'full_csv') {
-      await api.downloadTaskReport(currentTaskId.value, 'csv')
-      ElMessage.success('已成功导出全量任务 CSV 明细')
-    }
-  } catch (e) {
-    // 错误已由 api 统一拦截器弹出提示
-  } finally {
-    exportingReport.value = false
-  }
-}
-
-// 新建任务
-const openNewTaskDialog = () => {
-  const nowStr = new Date().toISOString().replace(/[-:T.]/g, '').substring(0, 14)
-  newTaskForm.value.taskName = `Audit-${nowStr}`
-  newTaskForm.value.deviceType = DEFAULT_DEVICE_TYPE
-  showNewTaskDialog.value = true
-}
-
-const handleCreateEmptyTask = async () => {
-  submitting.value = true
-  try {
-    const res = await api.createTask({
-      task_name: newTaskForm.value.taskName,
-      device_type: newTaskForm.value.deviceType
-    })
-    if (res.code === 0) {
-      ElMessage.success('空任务创建成功，可随时导入日志')
-      showNewTaskDialog.value = false
-      await fetchTasks()
-      handleTaskChange(res.data.task_id)
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-const handleCreateAndOpenImport = async () => {
-  submitting.value = true
-  try {
-    const res = await api.createTask({
-      task_name: newTaskForm.value.taskName,
-      device_type: newTaskForm.value.deviceType
-    })
-    if (res.code === 0) {
-      showNewTaskDialog.value = false
-      await fetchTasks()
-      handleTaskChange(res.data.task_id)
-      openImportDialog()
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-// 导入弹窗交互
-const openImportDialog = () => {
-  selectedPaths.value = []
-  manualLogText.value = ''
-  manualFileName.value = ''
-  importTab.value = 'dir'
-  showImportDialog.value = true
-}
-
-const openImportTextTab = () => {
-  openImportDialog()
-  importTab.value = 'text'
-}
-
-// 打开服务端本地路径选择器（dir: 目录模式，file: 文件模式）
-const openPicker = mode => {
-  pickerMode.value = mode
-  importTab.value = mode
-  showPathPicker.value = true
-}
-
-// 引导区域快捷触发：直接拉起对应模式的路径选择器
-const openGuidePicker = mode => {
-  openImportDialog()
-  openPicker(mode)
-}
-
-const removePath = index => {
-  selectedPaths.value.splice(index, 1)
-}
-
-// 取路径的末级名称（兼容 Windows 与 Unix 分隔符）
-const pathBaseName = p => {
-  if (!p) return ''
-  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
-  return segs.length ? segs[segs.length - 1] : p
-}
-
-const isConflictFile = (fileName) => {
-  return taskFiles.value.some(tf => tf.file_name === fileName)
-}
-
-// 是否具备开始导入的条件
-const canStartImport = computed(() => {
-  if (importTab.value === 'text') return manualLogText.value.trim() !== ''
-  return selectedPaths.value.length > 0
-})
-
-// 提交导入前检查冲突
-const handleCheckAndStartImport = () => {
-  if (importTab.value === 'text') {
-    if (!manualLogText.value.trim()) {
-      ElMessage.warning('请输入 Syslog 报文文本')
-      return
-    }
-    const fname = manualFileName.value.trim() || 'manual_input.txt'
-    if (isConflictFile(fname)) {
-      conflictingFileNames.value = [fname]
-      showConflictDialog.value = true
-      return
-    }
-    executeImportWithConflict('overwrite')
-    return
-  }
-
-  if (selectedPaths.value.length === 0) {
-    ElMessage.warning('请选择至少一个日志目录或日志文件')
-    return
-  }
-
-  // 检查是否有同名文件（目录模式下最终文件名由服务端展开决定，无法预先判断）
-  const conflicts = []
-  if (importTab.value === 'files') {
-    for (const p of selectedPaths.value) {
-      const name = pathBaseName(p)
-      if (isConflictFile(name)) {
-        conflicts.push(name)
-      }
-    }
-  }
-
-  if (conflicts.length > 0) {
-    conflictingFileNames.value = conflicts
-    showConflictDialog.value = true
-  } else {
-    executeImportWithConflict('rename')
-  }
-}
-
-// 执行实际导入
-const executeImportWithConflict = async (conflictMode) => {
-  if (!currentTaskId.value) return
-  submitting.value = true
-  showConflictDialog.value = false
-
-  try {
-    let res
-    if (importTab.value === 'text') {
-      res = await api.importTaskLogsText(currentTaskId.value, {
-        content: manualLogText.value,
-        fileName: manualFileName.value.trim() || 'manual_input.txt',
-        conflictMode
-      })
-    } else {
-      // 仅提交路径，由服务端直接读取本地磁盘上的日志文件
-      res = await api.importTaskLogsByPaths(currentTaskId.value, {
-        paths: selectedPaths.value,
-        exts: logExts,
-        recursive: true,
-        conflictMode
-      })
-    }
-
-    if (res.code === 0) {
-      showImportDialog.value = false
-      selectedPaths.value = []
-      manualLogText.value = ''
-      manualFileName.value = ''
-
-      // 启动阶段进度追踪弹窗
-      if (res.data?.job_id) {
-        currentJobId.value = res.data.job_id
-        showProgressModal.value = true
-      } else {
-        await handleLogImportCompleted(res.data)
-      }
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-// 触发当前任务全量重新分析
-// WEB-16: 与 Tasks 共用同一套"重新分析"编排，消除逐行重复与行为分叉
 const { reanalyze } = useReanalyze({
   onJobStarted: (jobId) => {
     currentJobId.value = jobId
@@ -2183,120 +225,168 @@ const { reanalyze } = useReanalyze({
   }
 })
 
+// 4. 任务与日志流生命周期编排 (收敛至 Composable)
+const taskContext = useWorkbenchTaskContext({
+  route,
+  logStreamRef,
+  subViewRefs,
+  refreshActiveSubView,
+  checkAndPollRcaStatus,
+  stopRcaPolling,
+  onLogClickImmersive: () => { showLogDetailModal.value = true }
+})
+
+const {
+  currentTaskId,
+  currentTask,
+  taskFiles,
+  taskDevices,
+  rcaEvents,
+  logRecords,
+  totalLogs,
+  loadingLogs,
+  selectedLog,
+  contextualizeMode,
+  formattedDetail,
+  matchedRCA,
+  latestLogTimestamp,
+  isTaskEmpty,
+  hasActiveFilter,
+  hoveredLog,
+  currentLogIndex,
+  fetchTasks,
+  handleTaskChange,
+  fetchLogs,
+  onFilterChange,
+  handleResetFilters,
+  handleLogCardClick,
+  handleLogHoverEnter,
+  handleLogHoverLeave,
+  handlePrevLog,
+  handleNextLog,
+  onQuickTagAdded,
+  onQuickTagRemoved,
+  handleFileDeleted,
+  handleDeviceUpdated,
+  handleJumpToLog,
+  handleTaskMetadataUpdated,
+  handleLogImportCompleted
+} = taskContext
+
+// 5. 富文本解析上下文提供 (WeakMap 缓存驱动)
+provide(LOG_DETAIL_CONTEXT_KEY, {
+  selectedLog,
+  contextualizeMode,
+  formattedDetail
+})
+
+// 6. 全局键盘流与按键守卫 (收敛至 hasActiveOverlay 单点防护)
+useWorkbenchHotkeys({
+  isWorkbenchView: () => currentViewMode.value === VIEW_MODE.WORKBENCH,
+  hasActiveTask: () => Boolean(currentTaskId.value),
+  hasActiveOverlay: () => Boolean(
+    showLogDetailModal.value ||
+    showQuickTagModal.value ||
+    advFilterDrawerRef.value?.visible ||
+    importDialogRef.value?.visible ||
+    showProgressModal.value ||
+    taskFilesDialogRef.value?.visible ||
+    headerRef.value?.showNewTaskDialog
+  ),
+  onSpace: () => {
+    const target = hoveredLog.value || selectedLog.value
+    if (target) {
+      quickTagTargetLog.value = target
+      showQuickTagModal.value = true
+      return true
+    }
+    return false
+  },
+  onPrevLog: () => {
+    if (currentLogIndex.value > 0) {
+      handlePrevLog()
+      return true
+    }
+    return false
+  },
+  onNextLog: () => {
+    if (currentLogIndex.value < logRecords.value.length - 1) {
+      handleNextLog()
+      return true
+    }
+    return false
+  },
+  onToggleZenMode: () => {
+    workbenchUIStore.toggleZenMode()
+    logStreamRef.value?.scrollToLog(selectedLog.value?.id)
+  },
+  onToggleBrowserFullscreen: () => {
+    workbenchUIStore.toggleBrowserFullscreen()
+  },
+  onEscape: () => {
+    if (showQuickTagModal.value) showQuickTagModal.value = false
+    else if (showLogDetailModal.value) showLogDetailModal.value = false
+    else if (workbenchUIStore.isImmersive) {
+      workbenchUIStore.exitImmersive()
+      logStreamRef.value?.scrollToLog(selectedLog.value?.id)
+    }
+  }
+})
+
+// 7. 交互胶水方法
+const handleTaskCreated = async ({ taskId, needImport }) => {
+  await handleTaskChange(taskId)
+  if (needImport) {
+    importDialogRef.value?.open('dir')
+  }
+}
+
+const openProgressModalWithId = (jobId) => {
+  currentJobId.value = jobId
+  showProgressModal.value = true
+}
+
 const handleReanalyzeTask = () => {
   if (!currentTaskId.value || !currentTask.value) return
   reanalyze(currentTask.value)
 }
 
-// 日志导入完成回调：自动刷新并无缝载入审计工作台
-const handleLogImportCompleted = async (result) => {
-  const rcaMsg = (result?.rca_status === 'COMPLETED' && result?.rca_count > 0)
-    ? `，识别出 ${result.rca_count} 个 RCA 根因事件`
-    : `。根因分析 (RCA) 已在后台启动推导，可在拓扑面板查看`
-  ElMessage.success({
-    message: `🎉 日志分析就绪！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条${rcaMsg}`,
-    duration: 5000
-  })
-  await fetchTasks()
-  if (currentTaskId.value) {
-    await handleTaskChange(currentTaskId.value)
-    await refreshActiveSubView()
-  }
-}
-
-// 监听视图模式切换：确保切换到多设备时间线、设备管理、RCA分析等子视图时展示最新数据
+// 8. 视图模式与路由联动
 watch(currentViewMode, async (newMode, oldMode) => {
   if (!currentTaskId.value) return
-  // P2 修复：RCA 视图激活期间，RcaCenter 自带轮询并通过 task-updated 事件回抛最新任务元数据，
-  // 工作台停掉自己那份 3s 轮询，避免两处 GET /tasks/:id 并存造成双倍请求；
-  // 离开 RCA 视图时（RcaCenter 随之卸载、轮询停止），若 RCA 仍在进行则由工作台接管轮询。
   if (newMode === VIEW_MODE.RCA) {
     stopRcaPolling()
   } else if (oldMode === VIEW_MODE.RCA) {
-    checkAndPollRcaStatus()
+    checkAndPollRcaStatus(currentTask.value, currentTaskId.value)
   }
   if (newMode === VIEW_MODE.DEVICES) {
-    await fetchTaskDevices()
-    deviceManagerRef.value?.fetchDevices?.()
+    await taskStore.fetchTaskDevices(currentTaskId.value)
+    subViewRefs.deviceManagerRef.value?.fetchDevices?.()
   } else if (newMode === VIEW_MODE.WORKBENCH) {
     await fetchLogs()
-    await fetchTaskFiles()
+    await taskStore.fetchTaskFiles(currentTaskId.value)
   }
 })
 
-// WEB-16: 时间/体积格式化统一走 utils/format，消除与 Tasks、ServerPathPicker 的重复实现
-const formatTime = (ts) => sharedFormatTime(ts, '无法解析')
-const formatLogTime = (log) => {
-  if (!log) return '-'
-  if (log.module === 'COMMENT' && (!log.timestamp || String(log.timestamp).startsWith('0001-01-01'))) {
-    return '— (注释行无时间戳)'
-  }
-  return formatTime(log.timestamp)
-}
-const formatSize = sharedFormatSize
+watch(() => route.params.id, async (newId, oldId) => {
+  if (newId === oldId) return
+  if (newId) await handleTaskChange(newId)
+})
 
-const getSevClass = (sev) => {
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
-}
-
-// WEB-06: 首屏显式编排——先拉列表，再按解析出的任务 ID 加载一次详情，
 onMounted(async () => {
-  window.addEventListener('keydown', onGlobalKeydown)
-  window.addEventListener('keyup', onGlobalKeyup)
   await fetchTasks()
-  if (currentTaskId.value) {
-    await handleTaskChange(currentTaskId.value)
-  }
+  if (currentTaskId.value) await handleTaskChange(currentTaskId.value)
 })
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', onGlobalKeydown)
-  window.removeEventListener('keyup', onGlobalKeyup)
-  stopRcaPolling()
-})
-
-// WEB-03：/audit 与 /audit/:id 指向同一组件，Vue Router 会复用组件实例。
-// 此前只在 fetchTasks 里读一次 route.params.id，导致从 /audit/xxx 导航回 /audit
-// （或在两个任务间跳转）时页面完全不刷新，仍停留在旧任务。
-watch(
-  () => route.params.id,
-  async (newId, oldId) => {
-    if (newId === oldId) return
-    // 路由带明确任务 ID 时以路由为准；回到 /audit 时保留当前选择，避免列表被重置
-    if (newId) {
-      currentTaskId.value = newId
-      await handleTaskChange(newId)
-    }
-  }
-)
 </script>
 
 <style scoped>
-/* Zen 模式：左栏全宽展开与多列自适应网格 (支持 1~5 栏，默认 3 栏) */
-.col-left.zen-mode {
-  width: 100% !important;
-  border-right: none;
-  transition: width 0.2s ease;
-}
-
-.log-stream-list.is-zen-grid {
-  display: grid;
-  grid-template-columns: repeat(var(--zen-cols, 3), minmax(0, 1fr));
-  gap: 8px;
-  align-content: start;
-  padding: 8px;
-}
-
 .workbench-container {
   height: calc(100vh - 92px);
   display: flex;
   flex-direction: column;
   background: #fff;
   border-radius: 8px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
   overflow: hidden;
   transition: all 0.15s ease;
 }
@@ -2308,87 +398,10 @@ watch(
   border: none !important;
 }
 
-.workbench-header {
-  height: 52px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 16px;
-  flex-shrink: 0;
-}
-.header-left {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-.task-badge {
-  font-size: 12px;
-  color: #64748b;
-  background: #e2e8f0;
-  padding: 3px 8px;
-  border-radius: 4px;
-}
-
-/* 空任务引导区 */
-.empty-task-guide {
+.workbench-sub-view {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: #f8fafc;
-  padding: 24px;
-}
-.guide-card {
-  width: 720px;
-  border-radius: 12px;
-  text-align: center;
-  padding: 24px 16px;
-}
-.guide-header h3 {
-  margin: 12px 0 6px 0;
-  color: #0f172a;
-}
-.guide-header p {
-  font-size: 13px;
-  color: #64748b;
-  margin-bottom: 24px;
-}
-.guide-actions {
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-}
-.action-tile {
-  flex: 1;
-  border: 1px solid #e2e8f0;
-  background: #fff;
-  border-radius: 8px;
-  padding: 20px 14px;
-  cursor: pointer;
-  transition: all 0.2s ease;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-.action-tile:hover {
-  border-color: #38bdf8;
-  transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.05);
-}
-.action-tile h4 {
-  margin: 4px 0 0 0;
-  font-size: 14px;
-  color: #1e293b;
-}
-.action-tile p {
-  font-size: 12px;
-  color: #64748b;
-  margin: 0 0 10px 0;
-  min-height: 32px;
-  line-height: 1.4;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .workbench-main-view {
@@ -2400,799 +413,9 @@ watch(
 }
 
 .workbench-body {
-  flex: 1;
   display: flex;
+  flex: 1;
   min-height: 0;
   overflow: hidden;
-}
-
-/* 左栏 28% */
-.col-left {
-  width: 28%;
-  border-right: 1px solid #e2e8f0;
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  background: #f8fafc;
-  transition: width 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.log-stream-list {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.pagination-bar {
-  padding: 4px 8px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  border-top: 1px solid #e2e8f0;
-  background: #fff;
-  flex-shrink: 0;
-}
-
-.pagination-center {
-  flex: 1;
-  display: flex;
-  justify-content: center;
-}
-
-.page-size-selector {
-  display: inline-flex;
-  align-items: center;
-  flex-shrink: 0;
-}
-
-.page-size-select {
-  width: 96px;
-}
-
-/* 中栏 36% */
-.col-middle {
-  width: 36%;
-  border-right: 1px solid #e2e8f0;
-  overflow-y: auto;
-  height: 100%;
-  min-height: 0;
-  padding: 16px;
-  background: #ffffff;
-}
-.panel-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: #0f172a;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 14px;
-}
-.section-box {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 12px;
-  margin-bottom: 14px;
-}
-.box-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: #475569;
-  margin-bottom: 8px;
-}
-.flex-between {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.param-count-badge {
-  font-size: 11px;
-  font-weight: normal;
-  color: #0284c7;
-  background: #e0f2fe;
-  padding: 1px 6px;
-  border-radius: 4px;
-}
-.raw-code {
-  font-family: monospace;
-  font-size: 12px;
-  background: #1e293b;
-  color: #f8fafc;
-  padding: 10px;
-  border-radius: 4px;
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-.event-summary-box-wb {
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-}
-
-.event-summary-highlight-wb {
-  display: flex;
-  align-items: flex-start;
-  font-size: 13px;
-  font-weight: 500;
-  color: #0369a1;
-  line-height: 1.5;
-  padding: 4px 0;
-}
-
-.summary-text-wb {
-  word-break: break-word;
-}
-.param-grid-enhanced {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
-}
-.param-card {
-  background: #ffffff;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: all 0.15s ease;
-}
-.param-card:hover {
-  border-color: #38bdf8;
-  box-shadow: 0 2px 6px rgba(0,0,0,0.04);
-}
-.param-card.has-desc {
-  border-left: 3px solid #0284c7;
-}
-.param-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-}
-.p-key {
-  color: #0284c7;
-  font-weight: 600;
-  font-size: 12px;
-}
-.p-desc-badge {
-  font-size: 11px;
-  color: #0369a1;
-  background: #f0f9ff;
-  padding: 1px 5px;
-  border-radius: 3px;
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: help;
-}
-.p-val-box {
-  background: #f8fafc;
-  padding: 3px 6px;
-  border-radius: 4px;
-  font-family: monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-.p-val {
-  color: #0f172a;
-  font-weight: 500;
-}
-.p-val-empty {
-  color: #94a3b8;
-  font-style: italic;
-}
-.template-box {
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  padding: 10px 12px;
-}
-.template-rendered {
-  font-size: 13px;
-  line-height: 1.6;
-  color: #1e293b;
-  margin-bottom: 8px;
-}
-:deep(.inst-param-injected) {
-  background: #dcfce7;
-  color: #15803d;
-  font-weight: 600;
-  padding: 1px 5px;
-  border-radius: 3px;
-  border-bottom: 1.5px solid #22c55e;
-}
-:deep(.inst-param-placeholder) {
-  background: #f1f5f9;
-  color: #64748b;
-  padding: 1px 4px;
-  border-radius: 3px;
-}
-.template-raw-sub {
-  font-size: 11px;
-  color: #64748b;
-  border-top: 1px dashed #cbd5e1;
-  padding-top: 6px;
-  word-break: break-all;
-}
-.template-raw-sub .sub-label {
-  margin-right: 6px;
-  font-weight: 500;
-}
-.template-raw-sub code {
-  font-family: monospace;
-  color: #475569;
-}
-.param-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-.param-chip {
-  background: #fff;
-  border: 1px solid #cbd5e1;
-  border-radius: 4px;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-.rca-alert {
-  background: #fff7ed;
-  border: 1px solid #fdba74;
-  border-radius: 6px;
-  padding: 12px;
-  font-size: 12px;
-  color: #9a3412;
-}
-.rca-alert-title {
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-
-/* 右栏 36% */
-.col-right {
-  width: 36%;
-  overflow-y: auto;
-  height: 100%;
-  min-height: 0;
-  padding: 16px;
-  background: #ffffff;
-}
-.kb-header-card {
-  background: #f0f9ff;
-  border: 1px solid #bae6fd;
-  border-radius: 6px;
-  padding: 12px;
-  margin-bottom: 14px;
-}
-.kb-header-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-.kb-title {
-  font-size: 16px;
-  font-weight: bold;
-  color: #0369a1;
-}
-.kb-meta {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  font-size: 11px;
-}
-.badge-tier { background: #e0f2fe; color: #0284c7; padding: 2px 6px; border-radius: 3px; }
-.badge-conf { background: #dcfce7; color: #15803d; padding: 2px 6px; border-radius: 3px; font-weight: bold; }
-.badge-ctx {
-  background: #dcfce7;
-  color: #166534;
-  padding: 2px 6px;
-  border-radius: 3px;
-  font-weight: 500;
-}
-.dict-count-tag {
-  font-size: 11px;
-  font-weight: normal;
-  color: #64748b;
-}
-.dict-pname {
-  font-family: monospace;
-  font-weight: 600;
-  color: #0284c7;
-}
-.dict-pval {
-  font-family: monospace;
-  background: #f0fdf4;
-  color: #15803d;
-  font-weight: 600;
-  padding: 2px 6px;
-  border-radius: 3px;
-  border: 1px solid #bbf7d0;
-}
-.dict-pnone {
-  color: #94a3b8;
-  font-style: italic;
-}
-.kb-block {
-  margin-bottom: 14px;
-}
-.kb-subtitle {
-  font-size: 13px;
-  font-weight: 600;
-  color: #334155;
-  margin-bottom: 6px;
-}
-.kb-text {
-  font-size: 13px;
-  color: #475569;
-  line-height: 1.6;
-  white-space: pre-line;
-  word-break: break-word;
-}
-.action-box {
-  background: #f8fafc;
-  border-left: 3px solid #10b981;
-  padding: 10px 12px;
-  border-radius: 0 4px 4px 0;
-}
-.cause-text {
-  background: #fffbeb;
-  border-left: 3px solid #f59e0b;
-  padding: 8px 12px;
-  border-radius: 0 4px 4px 0;
-}
-
-.comment-kb-card {
-  margin: 12px 0;
-  padding: 16px;
-  background: #f8fafc;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-}
-.comment-kb-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 14px;
-  font-weight: 600;
-  color: #0369a1;
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed #cbd5e1;
-}
-.comment-kb-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: 13px;
-  line-height: 1.6;
-  color: #334155;
-}
-.comment-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-.comment-item .c-label {
-  font-weight: 600;
-  color: #475569;
-  white-space: nowrap;
-  flex-shrink: 0;
-}
-.comment-item .c-val {
-  color: #1e293b;
-}
-.comment-item .c-val code {
-  background: #e2e8f0;
-  padding: 1px 4px;
-  border-radius: 3px;
-  font-family: monospace;
-}
-
-.empty-state {
-  height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
-.sev-tag {
-  font-size: 10px;
-  font-weight: bold;
-  padding: 1px 5px;
-  border-radius: 3px;
-}
-.sev-crit { background: #fee2e2; color: #b91c1c; }
-.sev-err { background: #ffedd5; color: #c2410c; }
-.sev-warn { background: #fef9c3; color: #a16207; }
-.sev-info { background: #f1f5f9; color: #475569; }
-
-.rca-guide {
-  margin-top: 14px;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  border-radius: 6px;
-  padding: 12px;
-  font-size: 13px;
-  color: #9a3412;
-  white-space: pre-line;
-  word-break: break-word;
-}
-.guide-title {
-  font-weight: bold;
-  margin-bottom: 6px;
-}
-
-/* 抽屉与弹窗样式 */
-.drawer-summary,
-.files-dialog-summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 14px;
-  font-size: 13px;
-  color: #475569;
-}
-.files-dialog-summary {
-  padding: 10px 14px;
-  background: #f8fafc;
-  border-radius: 6px;
-  border: 1px solid #e2e8f0;
-}
-.summary-stats {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  flex-wrap: wrap;
-}
-.stat-pill {
-  font-size: 13px;
-  color: #475569;
-}
-.stat-pill strong {
-  color: #0284c7;
-  font-weight: 600;
-}
-.path-import-pane {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  padding: 24px 20px;
-  text-align: center;
-  background: #f8fafc;
-}
-.pane-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #1e293b;
-  margin: 10px 0 6px 0;
-}
-.pane-desc {
-  font-size: 12px;
-  color: #64748b;
-  line-height: 1.7;
-  margin: 0 auto 14px auto;
-  max-width: 470px;
-}
-.pending-paths-box {
-  margin-top: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 6px;
-  background: #f8fafc;
-  padding: 10px 12px;
-}
-.pending-paths-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 8px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid #e2e8f0;
-  font-size: 13px;
-  color: #334155;
-}
-.pending-paths-list {
-  max-height: 140px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.pending-path-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  padding: 5px 8px;
-  background: #fff;
-  border-radius: 4px;
-  border: 1px solid #e2e8f0;
-}
-.pending-path-item .path-value {
-  flex: 1;
-  font-weight: 500;
-  color: #1e293b;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.pending-path-item .del-btn {
-  cursor: pointer;
-  color: #94a3b8;
-  flex-shrink: 0;
-}
-.pending-path-item .del-btn:hover {
-  color: #ef4444;
-}
-
-.conflict-dialog-body .conflict-file-list {
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  border-radius: 6px;
-  padding: 10px 12px;
-  max-height: 120px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.conflict-item {
-  font-size: 12px;
-  color: #9a3412;
-}
-
-.workbench-nav-bar {
-  display: flex;
-  justify-content: flex-start;
-  align-items: center;
-  background: #ffffff;
-  padding: 8px 16px;
-  border-radius: 8px;
-  border: 1px solid #e2e8f0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
-  flex-shrink: 0;
-}
-
-/* 统一导航栏 5 个按钮的高度、对齐和内边距，根除个别按钮过大或错位 */
-.workbench-nav-bar :deep(.el-radio-button__inner) {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 32px;
-  line-height: 32px;
-  padding: 0 14px;
-  box-sizing: border-box;
-}
-
-/* 导航栏轻量微型计数角标，避免原生 el-badge/el-tag 撑高父容器 */
-.nav-count-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 16px;
-  min-width: 16px;
-  padding: 0 4px;
-  margin-left: 6px;
-  font-size: 11px;
-  font-weight: 600;
-  line-height: 1;
-  border-radius: 8px;
-  background-color: #3b82f6;
-  color: #ffffff;
-  box-sizing: border-box;
-}
-
-.nav-count-badge.danger {
-  background-color: #ef4444;
-}
-
-.nav-count-badge.warning {
-  background-color: #f59e0b;
-}
-
-/* 激活状态下角标样式适配，保证高对比度与一体感 */
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge {
-  background-color: rgba(255, 255, 255, 0.28);
-  color: #ffffff;
-}
-
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.danger {
-  background-color: #dc2626;
-  color: #ffffff;
-}
-
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.warning {
-  background-color: #d97706;
-  color: #ffffff;
-}
-
-.workbench-sub-view {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.log-stream-list::-webkit-scrollbar,
-.col-middle::-webkit-scrollbar,
-.col-right::-webkit-scrollbar,
-.workbench-sub-view::-webkit-scrollbar {
-  width: 6px;
-}
-.log-stream-list::-webkit-scrollbar-thumb,
-.col-middle::-webkit-scrollbar-thumb,
-.col-right::-webkit-scrollbar-thumb,
-.workbench-sub-view::-webkit-scrollbar-thumb {
-  background-color: #cbd5e1;
-  border-radius: 3px;
-}
-.log-stream-list::-webkit-scrollbar-thumb:hover,
-.col-middle::-webkit-scrollbar-thumb:hover,
-.col-right::-webkit-scrollbar-thumb:hover,
-.workbench-sub-view::-webkit-scrollbar-thumb:hover {
-  background-color: #94a3b8;
-}
-
-.rca-banner-alert {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  background: #fff7ed;
-  border: 1px solid #fed7aa;
-  border-left: 4px solid #f97316;
-  border-radius: 6px;
-  padding: 8px 12px;
-  margin-bottom: 12px;
-}
-.rca-banner-alert .banner-left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.rca-banner-alert .banner-text {
-  font-size: 12px;
-  color: #9a3412;
-}
-
-.log-stream-toolbar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 2px 10px;
-  height: 26px;
-  min-height: 26px;
-  background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
-}
-
-.log-total-text {
-  font-size: 11px;
-  color: #64748b;
-  font-weight: 500;
-  line-height: 1;
-}
-
-.adv-filter-btn {
-  height: 20px !important;
-  padding: 0 6px !important;
-  font-size: 11px !important;
-  line-height: 18px !important;
-  border-radius: 3px !important;
-}
-
-.log-detail-tags-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: #f8fafc;
-  border-radius: 6px;
-  margin-bottom: 12px;
-  border: 1px solid #e2e8f0;
-}
-
-.detail-tags-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: #475569;
-  flex-shrink: 0;
-}
-
-.detail-tags-list {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-
-.detail-tag-pill {
-  border: none;
-}
-
-.add-log-tag-btn {
-  font-size: 12px;
-  height: 24px;
-  padding: 0 8px;
-}
-
-/* 标签下拉菜单与单项悬浮删除按钮 */
-.tag-menu-item {
-  padding: 5px 10px !important;
-}
-
-.tag-item-row {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  min-width: 150px;
-  gap: 6px;
-}
-
-.tag-color-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-}
-
-.tag-name-text {
-  flex: 1;
-  font-size: 12px;
-  color: #334155;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.tag-assigned-badge {
-  font-size: 10px;
-  color: #10b981;
-  background: #ecfdf5;
-  padding: 0 4px;
-  border-radius: 2px;
-  line-height: 16px;
-  flex-shrink: 0;
-}
-
-.tag-delete-x {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  color: #94a3b8;
-  font-size: 11px;
-  margin-left: auto;
-  opacity: 0;
-  pointer-events: none;
-  transition: all 0.15s ease;
-  flex-shrink: 0;
-}
-
-.tag-menu-item:hover .tag-delete-x {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.tag-delete-x:hover {
-  color: #ffffff;
-  background-color: #ef4444;
-  transform: scale(1.1);
-}
-
-.create-tag-menu-item {
-  color: #409eff;
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 </style>

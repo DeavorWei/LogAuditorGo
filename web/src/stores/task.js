@@ -155,6 +155,13 @@ export const useTaskStore = defineStore('task', () => {
 
   const rcaOfLog = (logId) => rcaIndexByLogId.value.get(logId) || null
 
+  const updateLogTags = (logId, tags) => {
+    const item = logRecords.value.find((r) => r.id === logId)
+    if (item) {
+      item.tags = Array.isArray(tags) ? [...tags] : []
+    }
+  }
+
   const reset = () => {
     taskList.value = []
     currentTaskId.value = ''
@@ -187,6 +194,7 @@ export const useTaskStore = defineStore('task', () => {
     fetchTaskDevices,
     fetchRCA,
     setLogs,
+    updateLogTags,
     switchTask,
     rcaOfLog,
     reset

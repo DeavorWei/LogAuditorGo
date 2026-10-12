@@ -329,13 +329,14 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, inject, onMounted, onBeforeUnmount } from 'vue'
 import { formatTime } from '@/utils/format'
 import { ArrowUp, ArrowDown, Close, InfoFilled, Plus } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import RcaGraph from '@/components/RcaGraph.vue'
 import { useTagStore } from '@/stores/tag'
 import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
+import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
 
 const props = defineProps({
   visible: {
@@ -403,6 +404,44 @@ const emit = defineEmits([
 ])
 
 const tagStore = useTagStore()
+const logContext = inject(LOG_DETAIL_CONTEXT_KEY, null)
+
+const enrichedParameters = computed(() => {
+  if (props.enrichedParameters && props.enrichedParameters.length > 0) return props.enrichedParameters
+  return logContext?.formattedDetail?.value?.enrichedParameters || []
+})
+
+const renderedTemplateHtml = computed(() => {
+  if (props.renderedTemplateHtml) return props.renderedTemplateHtml
+  return logContext?.formattedDetail?.value?.renderedTemplateHtml || ''
+})
+
+const renderedKnowledgeHtml = computed(() => {
+  if (props.renderedKnowledgeHtml?.description) return props.renderedKnowledgeHtml
+  return logContext?.formattedDetail?.value?.renderedKnowledgeHtml || { description: '', cause: '', action: '', impact: '' }
+})
+
+const kbParamDefs = computed(() => {
+  if (props.kbParamDefs && props.kbParamDefs.length > 0) return props.kbParamDefs
+  return logContext?.formattedDetail?.value?.kbParamDefs || []
+})
+
+const matchedParamCount = computed(() => {
+  if (props.matchedParamCount) return props.matchedParamCount
+  return logContext?.formattedDetail?.value?.matchedParamCount || 0
+})
+
+const contextualizeMode = computed({
+  get() {
+    return logContext?.contextualizeMode?.value ?? props.contextualizeMode
+  },
+  set(val) {
+    if (logContext?.contextualizeMode) {
+      logContext.contextualizeMode.value = val
+    }
+    emit('update:contextualizeMode', val)
+  }
+})
 
 const activeTab = ref('knowledge')
 const isPrevShaking = ref(false)
