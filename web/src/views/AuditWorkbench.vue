@@ -381,7 +381,7 @@ onMounted(async () => {
 
 <style scoped>
 .workbench-container {
-  height: calc(100vh - 92px);
+  height: calc(100vh - var(--app-header-h) - var(--app-main-pad-y) * 2);
   display: flex;
   flex-direction: column;
   background: var(--gray-0);
@@ -417,5 +417,34 @@ onMounted(async () => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
+}
+
+@media (max-width: 1600px) {
+  :root {
+    --wb-col-left: 32%;
+    --wb-col-mid: 34%;
+    --wb-col-right: 34%;
+  }
+}
+
+@media (max-width: 1279px) {
+  .workbench-body {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+  .workbench-body :deep(.col-left) {
+    width: 100% !important;
+    max-height: 48vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border-base);
+  }
+  .workbench-body :deep(.col-middle),
+  .workbench-body :deep(.col-right) {
+    width: 100% !important;
+    min-width: 0 !important;
+    flex: 1 0 auto;
+    border-right: none;
+    border-bottom: 1px solid var(--border-base);
+  }
 }
 </style>

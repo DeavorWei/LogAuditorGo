@@ -3,8 +3,8 @@
     <el-card shadow="never" class="tasks-header-card">
       <div class="header-content">
         <div>
-          <h2 style="font-size: 16px; margin-bottom: 4px;">历史日志审计任务</h2>
-          <p style="font-size: 12px; color: #64748b;">每次日志审计任务使用独立物理 SQLite 数据库进行隔离存储，支持一键导出离线分析报告</p>
+          <h2 style="font-size: var(--fs-xl); margin-bottom: 4px;">历史日志审计任务</h2>
+          <p style="font-size: var(--fs-sm); color: var(--text-secondary);">每次日志审计任务使用独立物理 SQLite 数据库进行隔离存储，支持一键导出离线分析报告</p>
         </div>
         <el-button type="primary" icon="Plus" @click="$router.push('/audit')">新建审计任务</el-button>
       </div>
@@ -14,7 +14,7 @@
       <el-table :data="taskList" v-loading="loading" style="width: 100%;" border>
         <el-table-column prop="task_name" label="任务名称" min-width="180">
           <template #default="{ row }">
-            <span style="font-weight: 600; color: #0284c7; cursor: pointer;" @click="openTask(row.task_id)">{{ row.task_name }}</span>
+            <button type="button" class="link-like" @click="openTask(row.task_id)">{{ row.task_name }}</button>
           </template>
         </el-table-column>
         <el-table-column prop="device_type" label="设备类型" width="130" />
@@ -31,7 +31,7 @@
         <el-table-column prop="log_count" label="日志条数" width="100" align="center" />
         <el-table-column prop="matched_count" label="知识匹配数" width="100" align="center">
           <template #default="{ row }">
-            <span style="color: #16a34a; font-weight: bold;">{{ row.matched_count }}</span>
+            <span style="color: var(--success-strong); font-weight: bold;">{{ row.matched_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="rca_count" label="根因事件" width="90" align="center">

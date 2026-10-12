@@ -28,12 +28,13 @@
         </el-button-group>
 
         <div v-if="!pathEditing" class="pathbar-track">
-          <span
-            class="pathbar-seg is-root"
+          <button
+            type="button"
+            class="pathbar-seg is-root reset"
             :class="{ 'is-current': rootSegment && rootSegment.path === currentPath }"
             :title="currentPath"
             @click="rootSegment && navigate(rootSegment.path)"
-          >{{ rootSegment ? rootSegment.name : '...' }}</span>
+          >{{ rootSegment ? rootSegment.name : '...' }}</button>
           <el-popover
             v-if="collapsedCount > 0"
             placement="bottom"
@@ -42,29 +43,31 @@
             :show-arrow="false"
           >
             <template #reference>
-              <span class="pathbar-seg is-ellipsis" :title="`展开已折叠的 ${collapsedCount} 个层级`">…</span>
+              <button type="button" class="pathbar-seg is-ellipsis reset" :title="`展开已折叠的 ${collapsedCount} 个层级`">…</button>
             </template>
             <div class="pathbar-pop">
-              <div
+              <button
                 v-for="c in collapsedSegments"
                 :key="c.path"
-                class="pathbar-pop-item"
+                type="button"
+                class="pathbar-pop-item reset"
                 :title="c.path"
                 @click="navigate(c.path)"
               >
                 <el-icon><Folder /></el-icon>
                 <span>{{ c.name }}</span>
-              </div>
+              </button>
             </div>
           </el-popover>
-          <span
+          <button
             v-for="c in tailSegments"
             :key="c.path"
-            class="pathbar-seg"
+            type="button"
+            class="pathbar-seg reset"
             :class="{ 'is-current': c.path === currentPath }"
             :title="c.path"
             @click="navigate(c.path)"
-          >{{ c.name }}</span>
+          >{{ c.name }}</button>
           <span v-if="collapsedCount > 0" class="pathbar-fold-tip">已折叠 {{ collapsedCount }} 层</span>
         </div>
 
@@ -99,10 +102,25 @@
             </el-button>
           </div>
           <div class="fav-list">
-            <div v-for="f in favorites" :key="f.path" class="fav-item" @click="navigate(f.path)">
+            <div
+              v-for="f in favorites"
+              :key="f.path"
+              class="fav-item"
+              role="button"
+              tabindex="0"
+              @click="navigate(f.path)"
+              @keydown.enter.space.prevent="navigate(f.path)"
+            >
               <el-icon class="fav-icon"><Star /></el-icon>
               <span class="fav-name" :title="f.path">{{ f.name }}</span>
-              <el-icon class="fav-del" @click.stop="removeFavorite(f)"><Close /></el-icon>
+              <el-icon
+                class="fav-del"
+                role="button"
+                tabindex="0"
+                title="取消收藏"
+                @click.stop="removeFavorite(f)"
+                @keydown.enter.space.stop.prevent="removeFavorite(f)"
+              ><Close /></el-icon>
             </div>
             <div v-if="!favorites.length" class="side-empty">暂无收藏</div>
           </div>
@@ -110,10 +128,25 @@
           <!-- 最近访问：自动记录最近 navigate 过的 5 个目录，减少重复层级点击 -->
           <div class="side-title">最近访问</div>
           <div class="fav-list is-recent">
-            <div v-for="r in recents" :key="r.path" class="fav-item" @click="navigate(r.path)">
+            <div
+              v-for="r in recents"
+              :key="r.path"
+              class="fav-item"
+              role="button"
+              tabindex="0"
+              @click="navigate(r.path)"
+              @keydown.enter.space.prevent="navigate(r.path)"
+            >
               <el-icon class="recent-icon"><Clock /></el-icon>
               <span class="fav-name" :title="r.path">{{ r.name }}</span>
-              <el-icon class="fav-del" @click.stop="removeRecent(r)"><Close /></el-icon>
+              <el-icon
+                class="fav-del"
+                role="button"
+                tabindex="0"
+                title="移除最近记录"
+                @click.stop="removeRecent(r)"
+                @keydown.enter.space.stop.prevent="removeRecent(r)"
+              ><Close /></el-icon>
             </div>
             <div v-if="!recents.length" class="side-empty">暂无记录</div>
           </div>

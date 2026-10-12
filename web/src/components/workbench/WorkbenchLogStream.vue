@@ -170,7 +170,7 @@ defineExpose({
 
 <style scoped>
 .col-left {
-  width: 28%;
+  width: var(--wb-col-left, 28%);
   border-right: 1px solid var(--border-base);
   display: flex;
   flex-direction: column;
@@ -198,17 +198,17 @@ defineExpose({
 
 .log-total-text {
   font-size: var(--fs-xs);
-  color: var(--gray-500);
+  color: var(--text-secondary);
   font-weight: 500;
   line-height: 1;
 }
 
 .adv-filter-btn {
-  height: 20px !important;
-  padding: 0 6px !important;
-  font-size: var(--fs-xs) !important;
-  line-height: 18px !important;
-  border-radius: var(--radius-xs) !important;
+  height: 24px;
+  padding: 0 8px;
+  font-size: var(--fs-xs);
+  line-height: 22px;
+  border-radius: var(--radius-xs);
 }
 
 .log-stream-list {

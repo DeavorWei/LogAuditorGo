@@ -8,19 +8,19 @@
       </div>
 
       <div class="guide-actions">
-        <div class="action-tile" @click="$emit('open-picker', 'both')">
-          <el-icon size="32" color="#0284c7"><FolderOpened /></el-icon>
+        <button type="button" class="action-tile reset" @click="$emit('open-picker', 'both')">
+          <el-icon size="32" color="var(--brand-600)"><FolderOpened /></el-icon>
           <h4>选择文件或目录</h4>
           <p>在服务端本机选择 .log / .txt / .syslog 日志文件或归档目录，支持文件与目录混合多选，目录将递归收集其中全部日志</p>
-          <el-button type="primary" size="small">选择文件 / 目录</el-button>
-        </div>
+          <span class="el-button el-button--primary el-button--small">选择文件 / 目录</span>
+        </button>
 
-        <div class="action-tile" @click="$emit('open-text')">
-          <el-icon size="32" color="#ea580c"><DocumentCopy /></el-icon>
+        <button type="button" class="action-tile reset" @click="$emit('open-text')">
+          <el-icon size="32" color="var(--warning-strong)"><DocumentCopy /></el-icon>
           <h4>粘贴 Syslog 日志文本</h4>
           <p>直接在网页中粘贴 syslog 报文文本开始分析</p>
-          <el-button type="warning" size="small">粘贴日志文本</el-button>
-        </div>
+          <span class="el-button el-button--warning el-button--small">粘贴日志文本</span>
+        </button>
       </div>
     </el-card>
   </div>
@@ -63,7 +63,7 @@ defineEmits(['open-picker', 'open-text'])
 
 .guide-header p {
   font-size: var(--fs-md);
-  color: var(--gray-500);
+  color: var(--text-secondary);
   margin-bottom: 24px;
 }
 
@@ -101,7 +101,7 @@ defineEmits(['open-picker', 'open-text'])
 
 .action-tile p {
   font-size: var(--fs-sm);
-  color: var(--gray-500);
+  color: var(--text-secondary);
   margin: 0 0 10px 0;
   min-height: 32px;
   line-height: 1.4;

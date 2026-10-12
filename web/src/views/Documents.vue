@@ -45,12 +45,12 @@
         </div>
 
         <div class="guide-actions">
-          <div class="action-tile action-tile-single" @click="openGuidePicker">
+          <button type="button" class="action-tile action-tile-single reset" @click="openGuidePicker">
             <el-icon size="36" color="#0284c7"><FolderAdd /></el-icon>
             <h4>选择 HDX 文档所在文件夹</h4>
             <p>支持任意本地文件夹，系统将自动递归扫描目录下的所有 .hdx 压缩包与 profile.xml 解压文档，一键批量入库</p>
-            <el-button type="primary">选择文件夹并开始扫描</el-button>
-          </div>
+            <span class="el-button el-button--primary">选择文件夹并开始扫描</span>
+          </button>
         </div>
       </el-card>
     </div>
@@ -851,7 +851,7 @@ onMounted(() => {
 
 .action-tile-single p {
   font-size: var(--fs-md);
-  color: var(--gray-500);
+  color: var(--text-secondary);
   line-height: 1.5;
   margin-bottom: 16px;
 }

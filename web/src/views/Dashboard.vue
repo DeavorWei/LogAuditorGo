@@ -1,40 +1,51 @@
 <template>
   <div class="dashboard-page">
-    <!-- 顶部概览指标卡 -->
-    <el-row :gutter="16" class="stats-row">
-      <el-col :span="6">
-        <StatCard
-          :icon="Reading"
-          :value="stats.total_knowledge || 0"
-          title="已收录故障知识条目"
-          tone="brand"
-        />
-      </el-col>
-      <el-col :span="6">
-        <StatCard
-          :icon="FolderOpened"
-          :value="stats.total_documents || 0"
-          title="已导入官方产品文档"
-          tone="success"
-        />
-      </el-col>
-      <el-col :span="6">
-        <StatCard
-          :icon="List"
-          :value="stats.total_tasks || 0"
-          title="累计审计任务数"
-          tone="warning"
-        />
-      </el-col>
-      <el-col :span="6">
-        <StatCard
-          :icon="DataAnalysis"
-          :value="stats.total_logs_analyzed || 0"
-          title="累计解析日志总量"
-          tone="purple"
-        />
-      </el-col>
-    </el-row>
+    <!-- 顶部概览指标卡 (带加载骨架屏) -->
+    <el-skeleton :loading="statsLoading" animated>
+      <template #template>
+        <el-row :gutter="16" class="stats-row">
+          <el-col v-for="i in 4" :key="i" :span="6">
+            <el-skeleton-item variant="rect" style="height: 108px; border-radius: var(--radius-lg);" />
+          </el-col>
+        </el-row>
+      </template>
+      <template #default>
+        <el-row :gutter="16" class="stats-row">
+          <el-col :span="6">
+            <StatCard
+              :icon="Reading"
+              :value="stats.total_knowledge || 0"
+              title="已收录故障知识条目"
+              tone="brand"
+            />
+          </el-col>
+          <el-col :span="6">
+            <StatCard
+              :icon="FolderOpened"
+              :value="stats.total_documents || 0"
+              title="已导入官方产品文档"
+              tone="success"
+            />
+          </el-col>
+          <el-col :span="6">
+            <StatCard
+              :icon="List"
+              :value="stats.total_tasks || 0"
+              title="累计审计任务数"
+              tone="warning"
+            />
+          </el-col>
+          <el-col :span="6">
+            <StatCard
+              :icon="DataAnalysis"
+              :value="stats.total_logs_analyzed || 0"
+              title="累计解析日志总量"
+              tone="purple"
+            />
+          </el-col>
+        </el-row>
+      </template>
+    </el-skeleton>
 
     <!-- 图表与快速操作区 -->
     <el-row :gutter="16" class="content-row">
@@ -58,27 +69,27 @@
             </div>
           </template>
           <div class="quick-actions">
-            <div class="action-item" @click="showNewTaskDialog = true">
+            <button type="button" class="action-item reset" @click="showNewTaskDialog = true">
               <el-icon class="action-icon" style="color: var(--brand-500);"><UploadFilled /></el-icon>
               <div>
                 <div class="action-title">新建日志审计任务</div>
                 <div class="action-desc">上传设备 Syslog 文本或日志文件进行智能分析与根因诊断</div>
               </div>
-            </div>
-            <div class="action-item" @click="$router.push('/documents')">
+            </button>
+            <button type="button" class="action-item reset" @click="$router.push('/documents')">
               <el-icon class="action-icon" style="color: var(--success-strong);"><FolderAdd /></el-icon>
               <div>
                 <div class="action-title">导入华为 HDX 产品文档</div>
                 <div class="action-desc">导入官方 HDX 文档压缩包或本地文件夹以扩充故障知识库</div>
               </div>
-            </div>
-            <div class="action-item" @click="$router.push('/knowledge')">
+            </button>
+            <button type="button" class="action-item reset" @click="$router.push('/knowledge')">
               <el-icon class="action-icon" style="color: var(--purple-500);"><Search /></el-icon>
               <div>
                 <div class="action-title">检索官方故障知识库</div>
                 <div class="action-desc">根据报错简名、Trap OID 或关键词检索处理指导</div>
               </div>
-            </div>
+            </button>
           </div>
         </el-card>
       </el-col>
@@ -126,6 +137,7 @@ import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TY
 
 const router = useRouter()
 const stats = ref({})
+const statsLoading = ref(true)
 const moduleChartRef = ref(null)
 let chartInstance = null
 
@@ -143,6 +155,7 @@ const currentJobId = ref('')
 const pendingTaskId = ref('')
 
 const fetchStats = async () => {
+  statsLoading.value = true
   try {
     const res = await api.getStats()
     if (res.code === 0) {
@@ -151,6 +164,8 @@ const fetchStats = async () => {
     }
   } catch (e) {
     // handled
+  } finally {
+    statsLoading.value = false
   }
 }
 
@@ -288,6 +303,7 @@ onUnmounted(() => {
   gap: 16px;
 }
 .action-item {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 14px;
@@ -313,7 +329,7 @@ onUnmounted(() => {
 }
 .action-desc {
   font-size: var(--fs-sm);
-  color: var(--gray-500);
+  color: var(--text-secondary);
   margin-top: 2px;
 }
 </style>

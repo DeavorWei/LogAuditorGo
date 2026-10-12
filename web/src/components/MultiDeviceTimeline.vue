@@ -143,7 +143,13 @@
             :color="ev.device_color || DEFAULT_DEVICE_COLOR"
             size="large"
           >
-            <div class="event-card" @click="showEventDetail(ev)">
+            <div
+              class="event-card"
+              role="button"
+              tabindex="0"
+              @click="showEventDetail(ev)"
+              @keydown.enter.space.prevent="showEventDetail(ev)"
+            >
               <div class="event-header">
                 <div class="event-header-left">
                   <span class="device-pill" :style="{ backgroundColor: ev.device_color || DEFAULT_DEVICE_COLOR }">
@@ -855,12 +861,12 @@ defineExpose({
   margin-left: 8px;
 }
 .timeline-stream {
-  max-height: calc(100vh - 280px);
+  max-height: calc(100vh - var(--app-header-h) - var(--app-main-pad-y) * 2 - 188px);
   overflow-y: auto;
   padding: 10px 20px 20px 10px;
 }
 .table-stream {
-  max-height: calc(100vh - 280px);
+  max-height: calc(100vh - var(--app-header-h) - var(--app-main-pad-y) * 2 - 188px);
   overflow-y: auto;
 }
 .event-card {
@@ -918,7 +924,7 @@ defineExpose({
   gap: 8px;
 }
 .summary-badge {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   color: var(--brand-600);
   background: var(--brand-50);

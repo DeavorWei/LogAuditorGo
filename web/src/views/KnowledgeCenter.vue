@@ -39,7 +39,10 @@
           :key="k.knowledge_id || k.id"
           shadow="hover"
           class="kb-card"
+          role="button"
+          tabindex="0"
           @click="openDetail(k)"
+          @keydown.enter.space.prevent="openDetail(k)"
         >
           <div class="kb-card-top">
             <el-tag size="small" :type="k.entry_type === 'ALARM' ? 'warning' : 'primary'">{{ k.entry_type }}</el-tag>
@@ -223,7 +226,7 @@ onMounted(() => {
 }
 .knowledge-grid {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px;
 }
 .kb-card {

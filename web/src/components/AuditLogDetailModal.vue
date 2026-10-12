@@ -943,9 +943,9 @@ onBeforeUnmount(() => {
 }
 
 .tag-assigned-badge {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--success-strong);
-  background: #ecfdf5;
+  background: var(--success-bg);
   padding: 0 4px;
   border-radius: var(--radius-xs);
   line-height: 16px;

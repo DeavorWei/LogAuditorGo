@@ -170,9 +170,9 @@ const detail = computed(() => {
 
 <style scoped>
 .col-right {
-  flex: 0 0 36%;
-  width: 36%;
-  min-width: 360px;
+  flex: 0 0 var(--wb-col-right, 36%);
+  width: var(--wb-col-right, 36%);
+  min-width: 320px;
   display: flex;
   flex-direction: column;
   background: var(--gray-0);

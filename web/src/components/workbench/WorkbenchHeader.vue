@@ -36,30 +36,36 @@
     </div>
 
     <div class="header-right">
-      <el-button-group>
-        <el-button
-          icon="Refresh"
-          :disabled="!taskStore.currentTaskId"
-          @click="$emit('refresh-logs')"
-        >
-          刷新日志
-        </el-button>
-        <el-button
-          type="warning"
-          icon="Opportunity"
-          :disabled="!taskStore.currentTaskId || currentTask?.status === 'PENDING' || currentTask?.log_count === 0"
-          @click="$emit('reanalyze')"
-        >
-          重新分析
-        </el-button>
-        <el-button
-          type="primary"
-          icon="Upload"
-          :disabled="!taskStore.currentTaskId"
-          @click="$emit('open-import')"
-        >
-          {{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}
-        </el-button>
+      <el-button-group class="header-action-group">
+        <el-tooltip content="刷新日志" placement="bottom" :show-after="300">
+          <el-button
+            icon="Refresh"
+            :disabled="!taskStore.currentTaskId"
+            @click="$emit('refresh-logs')"
+          >
+            <span class="btn-text">刷新日志</span>
+          </el-button>
+        </el-tooltip>
+        <el-tooltip content="重新分析" placement="bottom" :show-after="300">
+          <el-button
+            type="warning"
+            icon="Opportunity"
+            :disabled="!taskStore.currentTaskId || currentTask?.status === 'PENDING' || currentTask?.log_count === 0"
+            @click="$emit('reanalyze')"
+          >
+            <span class="btn-text">重新分析</span>
+          </el-button>
+        </el-tooltip>
+        <el-tooltip :content="currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入'" placement="bottom" :show-after="300">
+          <el-button
+            type="primary"
+            icon="Upload"
+            :disabled="!taskStore.currentTaskId"
+            @click="$emit('open-import')"
+          >
+            <span class="btn-text">{{ currentTask?.status === 'PENDING' || currentTask?.log_count === 0 ? '导入日志' : '补充导入' }}</span>
+          </el-button>
+        </el-tooltip>
         <el-dropdown
           trigger="click"
           :disabled="!taskStore.currentTaskId || currentTask?.status === 'PENDING'"
@@ -71,7 +77,7 @@
             :loading="exportingReport"
             :disabled="!taskStore.currentTaskId || currentTask?.status === 'PENDING'"
           >
-            导出报告 <el-icon class="el-icon--right"><ArrowDown /></el-icon>
+            <span class="btn-text">导出报告</span> <el-icon class="el-icon--right"><ArrowDown /></el-icon>
           </el-button>
           <template #dropdown>
             <el-dropdown-menu>
@@ -94,8 +100,61 @@
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">新建任务</el-button>
+        <el-tooltip content="新建任务" placement="bottom" :show-after="300">
+          <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">
+            <span class="btn-text">新建任务</span>
+          </el-button>
+        </el-tooltip>
       </el-button-group>
+
+      <!-- 快捷键速查面板 -->
+      <el-popover
+        placement="bottom-end"
+        :width="320"
+        trigger="click"
+      >
+        <template #reference>
+          <el-button
+            circle
+            size="small"
+            icon="QuestionFilled"
+            title="快捷键速查"
+            class="help-btn"
+          />
+        </template>
+        <div class="shortcuts-panel">
+          <div class="shortcuts-title">
+            <el-icon><QuestionFilled /></el-icon>
+            <span>工作台快捷键速查</span>
+          </div>
+          <div class="shortcuts-grid">
+            <div class="shortcut-row">
+              <span class="shortcut-desc">快速打标签</span>
+              <span class="shortcut-key"><kbd>Space</kbd></span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-desc">上一条 / 下一条日志</span>
+              <span class="shortcut-key"><kbd>↑</kbd> <kbd>↓</kbd> / <kbd>k</kbd> <kbd>j</kbd></span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-desc">沉浸全屏模式 (Zen)</span>
+              <span class="shortcut-key"><kbd>F</kbd></span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-desc">浏览器物理全屏</span>
+              <span class="shortcut-key"><kbd>Shift</kbd> + <kbd>F</kbd></span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-desc">关闭弹窗 / 退出沉浸</span>
+              <span class="shortcut-key"><kbd>Esc</kbd></span>
+            </div>
+            <div class="shortcut-row">
+              <span class="shortcut-desc">聚焦日志并打开详情</span>
+              <span class="shortcut-key"><kbd>Tab</kbd> / <kbd>Enter</kbd></span>
+            </div>
+          </div>
+        </div>
+      </el-popover>
     </div>
 
     <!-- 新建任务弹窗 (统一使用 NewTaskDialog) -->
@@ -116,7 +175,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Files, Opportunity, Upload, Download, ArrowDown, Plus, Refresh, Document, DataAnalysis, Tickets } from '@element-plus/icons-vue'
+import { Files, Opportunity, Upload, Download, ArrowDown, Plus, Refresh, Document, DataAnalysis, Tickets, QuestionFilled } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import { useFilterStore } from '@/stores/filter'
 import api from '@/api'
@@ -254,5 +313,66 @@ defineExpose({
 .header-right {
   display: flex;
   align-items: center;
+}
+
+.help-btn {
+  margin-left: 8px;
+  color: var(--text-secondary);
+}
+
+.help-btn:hover {
+  color: var(--brand-600);
+}
+
+.shortcuts-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shortcuts-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--text-primary);
+  border-bottom: 1px solid var(--border-base);
+  padding-bottom: 6px;
+}
+
+.shortcuts-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.shortcut-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: var(--fs-xs);
+}
+
+.shortcut-desc {
+  color: var(--text-secondary);
+}
+
+.shortcut-key kbd {
+  display: inline-block;
+  padding: 1px 5px;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--text-primary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-base);
+  border-radius: var(--radius-xs);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.1);
+}
+
+@media (max-width: 900px) {
+  .header-action-group .btn-text {
+    display: none;
+  }
 }
 </style>

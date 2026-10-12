@@ -148,7 +148,10 @@
             v-for="ev in filteredRcaList"
             :key="ev.id"
             :class="['rca-item-card', { active: selectedRCA?.id === ev.id }]"
+            role="button"
+            tabindex="0"
             @click="selectRCA(ev)"
+            @keydown.enter.space.prevent="selectRCA(ev)"
           >
             <div class="item-card-header">
               <span :class="['level-tag', ev.impact_level?.toLowerCase()]">
@@ -596,7 +599,7 @@ defineExpose({
 .rca-workbench-body {
   display: flex;
   gap: 16px;
-  min-height: calc(100vh - 230px);
+  min-height: calc(100vh - var(--app-header-h) - var(--app-main-pad-y) * 2 - 138px);
 }
 .col-event-list {
   width: 360px;

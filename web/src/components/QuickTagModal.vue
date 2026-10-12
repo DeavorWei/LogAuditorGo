@@ -454,8 +454,8 @@ const handleCreateAndAdd = async () => {
 }
 
 .tag-count-sub {
-  font-size: 10px;
-  color: var(--gray-400);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
 }
 
 .no-tags-tip {

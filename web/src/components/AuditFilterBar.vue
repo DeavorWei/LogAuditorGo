@@ -427,8 +427,13 @@
     </div>
 
     <!-- 非沉浸模式下：底部悬浮展开/收缩控制条 -->
-    <div v-if="!workbenchUIStore.isImmersive" class="filter-toggle-pill-bar" @click="handleToggleCollapse">
-      <div class="pill-handle">
+    <div v-if="!workbenchUIStore.isImmersive" class="filter-toggle-pill-bar">
+      <button
+        type="button"
+        class="pill-handle reset"
+        :aria-expanded="!ui.isFilterCollapsed"
+        @click="handleToggleCollapse"
+      >
         <el-icon class="pill-icon">
           <ArrowDown v-if="ui.isFilterCollapsed" />
           <ArrowUp v-else />
@@ -437,7 +442,7 @@
         <span v-if="ui.isFilterCollapsed && hiddenActiveFilterCount > 0" class="pill-badge">
           {{ hiddenActiveFilterCount }} 项生效
         </span>
-      </div>
+      </button>
     </div>
   </div>
 </template>
@@ -798,11 +803,17 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 .filter-row-primary.is-immersive-row {
   flex-wrap: nowrap;
   overflow-x: auto;
-  scrollbar-width: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--gray-300) transparent;
 }
 
 .filter-row-primary.is-immersive-row::-webkit-scrollbar {
-  display: none;
+  height: 6px;
+}
+
+.filter-row-primary.is-immersive-row::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: var(--radius-full);
 }
 
 .keyword-input {
@@ -891,7 +902,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 
 .dropdown-tag {
   margin-left: 8px;
-  font-size: 10px;
+  font-size: var(--fs-xs);
   color: var(--brand-500);
   background: var(--brand-50);
   padding: 1px 4px;
@@ -927,17 +938,17 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 .zen-column-radios :deep(.el-radio-button__inner) {
   padding: 2px 7px;
   font-size: var(--fs-xs);
-  height: 22px;
-  line-height: 16px;
+  height: 24px;
+  line-height: 18px;
 }
 
 .zen-fs-btn {
   padding: 0 6px;
-  height: 22px;
+  height: 24px;
 }
 
 .exit-zen-btn {
-  height: 22px;
+  height: 24px;
   padding: 0 8px;
   font-size: var(--fs-xs);
 }
@@ -949,16 +960,16 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   gap: 4px;
   padding: 0;
   margin: 0;
-  min-height: 20px;
+  min-height: 22px;
   font-size: var(--fs-xs);
 }
 
 .chips-label {
-  color: var(--gray-500);
+  color: var(--text-secondary);
   font-size: var(--fs-xs);
   font-weight: 500;
   flex-shrink: 0;
-  line-height: 18px;
+  line-height: 20px;
 }
 
 .chips-scroll-container {
@@ -970,10 +981,10 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 }
 
 .filter-chip-item {
-  font-size: 10.5px;
-  height: 18px;
-  line-height: 16px;
-  padding: 0 4px;
+  font-size: var(--fs-xs);
+  height: 22px;
+  line-height: 20px;
+  padding: 0 6px;
   max-width: 150px;
   border-radius: var(--radius-xs);
 }
@@ -1093,15 +1104,15 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 0 10px;
-  height: 16px;
-  line-height: 14px;
+  gap: 4px;
+  padding: 0 12px;
+  height: 24px;
+  line-height: 22px;
   border-radius: var(--radius-full);
   background: var(--gray-100);
   border: 1px solid var(--gray-300);
-  color: var(--gray-500);
-  font-size: 10px;
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
   transition: all 0.2s ease;
 }
 
@@ -1113,15 +1124,15 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 }
 
 .pill-icon {
-  font-size: 9px;
+  font-size: var(--fs-xs);
 }
 
 .pill-badge {
-  font-size: 9px;
-  line-height: 12px;
-  background: var(--brand-400);
+  font-size: var(--fs-xs);
+  line-height: 14px;
+  background: var(--brand-500);
   color: var(--gray-0);
-  padding: 0 4px;
+  padding: 0 5px;
   border-radius: var(--radius-full);
   margin-left: 2px;
   font-weight: 600;
@@ -1135,7 +1146,7 @@ const endTimeShortcuts = computed(() => createShortcuts('end'))
 
 :global(.audit-time-picker-popper .el-picker-panel__shortcut) {
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   line-height: 28px;
   padding: 0 10px;
   text-align: left;

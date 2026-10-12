@@ -6,7 +6,10 @@
       { active: active }
     ]"
     :data-log-id="record.id"
+    role="button"
+    tabindex="0"
     @click="$emit('click', record)"
+    @keydown.enter.space.prevent="$emit('click', record)"
     @mouseenter="$emit('hover-enter', record, $event)"
     @mouseleave="$emit('hover-leave', record)"
   >
@@ -144,7 +147,7 @@ const displayTime = computed(() => {
   font-size: var(--fs-sm);
 }
 .log-seq {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   color: var(--gray-500);
   background: var(--gray-100);
@@ -172,7 +175,7 @@ const displayTime = computed(() => {
 .match-tag {
   background: var(--inst-injected-bg);
   color: var(--action-text);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 1px 4px;
   border-radius: var(--radius-xs);
   flex-shrink: 0;
@@ -182,7 +185,7 @@ const displayTime = computed(() => {
   background: var(--gray-100);
   color: var(--gray-600);
   border: 1px solid var(--gray-300);
-  font-size: 10px;
+  font-size: var(--fs-xs);
   padding: 1px 4px;
   border-radius: var(--radius-xs);
   flex-shrink: 0;
@@ -190,7 +193,7 @@ const displayTime = computed(() => {
 
 .log-card-msg {
   font-size: var(--fs-xs);
-  color: var(--gray-600);
+  color: var(--text-secondary);
   margin: 3px 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -203,8 +206,8 @@ const displayTime = computed(() => {
 }
 
 .log-card-footer {
-  font-size: 10px;
-  color: var(--gray-400);
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
   display: flex;
   justify-content: space-between;
   align-items: center;
@@ -263,7 +266,7 @@ const displayTime = computed(() => {
 }
 
 .card-tag-pill {
-  font-size: 10px;
+  font-size: var(--fs-xs);
   height: 18px;
   line-height: 16px;
   padding: 0 4px;
