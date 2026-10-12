@@ -443,7 +443,7 @@
 </template>
 
 <script setup>
-import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import { useFilterStore } from '@/stores/filter'
 import { useTagStore } from '@/stores/tag'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
@@ -499,16 +499,23 @@ const currentSortOption = computed({
   }
 })
 
-const onSortOptionChange = () => {
-  emit('change')
+// 筛选事件微任务防抖发射器（避免快捷项与 picker 关闭产生重复请求）
+let pendingFilterChange = false
+const emitFilterChange = () => {
+  if (pendingFilterChange) return
+  pendingFilterChange = true
+  nextTick(() => {
+    pendingFilterChange = false
+    emit('change')
+  })
 }
 
-const emitFilterChange = () => {
-  emit('change')
+const onSortOptionChange = () => {
+  emitFilterChange()
 }
 
 const handleKeywordChange = () => {
-  emit('change')
+  emitFilterChange()
 }
 
 const handleResetFilters = () => {
@@ -517,7 +524,7 @@ const handleResetFilters = () => {
 
 const toggleTagLogic = () => {
   filter.value.tagLogic = filter.value.tagLogic === 'all' ? 'any' : 'all'
-  emit('change')
+  emitFilterChange()
 }
 
 const handleToggleCollapse = () => {
@@ -685,7 +692,7 @@ const removeSingleFilter = (key) => {
   } else if (key === 'sort') {
     currentSortOption.value = 'time_asc'
   }
-  emit('change')
+  emitFilterChange()
 }
 
 // 动态数据锚点基准计算引擎 (聚焦日志优先)
@@ -745,19 +752,15 @@ const createShortcuts = (target) => {
       const startStr = formatToPickerValue(startTime)
       const endStr = formatToPickerValue(endTime)
 
-      if (target === 'start') {
-        filterStore.filters.timeEnd = endStr
-        nextTick(() => {
-          emit('change')
-        })
-        return startTime
-      } else {
-        filterStore.filters.timeStart = startStr
-        nextTick(() => {
-          emit('change')
-        })
-        return endTime
-      }
+      // 无论是在起始时间还是截止时间点击快捷选项，两个时间均同时同步设置生效
+      filterStore.filters.timeStart = startStr
+      filterStore.filters.timeEnd = endStr
+
+      // 触发筛选更新（微任务防抖去重，避免与 picker 关闭产生的 change 产生重复并发请求）
+      emitFilterChange()
+
+      // 返回当前选择器对应的 Date 对象，使 Element Plus 自动关闭当前面板并维持状态一致
+      return target === 'start' ? startTime : endTime
     }
   }))
 }
