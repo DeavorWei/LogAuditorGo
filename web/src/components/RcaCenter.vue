@@ -650,16 +650,18 @@ defineExpose({
   margin-bottom: 6px;
 }
 .level-tag {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-xs);
   font-size: var(--fs-xs);
   font-weight: 700;
   text-transform: uppercase;
 }
-.level-tag.critical { background: var(--sev-crit-bg); color: var(--danger-text); }
-.level-tag.high { background: var(--sev-err-bg); color: var(--sev-err-text); }
-.level-tag.medium { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
+.level-tag.critical { background: var(--sev-crit-bg); color: var(--sev-crit-text); border: 1px solid var(--sev-crit-border); }
+.level-tag.high { background: var(--sev-err-bg); color: var(--sev-err-text); border: 1px solid var(--sev-err-border); }
+.level-tag.medium { background: var(--sev-warn-bg); color: var(--sev-warn-text); border: 1px solid var(--sev-warn-border); }
 .confidence-tag {
   font-size: var(--fs-xs);
   color: var(--action-text);

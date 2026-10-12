@@ -1,0 +1,98 @@
+/* ==========================================================================
+   severity.css —— 严重度唯一映射样式
+   ========================================================================== */
+
+/* 严重度徽标：替代多处各自为政的 .sev-tag 定义 */
+.sev-tag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 34px;
+  padding: 1px var(--sp-2);
+  border-radius: var(--radius-xs);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+  line-height: var(--lh-tight);
+  color: var(--sev-text);
+  background: var(--sev-bg);
+  border: 1px solid var(--sev-border);
+  box-sizing: border-box;
+}
+
+.sev-tag.is-crit {
+  --sev-text: var(--sev-crit-text);
+  --sev-bg: var(--sev-crit-bg);
+  --sev-border: var(--sev-crit-border);
+}
+
+.sev-tag.is-err {
+  --sev-text: var(--sev-err-text);
+  --sev-bg: var(--sev-err-bg);
+  --sev-border: var(--sev-err-border);
+}
+
+.sev-tag.is-warn {
+  --sev-text: var(--sev-warn-text);
+  --sev-bg: var(--sev-warn-bg);
+  --sev-border: var(--sev-warn-border);
+}
+
+.sev-tag.is-info {
+  --sev-text: var(--sev-info-text);
+  --sev-bg: var(--sev-info-bg);
+  --sev-border: var(--sev-info-border);
+}
+
+.sev-tag.is-comment {
+  --sev-text: var(--sev-comment-text);
+  --sev-bg: var(--sev-comment-bg);
+  --sev-border: var(--sev-comment-border);
+}
+
+/* 严重度色条（卡片左侧指示条）：替代 AuditLogCard 的变体 */
+.sev-strip {
+  position: relative;
+}
+
+.sev-strip::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: var(--sev-bar, var(--gray-400));
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+  transition: width var(--dur-fast) var(--ease-standard);
+  z-index: 1;
+}
+
+.sev-strip:hover::before {
+  width: 6px;
+}
+
+.sev-strip.is-crit {
+  --sev-bar: var(--sev-crit-bar);
+}
+
+.sev-strip.is-err {
+  --sev-bar: var(--sev-err-bar);
+}
+
+.sev-strip.is-warn {
+  --sev-bar: var(--sev-warn-bar);
+}
+
+.sev-strip.is-info {
+  --sev-bar: var(--sev-info-bar);
+}
+
+.sev-strip.is-comment {
+  --sev-bar: var(--sev-comment-bar);
+}
+
+/* 暗色场景（QuickLook 等深底版） */
+.on-dark .sev-tag,
+.sev-tag.on-dark {
+  color: var(--gray-0);
+  background: var(--sev-bar, var(--gray-500));
+  border-color: transparent;
+}

@@ -1,0 +1,68 @@
+/* ==========================================================================
+   element-theme.css —— Element Plus 品牌主题化变量覆盖
+   ========================================================================== */
+
+:root {
+  /* 主色（Sky 品牌蓝） */
+  --el-color-primary-rgb: 2, 132, 199;
+  --el-color-primary: #0284c7;
+  --el-color-primary-light-3: #38bdf8;
+  --el-color-primary-light-5: #7dd3fc;
+  --el-color-primary-light-7: #bae6fd;
+  --el-color-primary-light-8: #e0f2fe;
+  --el-color-primary-light-9: #f0f9ff;
+  --el-color-primary-dark-2: #0369a1;
+
+  /* 成功态（Emerald 绿） */
+  --el-color-success-rgb: 22, 163, 74;
+  --el-color-success: #16a34a;
+  --el-color-success-light-3: #86efac;
+  --el-color-success-light-5: #bbf7d0;
+  --el-color-success-light-7: #dcfce7;
+  --el-color-success-light-8: #ecfdf5;
+  --el-color-success-light-9: #f0fdf4;
+  --el-color-success-dark-2: #15803d;
+
+  /* 警告态（Amber 橙黄） */
+  --el-color-warning-rgb: 217, 119, 6;
+  --el-color-warning: #d97706;
+  --el-color-warning-light-3: #fcd34d;
+  --el-color-warning-light-5: #fde68a;
+  --el-color-warning-light-7: #fef3c7;
+  --el-color-warning-light-8: #fffbeb;
+  --el-color-warning-light-9: #fffbeb;
+  --el-color-warning-dark-2: #b45309;
+
+  /* 危险/错误态（Red 红色） */
+  --el-color-danger-rgb: 220, 38, 38;
+  --el-color-danger: #dc2626;
+  --el-color-danger-light-3: #fca5a5;
+  --el-color-danger-light-5: #fecaca;
+  --el-color-danger-light-7: #fee2e2;
+  --el-color-danger-light-8: #fef2f2;
+  --el-color-danger-light-9: #fef2f2;
+  --el-color-danger-dark-2: #b91c1c;
+
+  --el-color-error-rgb: 220, 38, 38;
+  --el-color-error: #dc2626;
+  --el-color-error-light-3: #fca5a5;
+  --el-color-error-light-5: #fecaca;
+  --el-color-error-light-7: #fee2e2;
+  --el-color-error-light-8: #fef2f2;
+  --el-color-error-light-9: #fef2f2;
+  --el-color-error-dark-2: #b91c1c;
+
+  /* 信息态（Slate 灰） */
+  --el-color-info-rgb: 100, 116, 139;
+  --el-color-info: #64748b;
+  --el-color-info-light-3: #94a3b8;
+  --el-color-info-light-5: #cbd5e1;
+  --el-color-info-light-7: #e2e8f0;
+  --el-color-info-light-8: #f1f5f9;
+  --el-color-info-light-9: #f8fafc;
+  --el-color-info-dark-2: #475569;
+
+  /* 圆角基线 */
+  --el-border-radius-base: 6px;
+  --el-border-radius-small: 4px;
+}

@@ -8,7 +8,7 @@
       <div class="quicklook-card">
         <div class="quicklook-header">
           <div class="header-left">
-            <span :class="['sev-tag', sevClass]">Lv.{{ log.severity }}</span>
+            <SeverityTag :severity="log.severity" :module="log.module" class="on-dark" />
             <span class="log-title">{{ log.module }}/{{ log.brief }}</span>
             <span v-if="log.hostname" class="host-pill">{{ log.hostname }}</span>
           </div>
@@ -51,6 +51,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import SeverityTag from '@/components/SeverityTag.vue'
 
 const props = defineProps({
   visible: {
@@ -65,15 +66,6 @@ const props = defineProps({
     type: Object,
     default: () => null
   }
-})
-
-const sevClass = computed(() => {
-  if (!props.log) return 'sev-info'
-  const sev = props.log.severity
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
 })
 
 // 原始报文前 300 字符截断
@@ -175,17 +167,6 @@ const positionStyle = computed(() => {
   align-items: center;
   gap: 8px;
 }
-
-.sev-tag {
-  font-size: var(--fs-xs);
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  font-weight: 700;
-}
-.sev-crit { background: var(--danger-strong); color: var(--gray-0); }
-.sev-err  { background: var(--warning-strong); color: var(--gray-0); }
-.sev-warn { background: var(--sev-warn-bar); color: var(--gray-900); }
-.sev-info { background: var(--gray-600); color: var(--gray-0); }
 
 .log-title {
   font-size: var(--fs-md);

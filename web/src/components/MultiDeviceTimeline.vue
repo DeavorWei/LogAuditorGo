@@ -22,7 +22,7 @@
               :label="d.id"
               class="device-checkbox-item"
             >
-              <span class="device-pill" :style="{ backgroundColor: d.color || '#3B82F6' }">
+              <span class="device-pill" :style="{ backgroundColor: d.color || DEFAULT_DEVICE_COLOR }">
                 {{ d.device_name }} ({{ d.log_count }}条)
               </span>
             </el-checkbox>
@@ -140,18 +140,16 @@
             :key="ev.log_id || index"
             :timestamp="formatEventTime(ev)"
             placement="top"
-            :color="ev.device_color || '#3B82F6'"
+            :color="ev.device_color || DEFAULT_DEVICE_COLOR"
             size="large"
           >
             <div class="event-card" @click="showEventDetail(ev)">
               <div class="event-header">
                 <div class="event-header-left">
-                  <span class="device-pill" :style="{ backgroundColor: ev.device_color || '#3B82F6' }">
+                  <span class="device-pill" :style="{ backgroundColor: ev.device_color || DEFAULT_DEVICE_COLOR }">
                     {{ ev.device_name }}
                   </span>
-                  <span :class="['sev-badge', severityClass(ev.severity)]">
-                    Lv.{{ ev.severity }}
-                  </span>
+                  <SeverityTag :severity="ev.severity" :module="ev.module" />
                   <strong class="event-title">{{ ev.module }}/{{ ev.brief }}</strong>
                 </div>
                 <div class="event-header-right">
@@ -196,15 +194,15 @@
 
           <el-table-column label="所属设备" width="150">
             <template #default="{ row }">
-              <span class="device-pill" :style="{ backgroundColor: row.device_color || '#3B82F6' }">
+              <span class="device-pill" :style="{ backgroundColor: row.device_color || DEFAULT_DEVICE_COLOR }">
                 {{ row.device_name }}
               </span>
             </template>
           </el-table-column>
 
-          <el-table-column label="级别" width="70" align="center">
+          <el-table-column label="级别" width="80" align="center">
             <template #default="{ row }">
-              <span :class="['sev-badge', severityClass(row.severity)]">{{ row.severity }}</span>
+              <SeverityTag :severity="row.severity" :module="row.module" />
             </template>
           </el-table-column>
 
@@ -245,13 +243,16 @@
             <div><strong>发生时间:</strong> {{ formatEventTime(selectedEvent) }}</div>
             <div>
               <strong>所属设备:</strong>
-              <span class="device-pill" :style="{ backgroundColor: selectedEvent.device_color || '#3B82F6', marginLeft: '6px' }">
+              <span class="device-pill" :style="{ backgroundColor: selectedEvent.device_color || DEFAULT_DEVICE_COLOR, marginLeft: '6px' }">
                 {{ selectedEvent.device_name }}
               </span>
             </div>
             <div><strong>Host / IP:</strong> {{ selectedEvent.hostname || '-' }}</div>
             <div><strong>模块 / 简名:</strong> {{ selectedEvent.module }} / {{ selectedEvent.brief }}</div>
-            <div><strong>日志级别:</strong> Lv.{{ selectedEvent.severity }}</div>
+            <div style="display: flex; align-items: center; gap: 6px;">
+              <strong>日志级别:</strong>
+              <SeverityTag :severity="selectedEvent.severity" :module="selectedEvent.module" />
+            </div>
             <div><strong>来源文件:</strong> {{ selectedEvent.source_file || '-' }}</div>
           </div>
         </div>
@@ -316,6 +317,8 @@ import { Download } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useRequest } from '@/composables/useRequest'
 import { formatTime as sharedFormatTime } from '@/utils/format'
+import SeverityTag from '@/components/SeverityTag.vue'
+import { DEFAULT_DEVICE_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   taskId: {
@@ -710,13 +713,6 @@ const formatEventTime = (ev) => {
   return formatTime(ev.timestamp)
 }
 
-const severityClass = (sev) => {
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
-}
-
 // 导出为 CSV 格式
 const exportCSV = () => {
   if (!timelineEvents.value || timelineEvents.value.length === 0) {
@@ -958,17 +954,6 @@ defineExpose({
   padding: 2px 6px;
   border-radius: var(--radius-sm);
 }
-.sev-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-xs);
-  font-weight: bold;
-}
-.sev-crit { background: var(--sev-crit-bg); color: var(--danger-text); }
-.sev-err { background: var(--sev-err-bg); color: var(--sev-err-text); }
-.sev-warn { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
-.sev-info { background: var(--brand-100); color: var(--brand-800); }
 
 .table-code {
   font-family: monospace;

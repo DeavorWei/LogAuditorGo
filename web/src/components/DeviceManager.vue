@@ -29,7 +29,7 @@
         <el-table-column label="设备标识" min-width="160">
           <template #default="{ row }">
             <div class="device-name-cell">
-              <span class="color-dot" :style="{ backgroundColor: row.color || '#3B82F6' }"></span>
+              <span class="color-dot" :style="{ backgroundColor: row.color || DEFAULT_DEVICE_COLOR }"></span>
               <strong>{{ row.device_name }}</strong>
             </div>
           </template>
@@ -312,6 +312,7 @@ import { Monitor, Folder, FolderOpened, Document, Close, Plus, InfoFilled } from
 import api from '@/api'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import { formatSize as sharedFormatSize } from '@/utils/format'
+import { DEVICE_COLOR_PRESETS, DEFAULT_DEVICE_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   taskId: {
@@ -332,11 +333,7 @@ const showDeviceDialog = ref(false)
 const isEditing = ref(false)
 const editingDeviceId = ref(null)
 
-const colorPresets = [
-  '#3B82F6', '#10B981', '#F59E0B', '#EF4444',
-  '#8B5CF6', '#EC4899', '#14B8A6', '#F97316',
-  '#6366F1', '#84CC16', '#06B6D4', '#64748B'
-]
+const colorPresets = DEVICE_COLOR_PRESETS
 
 const deviceFormRef = ref(null)
 const deviceForm = ref({
@@ -344,7 +341,7 @@ const deviceForm = ref({
   device_type: DEFAULT_DEVICE_FORM_TYPE,
   hostname: '',
   management_ip: '',
-  color: '#3B82F6',
+  color: DEFAULT_DEVICE_COLOR,
   description: ''
 })
 
@@ -473,7 +470,7 @@ const openEditDialog = (row) => {
     device_type: row.device_type,
     hostname: row.hostname,
     management_ip: row.management_ip,
-    color: row.color || '#3B82F6',
+    color: row.color || DEFAULT_DEVICE_COLOR,
     description: row.description || ''
   }
   showDeviceDialog.value = true

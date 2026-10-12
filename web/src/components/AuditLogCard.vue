@@ -2,7 +2,7 @@
   <div
     :class="[
       'audit-log-card',
-      sevColorClass,
+      stripClass,
       { active: active }
     ]"
     :data-log-id="record.id"
@@ -12,7 +12,7 @@
   >
     <!-- 头部: 级别徽标 + 日志序号 + 模块/简名 + 匹配标签 -->
     <div class="log-card-header">
-      <span :class="['sev-tag', sevClass]">Lv.{{ record.severity }}</span>
+      <SeverityTag :severity="record.severity" :module="record.module" />
       <span class="log-seq" :title="`日志序号: #${record.id}`">#{{ record.id }}</span>
       <span class="log-mod" :title="`${record.module}/${record.brief}`">
         {{ record.module }}/{{ record.brief }}
@@ -54,7 +54,7 @@
         :key="tag.id"
         size="small"
         effect="dark"
-        :color="tag.color || '#409EFF'"
+        :color="tag.color || DEFAULT_TAG_COLOR"
         class="card-tag-pill"
       >
         {{ tag.name }}
@@ -73,6 +73,9 @@
 <script setup>
 import { computed } from 'vue'
 import { formatTime } from '@/utils/format'
+import { useSeverity } from '@/composables/useSeverity'
+import SeverityTag from '@/components/SeverityTag.vue'
+import { DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   record: {
@@ -87,24 +90,10 @@ const props = defineProps({
 
 defineEmits(['click', 'hover-enter', 'hover-leave'])
 
-// 级别背景色与文字样式类
-const sevClass = computed(() => {
-  const sev = props.record.severity
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
-})
-
-// 左侧 4px 严重度指示边条色彩映射 (建议 5)
-const sevColorClass = computed(() => {
-  if (props.record.module === 'COMMENT') return 'sev-comment'
-  const sev = props.record.severity
-  if (sev <= 2) return 'sev-crit-bar'
-  if (sev <= 4) return 'sev-err-bar'
-  if (sev <= 6) return 'sev-warn-bar'
-  return 'sev-info-bar'
-})
+const { stripClass } = useSeverity(
+  () => props.record.severity,
+  () => props.record.module
+)
 
 const displayTime = computed(() => {
   const r = props.record
@@ -134,41 +123,6 @@ const displayTime = computed(() => {
   min-width: 0; /* 阻止 Grid 轨道撑破 */
 }
 
-/* 4px 严重度彩色指示竖条 (Left Accent Strip) */
-.audit-log-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background-color: var(--sev-bar-color, var(--gray-400));
-  border-top-left-radius: 6px;
-  border-bottom-left-radius: 6px;
-  transition: width 0.15s ease;
-}
-
-.audit-log-card:hover::before {
-  width: 6px; /* 悬浮微动效，凸显当前聚焦 */
-}
-
-/* 严重度色条色彩变量 */
-.audit-log-card.sev-crit-bar {
-  --sev-bar-color: var(--danger-strong); /* Lv.0 ~ Lv.2 紧急深红 */
-}
-.audit-log-card.sev-err-bar {
-  --sev-bar-color: var(--warning-strong); /* Lv.3 ~ Lv.4 告警橙黄 */
-}
-.audit-log-card.sev-warn-bar {
-  --sev-bar-color: var(--brand-500); /* Lv.5 ~ Lv.6 通知亮蓝 */
-}
-.audit-log-card.sev-info-bar {
-  --sev-bar-color: var(--gray-400); /* Lv.7 调试信息浅灰 */
-}
-.audit-log-card.sev-comment {
-  --sev-bar-color: var(--gray-500); /* 注释行石板灰 */
-}
-
 .audit-log-card:hover {
   border-color: var(--gray-400);
   background: var(--bg-subtle);
@@ -188,19 +142,6 @@ const displayTime = computed(() => {
   gap: 6px;
   font-size: var(--fs-sm);
 }
-
-.sev-tag {
-  font-size: 10px;
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-  font-weight: 700;
-  flex-shrink: 0;
-}
-.sev-crit { background: var(--sev-crit-bg); color: var(--danger-text); }
-.sev-err  { background: var(--sev-err-bg); color: var(--sev-err-text); }
-.sev-warn { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
-.sev-info { background: var(--gray-100); color: var(--gray-600); }
-
 .log-seq {
   font-size: 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;

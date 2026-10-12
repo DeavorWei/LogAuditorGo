@@ -34,7 +34,7 @@
             size="small"
             closable
             effect="dark"
-            :color="t.color || '#409EFF'"
+            :color="t.color || DEFAULT_TAG_COLOR"
             class="detail-tag-pill"
             @close="handleRemoveTag(t.id)"
           >
@@ -100,9 +100,7 @@
           <el-descriptions-item label="所属模块">{{ log.module }}</el-descriptions-item>
           <el-descriptions-item label="事件简名">{{ log.brief }}</el-descriptions-item>
           <el-descriptions-item label="日志级别">
-            <span :class="['sev-tag', getSevClass(log.severity)]">
-              Level {{ log.severity }}{{ log.module === 'COMMENT' ? ' (注释信息)' : '' }}
-            </span>
+            <SeverityTag :severity="log.severity" :module="log.module" />
           </el-descriptions-item>
           <el-descriptions-item label="来源文件">{{ log.source_file || '-' }}</el-descriptions-item>
           <el-descriptions-item label="槽位/序列号">{{ log.slot_info || '-' }}</el-descriptions-item>
@@ -181,7 +179,8 @@ import { useTaskStore } from '@/stores/task'
 import { useTagStore } from '@/stores/tag'
 import { LOG_DETAIL_CONTEXT_KEY, formatTooltipHtml } from '@/utils/logFormatter'
 import api from '@/api'
-import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
+import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
+import SeverityTag from '@/components/SeverityTag.vue'
 
 const props = defineProps({
   log: {
@@ -374,13 +373,6 @@ const formatLogTime = (log) => {
   if (!log) return '-'
   return log.timestamp || '-'
 }
-
-const getSevClass = (sev) => {
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
-}
 </script>
 
 <style scoped>
@@ -504,18 +496,6 @@ const getSevClass = (sev) => {
 .summary-text-wb {
   word-break: break-word;
 }
-
-.sev-tag {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: var(--radius-xs);
-  font-size: var(--fs-xs);
-  font-weight: 600;
-}
-.sev-crit { background: var(--sev-crit-bg); color: var(--danger-strong); }
-.sev-err { background: var(--sev-err-bg); color: var(--sev-err-bar); }
-.sev-warn { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
-.sev-info { background: var(--brand-100); color: var(--brand-600); }
 
 .param-count-badge {
   font-size: var(--fs-xs);

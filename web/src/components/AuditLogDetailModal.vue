@@ -14,7 +14,7 @@
     <template #header>
       <div v-if="log" class="modal-custom-header">
         <div class="header-title-box">
-          <span :class="['sev-badge', getSevClass(log.severity)]">Lv.{{ log.severity }}</span>
+          <SeverityTag :severity="log.severity" :module="log.module" />
           <span class="header-log-id">#{{ log.id }}</span>
           <span class="header-log-mod">{{ log.module }}/{{ log.brief }}</span>
           <span v-if="log.knowledge_id > 0" class="header-match-tag">
@@ -142,9 +142,7 @@
             <el-descriptions-item label="所属模块">{{ log.module }}</el-descriptions-item>
             <el-descriptions-item label="事件简名">{{ log.brief }}</el-descriptions-item>
             <el-descriptions-item label="日志级别">
-              <span :class="['sev-tag', getSevClass(log.severity)]">
-                Level {{ log.severity }}{{ log.module === 'COMMENT' ? ' (注释信息)' : '' }}
-              </span>
+              <SeverityTag :severity="log.severity" :module="log.module" />
             </el-descriptions-item>
             <el-descriptions-item label="来源文件">{{ log.source_file || '-' }}</el-descriptions-item>
             <el-descriptions-item label="槽位/序列号">{{ log.slot_info || '-' }}</el-descriptions-item>
@@ -335,8 +333,9 @@ import { ArrowUp, ArrowDown, Close, InfoFilled, Plus } from '@element-plus/icons
 import { ElMessage, ElMessageBox } from 'element-plus'
 import RcaGraph from '@/components/RcaGraph.vue'
 import { useTagStore } from '@/stores/tag'
-import { PREDEFINE_TAG_COLORS } from '@/constants/tagColors'
+import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
+import SeverityTag from '@/components/SeverityTag.vue'
 
 const props = defineProps({
   visible: {
@@ -559,13 +558,6 @@ const formatDisplayTime = (record) => {
   return formatTime(record.timestamp)
 }
 
-const getSevClass = (sev) => {
-  if (sev <= 2) return 'sev-crit'
-  if (sev <= 4) return 'sev-err'
-  if (sev <= 5) return 'sev-warn'
-  return 'sev-info'
-}
-
 const escapeHtml = (str) => {
   if (!str) return ''
   return String(str)
@@ -628,17 +620,6 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
 }
-
-.sev-badge {
-  font-size: var(--fs-xs);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
-  font-weight: 700;
-}
-.sev-crit { background: var(--sev-crit-bg); color: var(--danger-text); }
-.sev-err  { background: var(--sev-err-bg); color: var(--sev-err-text); }
-.sev-warn { background: var(--sev-warn-bg); color: var(--sev-warn-text); }
-.sev-info { background: var(--gray-100); color: var(--gray-600); }
 
 .header-log-id {
   font-weight: 700;

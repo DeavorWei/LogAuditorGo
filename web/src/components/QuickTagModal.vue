@@ -31,7 +31,7 @@
               size="small"
               closable
               effect="dark"
-              :color="t.color || '#409EFF'"
+              :color="t.color || DEFAULT_TAG_COLOR"
               class="current-tag-chip"
               @close="handleRemoveTag(t.id)"
             >
@@ -86,7 +86,7 @@
           >
             <span
               class="tag-color-badge"
-              :style="{ backgroundColor: tag.color || '#409EFF' }"
+              :style="{ backgroundColor: tag.color || DEFAULT_TAG_COLOR }"
             />
             <span class="tag-name-text">{{ tag.name }}</span>
             <span v-if="isTagAssigned(tag.id)" class="tag-status-check">✓</span>
@@ -121,12 +121,7 @@ import { ElMessage } from 'element-plus'
 import { useTagStore } from '@/stores/tag'
 import { useTaskStore } from '@/stores/task'
 import api from '@/api'
-
-const PREDEFINE_TAG_COLORS = [
-  '#409EFF', '#67C23A', '#E6A23C', '#F56C6C',
-  '#909399', '#0284c7', '#10b981', '#f97316',
-  '#8b5cf6', '#ec4899', '#14b8a6', '#6366f1'
-]
+import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   visible: {
@@ -266,7 +261,7 @@ const handleCreateAndAdd = async () => {
   creatingTag.value = true
   try {
     const colorIndex = tagStore.tags.length % PREDEFINE_TAG_COLORS.length
-    const color = PREDEFINE_TAG_COLORS[colorIndex] || '#409EFF'
+    const color = PREDEFINE_TAG_COLORS[colorIndex] || DEFAULT_TAG_COLOR
 
     const newTag = await tagStore.createTag(props.taskId, {
       name: tagName,

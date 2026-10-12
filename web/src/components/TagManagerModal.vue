@@ -144,7 +144,7 @@ const startEdit = (tag) => {
   isEditing.value = true
   editingTagId.value = tag.id
   form.name = tag.name
-  form.color = tag.color || '#409EFF'
+  form.color = tag.color || DEFAULT_TAG_COLOR
   form.remark = tag.remark || ''
 }
 
@@ -152,7 +152,7 @@ const cancelEdit = () => {
   isEditing.value = false
   editingTagId.value = null
   form.name = ''
-  form.color = '#409EFF'
+  form.color = DEFAULT_TAG_COLOR
   form.remark = ''
 }
 
