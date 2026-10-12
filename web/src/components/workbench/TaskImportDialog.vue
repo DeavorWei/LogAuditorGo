@@ -133,17 +133,24 @@
     />
 
     <!-- 同名文件冲突处理弹窗 -->
-    <el-dialog v-model="showConflictDialog" title="⚠️ 检测到同名日志文件" width="520px">
+    <el-dialog v-model="showConflictDialog" width="520px">
+      <template #header>
+        <div class="dlg-title-with-icon">
+          <el-icon color="var(--warning-strong)"><WarningFilled /></el-icon>
+          <span>检测到同名日志文件</span>
+        </div>
+      </template>
       <div class="conflict-dialog-body">
-        <p style="margin-bottom: 12px; line-height: 1.6; color: #334155;">
+        <p class="conflict-desc">
           当前任务中已存在以下 <strong>{{ conflictingFileNames.length }}</strong> 个同名日志文件：
         </p>
         <div class="conflict-file-list">
           <div v-for="name in conflictingFileNames" :key="name" class="conflict-item">
-            ⚠️ <strong>{{ name }}</strong>
+            <el-icon color="var(--warning-strong)"><Warning /></el-icon>
+            <strong>{{ name }}</strong>
           </div>
         </div>
-        <p style="margin-top: 14px; font-size: 13px; color: #64748b;">
+        <p class="conflict-sub">
           请选择冲突文件的处理方式：
         </p>
       </div>
@@ -178,11 +185,11 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { FolderOpened, Folder, Document, Close, InfoFilled, Plus } from '@element-plus/icons-vue'
+import { FolderOpened, Folder, Document, Close, InfoFilled, Plus, Warning, WarningFilled } from '@element-plus/icons-vue'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
 import api from '@/api'
 import { useTaskStore } from '@/stores/task'
-import { formatSize as sharedFormatSize } from '@/utils/format'
+import { formatSize as sharedFormatSize, pathBaseName } from '@/utils/format'
 
 const props = defineProps({
   taskId: {
@@ -311,12 +318,6 @@ const removePath = index => {
 
 const clearPaths = () => {
   selectedPaths.value = []
-}
-
-const pathBaseName = p => {
-  if (!p) return ''
-  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
-  return segs.length ? segs[segs.length - 1] : p
 }
 
 const isConflictFile = fileName => {
@@ -458,5 +459,27 @@ defineExpose({
 .conflict-item {
   font-size: var(--fs-md);
   color: var(--danger-text);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.dlg-title-with-icon {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 600;
+}
+
+.conflict-desc {
+  margin-bottom: var(--sp-4);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+}
+
+.conflict-sub {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 </style>

@@ -48,7 +48,7 @@
 
         <!-- 批量处理时的整体进度：第 N/M 个 -->
         <div v-if="snapshot.overall_label" class="progress-overall">
-          <span class="overall-icon">📦</span>
+          <el-icon class="overall-icon"><Files /></el-icon>
           <span class="overall-text">{{ snapshot.overall_label }}</span>
         </div>
       </div>
@@ -114,10 +114,10 @@
     <template #footer>
       <div class="modal-footer">
         <div class="footer-left-hint">
-          <span v-if="isCanceling" class="hint-warn">⏹ 正在发送终止请求...</span>
-          <span v-else-if="isRunning" class="hint-text">💡 任务在后台持续执行，您可以关闭窗口；关闭后可从顶栏任务徽标随时回到此窗口</span>
-          <span v-else-if="isCompleted" class="hint-success">🎉 全部阶段已成功完成，正在自动载入最新数据...</span>
-          <span v-else-if="isFailed" class="hint-error">❌ 处理出现异常，请查看上方日志排查</span>
+          <span v-if="isCanceling" class="hint-warn"><el-icon><VideoPause /></el-icon> 正在发送终止请求...</span>
+          <span v-else-if="isRunning" class="hint-text"><el-icon><InfoFilled /></el-icon> 任务在后台持续执行，您可以关闭窗口；关闭后可从顶栏任务徽标随时回到此窗口</span>
+          <span v-else-if="isCompleted" class="hint-success"><el-icon><SuccessFilled /></el-icon> 全部阶段已成功完成，正在自动载入最新数据...</span>
+          <span v-else-if="isFailed" class="hint-error"><el-icon><CircleCloseFilled /></el-icon> 处理出现异常，请查看上方日志排查</span>
         </div>
         <div class="footer-buttons">
           <!-- UI-02: 长耗时任务可主动终止，不再只能干等或强杀进程 -->
@@ -148,7 +148,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
-import { Check, CloseBold } from '@element-plus/icons-vue'
+import { Check, CloseBold, Files, VideoPause, InfoFilled, SuccessFilled, CircleCloseFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElNotification } from 'element-plus'
 import api from '@/api'
 import { useProgressStore } from '@/stores/progress'

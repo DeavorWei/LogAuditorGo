@@ -238,7 +238,7 @@
     >
       <template v-if="selectedEvent">
         <div class="drawer-section">
-          <h4>📌 基础事件元信息</h4>
+          <h4><el-icon><Position /></el-icon> 基础事件元信息</h4>
           <div class="meta-grid">
             <div><strong>发生时间:</strong> {{ formatEventTime(selectedEvent) }}</div>
             <div>
@@ -258,12 +258,12 @@
         </div>
 
         <div class="drawer-section">
-          <h4>📝 原始报文</h4>
+          <h4><el-icon><EditPen /></el-icon> 原始报文</h4>
           <div class="drawer-code">{{ selectedEvent.raw_log }}</div>
         </div>
 
         <div v-if="selectedEvent.parameters && Object.keys(selectedEvent.parameters).length > 0" class="drawer-section">
-          <h4>🧩 动态提取参数</h4>
+          <h4><el-icon><Grid /></el-icon> 动态提取参数</h4>
           <el-table :data="formatParamsArray(selectedEvent.parameters)" border size="small">
             <el-table-column prop="key" label="参数名称" width="140" />
             <el-table-column prop="val" label="提取现场值" />
@@ -271,7 +271,7 @@
         </div>
 
         <div v-if="knowledgeDetail" class="drawer-section">
-          <h4>📖 华为官方知识库释义与建议</h4>
+          <h4><el-icon><Reading /></el-icon> 华为官方知识库释义与建议</h4>
           <div class="kb-card">
             <div class="kb-item">
               <strong>含义解释:</strong>
@@ -288,7 +288,7 @@
           </div>
         </div>
         <div v-else-if="selectedEvent.module === 'COMMENT'" class="drawer-section">
-          <h4>💡 注释性日志说明</h4>
+          <h4><el-icon><InfoFilled /></el-icon> 注释性日志说明</h4>
           <div class="kb-card">
             <div class="kb-item">
               <strong>日志性质:</strong>
@@ -313,7 +313,7 @@
 // UI-16: defineProps 是编译器宏，无需从 vue 导入
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Download } from '@element-plus/icons-vue'
+import { Download, Position, EditPen, Grid, Reading, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useRequest } from '@/composables/useRequest'
 import { formatTime as sharedFormatTime } from '@/utils/format'

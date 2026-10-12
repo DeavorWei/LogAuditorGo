@@ -311,7 +311,7 @@ import { ElMessage } from 'element-plus'
 import { Monitor, Folder, FolderOpened, Document, Close, Plus, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
-import { formatSize as sharedFormatSize } from '@/utils/format'
+import { formatSize as sharedFormatSize, pathBaseName } from '@/utils/format'
 import { DEVICE_COLOR_PRESETS, DEFAULT_DEVICE_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
@@ -615,12 +615,6 @@ const removePath = index => {
 
 const clearPaths = () => {
   selectedPaths.value = []
-}
-
-const pathBaseName = p => {
-  if (!p) return ''
-  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
-  return segs.length ? segs[segs.length - 1] : p
 }
 
 const selectedFileCount = computed(() => selectedPaths.value.filter(p => !p.is_dir).length)

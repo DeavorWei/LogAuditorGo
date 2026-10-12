@@ -41,8 +41,8 @@
         </div>
 
         <div class="quicklook-footer">
-          <span class="footer-time">⏰ {{ log.timestamp ? String(log.timestamp).replace('T', ' ').substring(0, 19) : '-' }}</span>
-          <span v-if="log.source_file" class="footer-file">📄 {{ log.source_file }}</span>
+          <span class="footer-time"><el-icon><Clock /></el-icon> {{ log.timestamp ? String(log.timestamp).replace('T', ' ').substring(0, 19) : '-' }}</span>
+          <span v-if="log.source_file" class="footer-file"><el-icon><Document /></el-icon> {{ log.source_file }}</span>
         </div>
       </div>
     </div>
@@ -51,6 +51,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { Clock, Document } from '@element-plus/icons-vue'
 import SeverityTag from '@/components/SeverityTag.vue'
 
 const props = defineProps({

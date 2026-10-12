@@ -68,7 +68,7 @@
       <div class="modal-pane-left">
         <!-- 标签栏 -->
         <div class="log-detail-tags-bar">
-          <span class="detail-tags-label">🏷 标签:</span>
+          <span class="detail-tags-label"><el-icon><PriceTag /></el-icon> 标签:</span>
           <div class="detail-tags-list">
             <el-tag
               v-for="t in (log.tags || [])"
@@ -76,7 +76,7 @@
               size="small"
               closable
               effect="dark"
-              :color="t.color || '#409EFF'"
+              :color="t.color || DEFAULT_TAG_COLOR"
               class="detail-tag-pill"
               @close="$emit('remove-tag', log.id, t.id)"
             >
@@ -93,7 +93,7 @@
                     class="tag-menu-item"
                   >
                     <div class="tag-item-row">
-                      <span class="tag-color-dot" :style="{ backgroundColor: t.color || '#409EFF' }"></span>
+                      <span class="tag-color-dot" :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"></span>
                       <span class="tag-name-text">{{ t.name }}</span>
                       <span v-if="isTagAssigned(t.id)" class="tag-assigned-badge">已添加</span>
                       <span
@@ -167,7 +167,7 @@
               <div class="param-card-top">
                 <span class="p-key">{{ p.name }}</span>
                 <el-tooltip v-if="p.description" placement="top" raw-content :content="formatTooltipHtml(p.description)">
-                  <span class="p-desc-badge">📖 {{ p.description }}</span>
+                  <span class="p-desc-badge"><el-icon><Reading /></el-icon> {{ p.description }}</span>
                 </el-tooltip>
               </div>
               <div class="p-val-box">
@@ -184,7 +184,7 @@
         <!-- 官方日志消息模板实例化 -->
         <div v-if="log.knowledge && log.knowledge.message" class="section-box">
           <div class="box-title flex-between">
-            <span>📋 官方日志消息模板实例化 (Template Instantiation)</span>
+            <span><el-icon><Tickets /></el-icon> 官方日志消息模板实例化 (Template Instantiation)</span>
             <el-tag size="small" type="success" effect="plain">变量已注入</el-tag>
           </div>
           <div class="template-box">
@@ -198,7 +198,7 @@
 
         <!-- 关联根因预警 -->
         <div v-if="currentRca" class="rca-alert">
-          <div class="rca-alert-title">🚨 关联根因事件预警</div>
+          <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联根因事件预警</div>
           <div>{{ currentRca.root_cause_summary }}</div>
         </div>
       </div>
@@ -224,39 +224,39 @@
                   <span class="badge-tier">匹配层级: {{ log.match_tier }}</span>
                   <span class="badge-conf">置信度: {{ (log.match_confidence * 100).toFixed(0) }}%</span>
                   <span v-if="contextualizeMode && matchedParamCount > 0" class="badge-ctx">
-                    ✨ 已将现场 {{ matchedParamCount }} 个参数动态注入至排查步骤
+                    已将现场 {{ matchedParamCount }} 个参数动态注入至排查步骤
                   </span>
                 </div>
               </div>
 
               <!-- 含义解释 -->
               <div class="kb-block">
-                <div class="kb-subtitle">📖 日志/告警含义解释</div>
+                <div class="kb-subtitle"><el-icon><Reading /></el-icon> 日志/告警含义解释</div>
                 <div class="kb-text" v-html="renderedKnowledgeHtml.description"></div>
               </div>
 
               <!-- 产生原因 -->
-              <div class="kb-block">
-                <div class="kb-subtitle">🔍 官方可能原因</div>
+              <div class="kb-block is-cause">
+                <div class="kb-subtitle"><el-icon><Search /></el-icon> 官方可能原因</div>
                 <div class="kb-text cause-text" v-html="renderedKnowledgeHtml.cause"></div>
               </div>
 
               <!-- 官方处理排错步骤 -->
-              <div class="kb-block">
-                <div class="kb-subtitle">🛠️ 官方处理排错步骤</div>
+              <div class="kb-block is-action">
+                <div class="kb-subtitle"><el-icon><Tools /></el-icon> 官方处理排错步骤</div>
                 <div class="kb-text action-box" v-html="renderedKnowledgeHtml.action"></div>
               </div>
 
               <!-- 系统影响 -->
-              <div v-if="log.knowledge.impact" class="kb-block">
-                <div class="kb-subtitle">⚠️ 对系统的影响</div>
+              <div v-if="log.knowledge.impact" class="kb-block is-impact">
+                <div class="kb-subtitle"><el-icon><Warning /></el-icon> 对系统的影响</div>
                 <div class="kb-text" v-html="renderedKnowledgeHtml.impact"></div>
               </div>
 
               <!-- 官方参数字典与现场实际值对照 -->
               <div v-if="kbParamDefs.length > 0" class="kb-block">
                 <div class="kb-subtitle flex-between">
-                  <span>📚 官方参数字典与现场实际值对照</span>
+                  <span><el-icon><Document /></el-icon> 官方参数字典与现场实际值对照</span>
                   <span class="dict-count-tag">共 {{ kbParamDefs.length }} 项参数定义</span>
                 </div>
                 <el-table :data="kbParamDefs" size="small" border style="width: 100%; margin-top: 6px;">
@@ -280,7 +280,7 @@
             <div v-else-if="log.module === 'COMMENT'" class="comment-kb-card">
               <div class="comment-kb-header">
                 <el-icon color="#0284c7" size="18"><InfoFilled /></el-icon>
-                <span class="comment-kb-title">💡 注释性日志说明 (Comment / Metadata)</span>
+                <span class="comment-kb-title">注释性日志说明 (Comment / Metadata)</span>
               </div>
               <div class="comment-kb-body">
                 <div class="comment-item">
@@ -312,7 +312,7 @@
             <div v-if="currentRca" class="rca-tab-content">
               <RcaGraph :rcaEvent="currentRca" />
               <div class="rca-guide">
-                <div class="guide-title">💡 根因处置指南</div>
+                <div class="guide-title"><el-icon><InfoFilled /></el-icon> 根因处置指南</div>
                 <div>{{ currentRca.recommended_action }}</div>
               </div>
             </div>
@@ -329,7 +329,7 @@
 <script setup>
 import { computed, ref, inject, onMounted, onBeforeUnmount } from 'vue'
 import { formatTime } from '@/utils/format'
-import { ArrowUp, ArrowDown, Close, InfoFilled, Plus } from '@element-plus/icons-vue'
+import { ArrowUp, ArrowDown, Close, InfoFilled, Plus, PriceTag, Reading, Tickets, WarningFilled, Search, Tools, Warning, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import RcaGraph from '@/components/RcaGraph.vue'
 import { useTagStore } from '@/stores/tag'
@@ -688,27 +688,6 @@ onBeforeUnmount(() => {
   background: var(--gray-0);
 }
 
-.section-box {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  margin-bottom: 14px;
-}
-
-.box-title {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: var(--gray-600);
-  margin-bottom: 8px;
-}
-
-.flex-between {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
 .param-count-badge {
   font-size: var(--fs-xs);
   font-weight: normal;
@@ -718,97 +697,6 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-sm);
 }
 
-.raw-code {
-  font-family: monospace;
-  font-size: var(--fs-sm);
-  background: var(--gray-800);
-  color: var(--bg-subtle);
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  word-break: break-all;
-  line-height: 1.5;
-}
-
-.event-summary-box-wb {
-  background: var(--brand-50);
-  border: 1px solid var(--brand-200);
-}
-
-.event-summary-highlight-wb {
-  display: flex;
-  align-items: flex-start;
-  font-size: var(--fs-md);
-  font-weight: 500;
-  color: var(--brand-700);
-  line-height: 1.5;
-  padding: 4px 0;
-}
-
-.summary-text-wb {
-  word-break: break-word;
-}
-
-.param-grid-enhanced {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 8px;
-}
-.param-card {
-  background: var(--gray-0);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: all 0.15s ease;
-}
-.param-card:hover {
-  border-color: var(--brand-400);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
-}
-.param-card.has-desc {
-  border-left: 3px solid var(--brand-600);
-}
-.param-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 6px;
-}
-.p-key {
-  color: var(--brand-600);
-  font-weight: 600;
-  font-size: var(--fs-sm);
-}
-.p-desc-badge {
-  font-size: var(--fs-xs);
-  color: var(--brand-700);
-  background: var(--brand-50);
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
-  max-width: 130px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: help;
-}
-.p-val-box {
-  background: var(--bg-subtle);
-  padding: 3px 6px;
-  border-radius: var(--radius-sm);
-  font-family: monospace;
-  font-size: var(--fs-sm);
-  word-break: break-all;
-}
-.p-val {
-  color: var(--gray-900);
-  font-weight: 500;
-}
-.p-val-empty {
-  color: var(--gray-400);
-  font-style: italic;
-}
 .empty-hint {
   font-size: var(--fs-sm);
   color: var(--gray-400);
@@ -821,26 +709,14 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-md);
   padding: 10px 12px;
 }
+
 .template-rendered {
   font-size: var(--fs-md);
   line-height: 1.6;
   color: var(--gray-800);
   margin-bottom: 8px;
 }
-:deep(.inst-param-injected) {
-  background: var(--inst-injected-bg);
-  color: var(--success-text);
-  font-weight: 600;
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
-  border-bottom: 1.5px solid var(--success-strong);
-}
-:deep(.inst-param-placeholder) {
-  background: var(--gray-100);
-  color: var(--gray-500);
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-}
+
 .template-raw-sub {
   font-size: var(--fs-xs);
   color: var(--gray-500);
@@ -848,54 +724,28 @@ onBeforeUnmount(() => {
   padding-top: 6px;
   word-break: break-all;
 }
+
 .template-raw-sub .sub-label {
   margin-right: 6px;
   font-weight: 500;
 }
+
 .template-raw-sub code {
   font-family: monospace;
   color: var(--gray-600);
 }
 
-.rca-alert {
-  background: var(--sev-err-bg);
-  border: 1px solid var(--sev-err-border);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  font-size: var(--fs-sm);
-  color: var(--sev-err-text);
-}
-.rca-alert-title {
-  font-weight: bold;
-  margin-bottom: 4px;
-}
-
-/* 标签条 */
-.log-detail-tags-bar {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  background: var(--bg-subtle);
-  border-radius: var(--radius-md);
-  margin-bottom: 12px;
-  border: 1px solid var(--border-base);
-}
-.detail-tags-label {
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--gray-600);
-  flex-shrink: 0;
-}
 .detail-tags-list {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
 }
+
 .detail-tag-pill {
   border: none;
 }
+
 .add-log-tag-btn {
   font-size: var(--fs-sm);
   height: 24px;
@@ -906,6 +756,7 @@ onBeforeUnmount(() => {
 .kb-content {
   padding: 4px 0;
 }
+
 .kb-header-card {
   background: var(--brand-50);
   border: 1px solid var(--brand-200);
@@ -913,16 +764,19 @@ onBeforeUnmount(() => {
   padding: 12px;
   margin-bottom: 14px;
 }
+
 .kb-header-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+
 .kb-title {
   font-size: var(--fs-xl);
   font-weight: bold;
   color: var(--brand-700);
 }
+
 .kb-meta {
   margin-top: 6px;
   display: flex;
@@ -931,8 +785,22 @@ onBeforeUnmount(() => {
   align-items: center;
   font-size: var(--fs-xs);
 }
-.badge-tier { background: var(--brand-100); color: var(--brand-600); padding: 2px 6px; border-radius: var(--radius-xs); }
-.badge-conf { background: var(--inst-injected-bg); color: var(--success-text); padding: 2px 6px; border-radius: var(--radius-xs); font-weight: bold; }
+
+.badge-tier {
+  background: var(--brand-100);
+  color: var(--brand-600);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+}
+
+.badge-conf {
+  background: var(--inst-injected-bg);
+  color: var(--success-text);
+  padding: 2px 6px;
+  border-radius: var(--radius-xs);
+  font-weight: bold;
+}
+
 .badge-ctx {
   background: var(--inst-injected-bg);
   color: var(--action-text);
@@ -941,45 +809,18 @@ onBeforeUnmount(() => {
   font-weight: 500;
 }
 
-.kb-block {
-  margin-bottom: 14px;
-}
-.kb-subtitle {
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--gray-700);
-  margin-bottom: 6px;
-}
-.kb-text {
-  font-size: var(--fs-md);
-  color: var(--gray-600);
-  line-height: 1.6;
-  white-space: pre-line;
-  word-break: break-word;
-}
-.action-box {
-  background: var(--bg-subtle);
-  border-left: 3px solid var(--success-strong);
-  padding: 10px 12px;
-  border-radius: 0 4px 4px 0;
-}
-.cause-text {
-  background: var(--warning-bg);
-  border-left: 3px solid var(--warning-strong);
-  padding: 8px 12px;
-  border-radius: 0 4px 4px 0;
-}
-
 .dict-count-tag {
   font-size: var(--fs-xs);
   font-weight: normal;
   color: var(--gray-500);
 }
+
 .dict-pname {
   font-family: monospace;
   font-weight: 600;
   color: var(--brand-600);
 }
+
 .dict-pval {
   font-family: monospace;
   background: var(--success-bg);
@@ -989,51 +830,12 @@ onBeforeUnmount(() => {
   border-radius: var(--radius-xs);
   border: 1px solid var(--success-border);
 }
+
 .dict-pnone {
   color: var(--gray-400);
   font-style: italic;
 }
 
-.comment-kb-card {
-  margin: 12px 0;
-  padding: 16px;
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-lg);
-}
-.comment-kb-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-lg);
-  font-weight: 600;
-  color: var(--brand-700);
-  margin-bottom: 12px;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed var(--gray-300);
-}
-.comment-kb-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  font-size: var(--fs-md);
-  line-height: 1.6;
-  color: var(--gray-700);
-}
-.comment-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-}
-.comment-item .c-label {
-  font-weight: 600;
-  color: var(--brand-700);
-  flex-shrink: 0;
-  min-width: 70px;
-}
-.comment-item .c-val {
-  color: var(--gray-700);
-}
 .comment-item code {
   background: var(--brand-100);
   color: var(--brand-700);
@@ -1044,24 +846,6 @@ onBeforeUnmount(() => {
 
 .rca-tab-content {
   padding: 8px 0;
-}
-.rca-guide {
-  margin-top: 14px;
-  background: var(--success-bg);
-  border: 1px solid var(--success-border);
-  border-radius: var(--radius-md);
-  padding: 12px;
-  font-size: var(--fs-md);
-  color: var(--action-text);
-  line-height: 1.6;
-}
-.guide-title {
-  font-weight: 600;
-  margin-bottom: 6px;
-}
-
-.empty-kb, .empty-state {
-  padding: 30px 0;
 }
 </style>
 

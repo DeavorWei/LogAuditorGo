@@ -23,6 +23,7 @@ export const TASK_DEVICE_TYPE = Object.freeze({
 })
 
 export const DEFAULT_TASK_DEVICE_TYPE = TASK_DEVICE_TYPE.CLOUD_ENGINE
+export const DEFAULT_DEVICE_TYPE = DEFAULT_TASK_DEVICE_TYPE
 
 /**
  * 任务设备类型下拉选项。
@@ -36,6 +37,7 @@ export const TASK_DEVICE_TYPE_OPTIONS = Object.freeze([
   { label: 'NetEngine 核心路由器 (NE系列)', value: TASK_DEVICE_TYPE.NET_ENGINE },
   { label: '通用华为 VRP 设备', value: TASK_DEVICE_TYPE.HUAWEI_VRP }
 ])
+export const DEVICE_TYPE_OPTIONS = TASK_DEVICE_TYPE_OPTIONS
 
 /** 设备条目形态分类（仅展示用，不参与版本匹配） */
 export const DEVICE_FORM_TYPE = Object.freeze({

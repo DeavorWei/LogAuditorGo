@@ -24,7 +24,8 @@
           class="adv-filter-btn"
           @click="$emit('open-advanced-filter')"
         >
-          ⚡ 高级筛选
+          <el-icon><Opportunity /></el-icon>
+          <span>高级筛选</span>
         </el-button>
       </el-badge>
     </div>
@@ -89,6 +90,7 @@
 
 <script setup>
 import { ref, nextTick } from 'vue'
+import { Opportunity } from '@element-plus/icons-vue'
 import AuditFilterBar from '@/components/AuditFilterBar.vue'
 import AuditLogCard from '@/components/AuditLogCard.vue'
 import { useFilterStore } from '@/stores/filter'

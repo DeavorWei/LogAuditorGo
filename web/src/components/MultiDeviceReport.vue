@@ -21,22 +21,26 @@
     <template v-if="reportData">
       <!-- 核心指标看板 -->
       <div class="stats-grid">
-        <div class="stat-card">
-          <div class="val">{{ reportData.devices?.length || 0 }}</div>
-          <div class="label">分析网络设备数</div>
-        </div>
-        <div class="stat-card" style="border-left-color: #10B981;">
-          <div class="val">{{ reportData.total_logs || 0 }}</div>
-          <div class="label">联合分析日志总数</div>
-        </div>
-        <div class="stat-card" style="border-left-color: #8B5CF6;">
-          <div class="val">{{ reportData.total_matched || 0 }}</div>
-          <div class="label">知识库匹配条数</div>
-        </div>
-        <div class="stat-card" style="border-left-color: #F97316;">
-          <div class="val">{{ reportData.clusters?.length || 0 }}</div>
-          <div class="label">时序关联事件簇</div>
-        </div>
+        <StatCard
+          :value="reportData.devices?.length || 0"
+          title="分析网络设备数"
+          tone="brand"
+        />
+        <StatCard
+          :value="reportData.total_logs || 0"
+          title="联合分析日志总数"
+          tone="success"
+        />
+        <StatCard
+          :value="reportData.total_matched || 0"
+          title="知识库匹配条数"
+          tone="purple"
+        />
+        <StatCard
+          :value="reportData.clusters?.length || 0"
+          title="时序关联事件簇"
+          tone="warning"
+        />
       </div>
 
       <!-- 协同诊断与专家推断结论 -->
@@ -66,7 +70,7 @@
             v-for="d in reportData.devices"
             :key="d.device.id"
             class="device-overview-card"
-            :style="{ borderTopColor: d.device.color || '#3B82F6' }"
+            :style="{ borderTopColor: d.device.color || DEFAULT_DEVICE_COLOR }"
           >
             <div class="device-card-header">
               <span class="device-name">{{ d.device.device_name }}</span>
@@ -183,6 +187,8 @@ import { Aim, Monitor, Connection } from '@element-plus/icons-vue'
 import api from '@/api'
 import { ElMessage } from 'element-plus'
 import { useRequest } from '@/composables/useRequest'
+import StatCard from '@/components/StatCard.vue'
+import { DEFAULT_DEVICE_COLOR } from '@/constants/tagColors'
 
 const props = defineProps({
   taskId: {
@@ -271,23 +277,6 @@ defineExpose({
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: 16px;
-}
-.stat-card {
-  background: var(--gray-0);
-  padding: 16px 20px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--border-base);
-  border-left: 4px solid var(--brand-500);
-}
-.stat-card .val {
-  font-size: 24px;
-  font-weight: bold;
-  color: var(--gray-900);
-}
-.stat-card .label {
-  color: var(--gray-500);
-  font-size: var(--fs-md);
-  margin-top: 4px;
 }
 .section-card {
   border-radius: var(--radius-lg);

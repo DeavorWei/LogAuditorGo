@@ -293,7 +293,7 @@ export function useWorkbenchTaskContext(options = {}) {
         ? `，识别出 ${result.rca_count} 个 RCA 根因事件`
         : `。根因分析 (RCA) 已在后台启动推导，可在拓扑面板查看`
     ElMessage.success({
-      message: `🎉 日志分析就绪！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条${rcaMsg}`,
+      message: `日志分析就绪！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条${rcaMsg}`,
       duration: 5000
     })
     await fetchTasks()

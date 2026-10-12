@@ -94,7 +94,7 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span style="font-weight: 600;">⏳ RCA 根因拓扑正在后台重新推导中...</span>
+        <span style="font-weight: 600;">RCA 根因拓扑正在后台重新推导中...</span>
       </template>
       <template #default>
         <span>
@@ -165,7 +165,7 @@
             </div>
 
             <div class="item-card-meta">
-              <span>🕒 {{ ev.root_timestamp }}</span>
+              <span><el-icon><Clock /></el-icon> {{ ev.root_timestamp }}</span>
               <span v-if="ev.root_device_name" class="device-pill" :style="{ backgroundColor: ev.root_device_color || '#3B82F6' }">
                 {{ ev.root_device_name }}
               </span>
@@ -211,14 +211,14 @@
           <!-- 子 Tab: 拓扑图、时序链明细、处置指南 -->
           <el-tabs v-model="activeDetailTab" class="detail-tabs">
             <!-- Tab 1: 故障因果拓扑图 -->
-            <el-tab-pane label="🌐 故障传播因果拓扑 (DAG)" name="dag">
+            <el-tab-pane label="故障传播因果拓扑 (DAG)" name="dag">
               <div class="graph-box">
                 <RcaGraph :rcaEvent="selectedRCA" />
               </div>
             </el-tab-pane>
 
             <!-- Tab 2: 级联时序传播链 -->
-            <el-tab-pane label="⏱️ 级联时序传播链明细" name="timeline">
+            <el-tab-pane label="级联时序传播链明细" name="timeline">
               <div class="cascade-timeline-wrap">
                 <div class="step-card root-step">
                   <div class="step-badge root">
@@ -292,15 +292,15 @@
             </el-tab-pane>
 
             <!-- Tab 3: 官方专家处置指引 -->
-            <el-tab-pane label="💡 官方排查与根因处置指南" name="guide">
+            <el-tab-pane label="官方排查与根因处置指南" name="guide">
               <div class="guide-content-box">
                 <div class="guide-block">
-                  <h4>💥 根因推断综述</h4>
+                  <h4><el-icon><WarningFilled /></el-icon> 根因推断综述</h4>
                   <div class="summary-text">{{ selectedRCA.root_cause_summary }}</div>
                 </div>
 
                 <div class="guide-block">
-                  <h4>🛠️ 华为官方推荐排查处置步骤</h4>
+                  <h4><el-icon><Tools /></el-icon> 华为官方推荐排查处置步骤</h4>
                   <div class="action-text">{{ selectedRCA.recommended_action || '请检查根因节点接口物理状态与协议配置。' }}</div>
                 </div>
               </div>
@@ -315,7 +315,7 @@
 <script setup>
 // UI-16: defineProps / defineEmits 是编译器宏，无需从 vue 导入
 import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
-import { Position, Loading, Opportunity, Refresh } from '@element-plus/icons-vue'
+import { Position, Loading, Opportunity, Refresh, Clock, WarningFilled, Tools } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'

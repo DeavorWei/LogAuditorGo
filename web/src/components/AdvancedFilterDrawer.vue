@@ -138,7 +138,7 @@
       <!-- 实时匹配预览 -->
       <div class="preview-box">
         <div class="preview-info">
-          <span>🎯 当前条件匹配预览：</span>
+          <span><el-icon><Aim /></el-icon> 当前条件匹配预览：</span>
           <span v-if="previewLoading" class="preview-loading">计算中...</span>
           <span v-else class="preview-count">
             <strong>{{ previewTotal }}</strong> 条日志
@@ -159,7 +159,8 @@
           :disabled="previewTotal <= 0"
           @click="openBatchTagDialog"
         >
-          🏷 批量打标…
+          <el-icon><PriceTag /></el-icon>
+          <span>批量打标…</span>
         </el-button>
         <el-button
           type="danger"
@@ -167,7 +168,8 @@
           :disabled="previewTotal <= 0"
           @click="openBatchUntagDialog"
         >
-          🏷 批量摘标…
+          <el-icon><PriceTag /></el-icon>
+          <span>批量摘标…</span>
         </el-button>
         <el-button type="primary" @click="applyFilters">
           应用筛选并查看
@@ -330,7 +332,7 @@
 
 <script setup>
 import { ref, reactive, computed, onUnmounted } from 'vue'
-import { Delete } from '@element-plus/icons-vue'
+import { Delete, PriceTag, Aim } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import useFilterStore from '@/stores/filter'

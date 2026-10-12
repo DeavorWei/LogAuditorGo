@@ -11,6 +11,8 @@ import './styles/tokens.css'
 import './styles/element-theme.css'
 import './styles/base.css'
 import './styles/severity.css'
+import './styles/panels.css'
+import './styles/dialog.css'
 // 导入类弹窗（HDX 文档 / 任务日志 / 设备日志）共享样式令牌
 import './styles/import-dialog.css'
 

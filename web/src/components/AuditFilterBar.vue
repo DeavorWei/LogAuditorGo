@@ -23,9 +23,9 @@
           class="zen-filter-select zen-sort-select"
           @change="onSortOptionChange"
         >
-          <el-option label="⏰ 时间正序" value="time_asc" />
-          <el-option label="⏰ 时间倒序" value="time_desc" />
-          <el-option label="📄 原始入库序" value="id_asc" />
+          <el-option label="时间正序" value="time_asc" />
+          <el-option label="时间倒序" value="time_desc" />
+          <el-option label="原始入库序" value="id_asc" />
         </el-select>
 
         <!-- 时间区间筛选 (起始时间 ~ 截止时间) -->
@@ -116,7 +116,7 @@
           collapse-tags
           collapse-tags-tooltip
           clearable
-          placeholder="🏷 标签筛选"
+          placeholder="标签筛选"
           size="small"
           class="zen-filter-select zen-tag-select"
           @change="emitFilterChange"
@@ -295,9 +295,9 @@
           class="triplet-item"
           @change="onSortOptionChange"
         >
-          <el-option label="⏰ 时间正序" value="time_asc" />
-          <el-option label="⏰ 时间倒序" value="time_desc" />
-          <el-option label="📄 原始入库顺序" value="id_asc" />
+          <el-option label="时间正序" value="time_asc" />
+          <el-option label="时间倒序" value="time_desc" />
+          <el-option label="原始入库顺序" value="id_asc" />
         </el-select>
         <el-date-picker
           v-model="filter.timeStart"
@@ -383,7 +383,7 @@
           collapse-tags
           collapse-tags-tooltip
           clearable
-          placeholder="🏷 按标签筛选"
+          placeholder="按标签筛选"
           size="small"
           class="tag-select-item"
           @change="emitFilterChange"
@@ -588,13 +588,13 @@ const activeFilterChips = computed(() => {
     if (f.timeStart && f.timeEnd) {
       const s = f.timeStart.substring(5, 16).replace('T', ' ')
       const e = f.timeEnd.substring(5, 16).replace('T', ' ')
-      timeLabel = `⏰ ${s} ~ ${e}`
+      timeLabel = `${s} ~ ${e}`
       tooltip = `时间区间: ${f.timeStart} 至 ${f.timeEnd}`
     } else if (f.timeStart) {
-      timeLabel = `⏰ 从 ${f.timeStart.substring(5, 16).replace('T', ' ')}`
+      timeLabel = `从 ${f.timeStart.substring(5, 16).replace('T', ' ')}`
       tooltip = `起始时间: ${f.timeStart} 之后`
     } else if (f.timeEnd) {
-      timeLabel = `⏰ 至 ${f.timeEnd.substring(5, 16).replace('T', ' ')}`
+      timeLabel = `至 ${f.timeEnd.substring(5, 16).replace('T', ' ')}`
       tooltip = `截止时间: ${f.timeEnd} 之前`
     }
     chips.push({
@@ -609,7 +609,7 @@ const activeFilterChips = computed(() => {
   if (f.severity !== null) {
     chips.push({
       key: 'severity',
-      label: `⚠️ 级别≤${f.severity}`,
+      label: `级别≤${f.severity}`,
       tooltip: `严重度过滤: Level ${f.severity} 及以上紧急告警`,
       tagType: f.severity <= 2 ? 'danger' : 'warning'
     })
@@ -619,7 +619,7 @@ const activeFilterChips = computed(() => {
   if (f.matched !== null) {
     chips.push({
       key: 'matched',
-      label: f.matched ? '📚 已匹配' : '未匹配',
+      label: f.matched ? '已匹配' : '未匹配',
       tooltip: f.matched ? '知识库匹配状态: 仅显示已命中官方知识库日志' : '知识库匹配状态: 仅显示未命中知识库日志',
       tagType: f.matched ? 'success' : 'info'
     })
@@ -631,7 +631,7 @@ const activeFilterChips = computed(() => {
     const name = dev ? dev.device_name : '指定设备'
     chips.push({
       key: 'deviceId',
-      label: `🖥 ${name}`,
+      label: name,
       tooltip: `设备过滤: ${name}`,
       tagType: 'info'
     })
@@ -644,7 +644,7 @@ const activeFilterChips = computed(() => {
       const tagName = tag ? tag.name : '标签'
       chips.push({
         key: 'tagIds',
-        label: `🏷 ${tagName}`,
+        label: tagName,
         tooltip: `标签过滤: ${tagName}`,
         tagType: 'info'
       })
@@ -652,7 +652,7 @@ const activeFilterChips = computed(() => {
       const tagNames = f.tagIds.map(id => tagStore.tags.find(t => t.id === id)?.name || id).join(', ')
       chips.push({
         key: 'tagIds',
-        label: `🏷 ${f.tagIds.length}个标签 (${f.tagLogic === 'all' ? '全部' : '任一'})`,
+        label: `${f.tagIds.length}个标签 (${f.tagLogic === 'all' ? '全部' : '任一'})`,
         tooltip: `标签过滤 (${f.tagLogic === 'all' ? 'AND 与逻辑' : 'OR 或逻辑'}): ${tagNames}`,
         tagType: 'info'
       })
@@ -663,7 +663,7 @@ const activeFilterChips = computed(() => {
   if (currentSortOption.value !== 'time_asc') {
     chips.push({
       key: 'sort',
-      label: currentSortOption.value === 'time_desc' ? '↕ 时间倒序' : '📄 物理入库序',
+      label: currentSortOption.value === 'time_desc' ? '时间倒序' : '物理入库序',
       tooltip: `排序方式: ${currentSortOption.value === 'time_desc' ? '按时间倒序排查最新事件' : '按物理文件入库顺序'}`,
       tagType: 'info'
     })

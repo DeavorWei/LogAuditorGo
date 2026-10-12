@@ -3,40 +3,38 @@
     <!-- 顶部状态统计卡片 -->
     <el-row :gutter="16" class="stats-row">
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-blue">
-          <div class="stat-icon"><el-icon><Document /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ formatBytes(logStats.current_size || 0) }}</div>
-            <div class="stat-title">当前活跃日志 (log.log)</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="Document"
+          :value="formatSize(logStats.current_size || 0)"
+          title="当前活跃日志 (log.log)"
+          tone="brand"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-emerald">
-          <div class="stat-icon"><el-icon><Files /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ logStats.file_count || 0 }} <span class="stat-unit">个</span></div>
-            <div class="stat-title">日志文件总数 (含转储归档)</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="Files"
+          :value="logStats.file_count || 0"
+          unit="个"
+          title="日志文件总数 (含转储归档)"
+          tone="success"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-amber">
-          <div class="stat-icon"><el-icon><PieChart /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ formatBytes(logStats.total_size || 0) }}</div>
-            <div class="stat-title">总占用空间 / 配额 {{ (logStats.max_size_mb || 1024) >= 1024 ? ((logStats.max_size_mb || 1024) / 1024).toFixed(1) + ' GB' : (logStats.max_size_mb || 1024) + ' MB' }}</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="PieChart"
+          :value="formatSize(logStats.total_size || 0)"
+          :title="`总占用空间 / 配额 ${(logStats.max_size_mb || 1024) >= 1024 ? ((logStats.max_size_mb || 1024) / 1024).toFixed(1) + ' GB' : (logStats.max_size_mb || 1024) + ' MB'}`"
+          tone="warning"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-purple">
-          <div class="stat-icon"><el-icon><Timer /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ logStats.max_days || 180 }} <span class="stat-unit">天</span></div>
-            <div class="stat-title">最大保留天数 (超期自动清理)</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="Timer"
+          :value="logStats.max_days || 180"
+          unit="天"
+          title="最大保留天数 (超期自动清理)"
+          tone="purple"
+        />
       </el-col>
     </el-row>
 
@@ -46,7 +44,7 @@
         <el-card shadow="hover" class="config-card">
           <template #header>
             <div class="card-header">
-              <span>⚙️ 日志存放与清理策略配置</span>
+              <span class="card-header-title"><el-icon><Setting /></el-icon> 日志存放与清理策略配置</span>
             </div>
           </template>
 
@@ -151,7 +149,7 @@
         <el-card shadow="hover" class="files-card">
           <template #header>
             <div class="card-header-flex">
-              <span>📋 日志文件清单与状态</span>
+              <span class="card-header-title"><el-icon><Tickets /></el-icon> 日志文件清单与状态</span>
               <div class="header-btns">
                 <el-button
                   type="danger"
@@ -197,7 +195,7 @@
 
             <el-table-column prop="size" label="文件大小" width="120">
               <template #default="{ row }">
-                <span class="file-size-tag">{{ formatBytes(row.size) }}</span>
+                <span class="file-size-tag">{{ formatSize(row.size) }}</span>
               </template>
             </el-table-column>
 
@@ -216,7 +214,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Document, Files, PieChart, Timer, Setting, Tickets } from '@element-plus/icons-vue'
 import api from '@/api'
+import StatCard from '@/components/StatCard.vue'
+import { formatTime, formatSize } from '@/utils/format'
 
 const logStats = ref({
   dir: '',
@@ -239,28 +240,6 @@ const logForm = ref({
 const saving = ref(false)
 const cleaning = ref(false)
 const loadingLogs = ref(false)
-
-const formatBytes = (bytes) => {
-  if (!bytes || bytes <= 0) return '0 B'
-  const k = 1024
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
-}
-
-const formatTime = (timeStr) => {
-  if (!timeStr) return '-'
-  const d = new Date(timeStr)
-  if (isNaN(d.getTime())) return timeStr
-  const pad = (n) => (n < 10 ? '0' + n : n)
-  const Y = d.getFullYear()
-  const M = pad(d.getMonth() + 1)
-  const D = pad(d.getDate())
-  const h = pad(d.getHours())
-  const m = pad(d.getMinutes())
-  const s = pad(d.getSeconds())
-  return `${Y}-${M}-${D} ${h}:${m}:${s}`
-}
 
 const fetchConfig = async () => {
   try {
@@ -353,46 +332,6 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 16px;
-}
-
-.stat-card {
-  border-radius: var(--radius-lg);
-  border-left: 4px solid transparent;
-}
-.stat-blue { border-left-color: var(--brand-500); }
-.stat-emerald { border-left-color: var(--success-strong); }
-.stat-amber { border-left-color: var(--warning-strong); }
-.stat-purple { border-left-color: var(--purple-500); }
-
-:deep(.el-card__body) {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 16px 20px;
-}
-
-.stat-icon {
-  font-size: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--gray-500);
-}
-
-.stat-val {
-  font-size: var(--fs-3xl);
-  font-weight: 700;
-  color: var(--gray-900);
-}
-.stat-unit {
-  font-size: var(--fs-md);
-  font-weight: normal;
-  color: var(--gray-500);
-}
-.stat-title {
-  font-size: var(--fs-md);
-  color: var(--gray-500);
-  margin-top: 4px;
 }
 
 .config-card, .files-card {

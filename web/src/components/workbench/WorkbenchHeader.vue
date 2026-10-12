@@ -76,16 +76,20 @@
           <template #dropdown>
             <el-dropdown-menu>
               <el-dropdown-item command="subset_html">
-                📄 导出筛选结果 (HTML)
+                <el-icon><Document /></el-icon>
+                <span>导出筛选结果 (HTML)</span>
               </el-dropdown-item>
               <el-dropdown-item command="subset_csv">
-                📊 导出筛选结果 (CSV)
+                <el-icon><DataAnalysis /></el-icon>
+                <span>导出筛选结果 (CSV)</span>
               </el-dropdown-item>
               <el-dropdown-item divided command="full_html">
-                📦 导出全量报告 (HTML)
+                <el-icon><Files /></el-icon>
+                <span>导出全量报告 (HTML)</span>
               </el-dropdown-item>
               <el-dropdown-item command="full_csv">
-                📑 导出全量明细 (CSV)
+                <el-icon><Tickets /></el-icon>
+                <span>导出全量明细 (CSV)</span>
               </el-dropdown-item>
             </el-dropdown-menu>
           </template>
@@ -94,39 +98,29 @@
       </el-button-group>
     </div>
 
-    <!-- 新建任务弹窗 (内聚管理) -->
-    <el-dialog v-model="showNewTaskDialog" title="新建日志审计任务" width="620px">
-      <el-form label-position="top">
-        <el-form-item label="任务名称">
-          <el-input v-model="newTaskForm.taskName" placeholder="例如: Core-SW-01排查-20260415" />
-        </el-form-item>
-        <el-form-item label="设备类型">
-          <el-select v-model="newTaskForm.deviceType" style="width: 100%;">
-            <el-option
-              v-for="opt in DEVICE_TYPE_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showNewTaskDialog = false">取消</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleCreateEmptyTask">仅创建任务 (稍后导入)</el-button>
-        <el-button type="success" :loading="submitting" @click="handleCreateAndOpenImport">创建并立即导入日志</el-button>
+    <!-- 新建任务弹窗 (统一使用 NewTaskDialog) -->
+    <NewTaskDialog
+      v-model="showNewTaskDialog"
+      :initial-task-name="newTaskForm.taskName"
+      :default-device-type="newTaskForm.deviceType"
+    >
+      <template #footer="{ form, close }">
+        <el-button @click="close">取消</el-button>
+        <el-button type="primary" :loading="submitting" @click="handleCreateEmptyTask(form)">仅创建任务 (稍后导入)</el-button>
+        <el-button type="success" :loading="submitting" @click="handleCreateAndOpenImport(form)">创建并立即导入日志</el-button>
       </template>
-    </el-dialog>
+    </NewTaskDialog>
   </div>
 </template>
 
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Files, Opportunity, Upload, Download, ArrowDown, Plus, Refresh } from '@element-plus/icons-vue'
+import { Files, Opportunity, Upload, Download, ArrowDown, Plus, Refresh, Document, DataAnalysis, Tickets } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import { useFilterStore } from '@/stores/filter'
 import api from '@/api'
+import NewTaskDialog from '@/components/NewTaskDialog.vue'
 import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 
 const emit = defineEmits([
@@ -182,12 +176,14 @@ const openNewTaskDialog = () => {
   showNewTaskDialog.value = true
 }
 
-const handleCreateEmptyTask = async () => {
+const handleCreateEmptyTask = async (form) => {
   submitting.value = true
+  const taskName = form?.taskName || newTaskForm.value.taskName
+  const deviceType = form?.deviceType || newTaskForm.value.deviceType
   try {
     const res = await api.createTask({
-      task_name: newTaskForm.value.taskName,
-      device_type: newTaskForm.value.deviceType
+      task_name: taskName,
+      device_type: deviceType
     })
     if (res.code === 0) {
       ElMessage.success('空任务创建成功，可随时导入日志')
@@ -200,12 +196,14 @@ const handleCreateEmptyTask = async () => {
   }
 }
 
-const handleCreateAndOpenImport = async () => {
+const handleCreateAndOpenImport = async (form) => {
   submitting.value = true
+  const taskName = form?.taskName || newTaskForm.value.taskName
+  const deviceType = form?.deviceType || newTaskForm.value.deviceType
   try {
     const res = await api.createTask({
-      task_name: newTaskForm.value.taskName,
-      device_type: newTaskForm.value.deviceType
+      task_name: taskName,
+      device_type: deviceType
     })
     if (res.code === 0) {
       showNewTaskDialog.value = false

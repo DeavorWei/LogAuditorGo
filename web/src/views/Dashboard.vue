@@ -3,40 +3,36 @@
     <!-- 顶部概览指标卡 -->
     <el-row :gutter="16" class="stats-row">
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-blue">
-          <div class="stat-icon"><el-icon><Reading /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ stats.total_knowledge || 0 }}</div>
-            <div class="stat-title">已收录故障知识条目</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="Reading"
+          :value="stats.total_knowledge || 0"
+          title="已收录故障知识条目"
+          tone="brand"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-emerald">
-          <div class="stat-icon"><el-icon><FolderOpened /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ stats.total_documents || 0 }}</div>
-            <div class="stat-title">已导入官方产品文档</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="FolderOpened"
+          :value="stats.total_documents || 0"
+          title="已导入官方产品文档"
+          tone="success"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-amber">
-          <div class="stat-icon"><el-icon><List /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ stats.total_tasks || 0 }}</div>
-            <div class="stat-title">累计审计任务数</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="List"
+          :value="stats.total_tasks || 0"
+          title="累计审计任务数"
+          tone="warning"
+        />
       </el-col>
       <el-col :span="6">
-        <el-card shadow="hover" class="stat-card stat-purple">
-          <div class="stat-icon"><el-icon><DataAnalysis /></el-icon></div>
-          <div class="stat-info">
-            <div class="stat-val">{{ stats.total_logs_analyzed || 0 }}</div>
-            <div class="stat-title">累计解析日志总量</div>
-          </div>
-        </el-card>
+        <StatCard
+          :icon="DataAnalysis"
+          :value="stats.total_logs_analyzed || 0"
+          title="累计解析日志总量"
+          tone="purple"
+        />
       </el-col>
     </el-row>
 
@@ -46,7 +42,8 @@
         <el-card shadow="hover" class="chart-card">
           <template #header>
             <div class="card-header">
-              <span>📊 知识库各网络模块知识分布 (Top 10)</span>
+              <el-icon style="margin-right: 6px;"><DataAnalysis /></el-icon>
+              <span>知识库各网络模块知识分布 (Top 10)</span>
             </div>
           </template>
           <div ref="moduleChartRef" style="width: 100%; height: 340px;"></div>
@@ -56,26 +53,27 @@
         <el-card shadow="hover" class="action-card">
           <template #header>
             <div class="card-header">
-              <span>🚀 快速开始</span>
+              <el-icon style="margin-right: 6px;"><Position /></el-icon>
+              <span>快速开始</span>
             </div>
           </template>
           <div class="quick-actions">
             <div class="action-item" @click="showNewTaskDialog = true">
-              <el-icon class="action-icon" style="color: #3b82f6;"><UploadFilled /></el-icon>
+              <el-icon class="action-icon" style="color: var(--brand-500);"><UploadFilled /></el-icon>
               <div>
                 <div class="action-title">新建日志审计任务</div>
                 <div class="action-desc">上传设备 Syslog 文本或日志文件进行智能分析与根因诊断</div>
               </div>
             </div>
             <div class="action-item" @click="$router.push('/documents')">
-              <el-icon class="action-icon" style="color: #10b981;"><FolderAdd /></el-icon>
+              <el-icon class="action-icon" style="color: var(--success-strong);"><FolderAdd /></el-icon>
               <div>
                 <div class="action-title">导入华为 HDX 产品文档</div>
                 <div class="action-desc">导入官方 HDX 文档压缩包或本地文件夹以扩充故障知识库</div>
               </div>
             </div>
             <div class="action-item" @click="$router.push('/knowledge')">
-              <el-icon class="action-icon" style="color: #8b5cf6;"><Search /></el-icon>
+              <el-icon class="action-icon" style="color: var(--purple-500);"><Search /></el-icon>
               <div>
                 <div class="action-title">检索官方故障知识库</div>
                 <div class="action-desc">根据报错简名、Trap OID 或关键词检索处理指导</div>
@@ -86,37 +84,13 @@
       </el-col>
     </el-row>
 
-    <!-- 新建任务弹窗 -->
-    <el-dialog v-model="showNewTaskDialog" title="新建日志审计任务" width="600px">
-      <el-form label-position="top">
-        <el-form-item label="任务名称">
-          <el-input v-model="newTaskForm.taskName" placeholder="例如: Core-SW-01故障排查-20260415" />
-        </el-form-item>
-        <el-form-item label="设备类型">
-          <!-- WEB-16: 选项统一取自常量，与 AuditWorkbench 保持同一口径 -->
-          <el-select v-model="newTaskForm.deviceType" style="width: 100%;">
-            <el-option
-              v-for="opt in DEVICE_TYPE_OPTIONS"
-              :key="opt.value"
-              :label="opt.label"
-              :value="opt.value"
-            />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="粘贴 Syslog 日志文本">
-          <el-input
-            v-model="newTaskForm.content"
-            type="textarea"
-            :rows="6"
-            placeholder="粘贴设备日志，例如: Apr 15 2026 14:23:10 HUAWEI-CORE-SW01 %%01BGP/4/BGP_AUTH_FAILED(l)[1042]: BGP session authentication failed..."
-          />
-        </el-form-item>
-      </el-form>
-      <template #footer>
-        <el-button @click="showNewTaskDialog = false">取消</el-button>
-        <el-button type="primary" :loading="creatingTask" @click="handleCreateTask">立即分析</el-button>
-      </template>
-    </el-dialog>
+    <!-- 新建任务弹窗 (统一使用 NewTaskDialog) -->
+    <NewTaskDialog
+      v-model="showNewTaskDialog"
+      :loading="creatingTask"
+      show-content
+      @confirm="handleCreateTask"
+    />
 
     <!-- 后台分析进度追踪弹窗（WEB-04） -->
     <ImportProgressModal
@@ -132,10 +106,22 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import {
+  Reading,
+  FolderOpened,
+  List,
+  DataAnalysis,
+  Position,
+  UploadFilled,
+  FolderAdd,
+  Search
+} from '@element-plus/icons-vue'
 // UI-09: 改用按需引入的 echarts 入口，避免把全量图表类型打进首屏
 import echarts from '@/plugins/echarts'
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import StatCard from '@/components/StatCard.vue'
+import NewTaskDialog from '@/components/NewTaskDialog.vue'
 import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 
 const router = useRouter()
@@ -200,8 +186,12 @@ const renderModuleChart = (topModules) => {
   chartInstance.setOption(option)
 }
 
-const handleCreateTask = async () => {
-  if (!newTaskForm.value.content.trim()) {
+const handleCreateTask = async (formData) => {
+  const content = (formData?.content ?? newTaskForm.value.content).trim()
+  const taskName = formData?.taskName ?? newTaskForm.value.taskName
+  const deviceType = formData?.deviceType ?? newTaskForm.value.deviceType
+
+  if (!content) {
     ElMessage.warning('请输入待审计的日志内容')
     return
   }
@@ -209,9 +199,9 @@ const handleCreateTask = async () => {
   creatingTask.value = true
   try {
     const res = await api.createTask({
-      task_name: newTaskForm.value.taskName,
-      device_type: newTaskForm.value.deviceType,
-      content: newTaskForm.value.content
+      task_name: taskName,
+      device_type: deviceType,
+      content: content
     })
     if (res.code !== 0) return
 
@@ -284,40 +274,6 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 16px;
 }
-.stat-card {
-  border-radius: var(--radius-lg);
-  border-left: 4px solid transparent;
-}
-.stat-blue { border-left-color: var(--brand-500); }
-.stat-emerald { border-left-color: var(--success-strong); }
-.stat-amber { border-left-color: var(--warning-strong); }
-.stat-purple { border-left-color: var(--purple-500); }
-
-:deep(.el-card__body) {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 18px 20px;
-}
-
-.stat-icon {
-  font-size: 36px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--gray-500);
-}
-.stat-val {
-  font-size: var(--fs-4xl);
-  font-weight: 700;
-  color: var(--gray-900);
-}
-.stat-title {
-  font-size: var(--fs-md);
-  color: var(--gray-500);
-  margin-top: 4px;
-}
-
 .chart-card, .action-card {
   border-radius: var(--radius-lg);
   height: 420px;

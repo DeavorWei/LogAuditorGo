@@ -53,7 +53,11 @@ import {
   CircleClose,
   InfoFilled,
   Clock,
-  Star
+  Star,
+  Tools,
+  Tickets,
+  PriceTag,
+  Grid
 } from '@element-plus/icons-vue'
 
 // 字符串名 → 组件。键名必须与模板中使用的 icon 属性完全一致。
@@ -99,7 +103,11 @@ const globalIcons = {
   CircleClose,
   InfoFilled,
   Clock,
-  Star
+  Star,
+  Tools,
+  Tickets,
+  PriceTag,
+  Grid
 }
 
 export function registerGlobalIcons(app) {

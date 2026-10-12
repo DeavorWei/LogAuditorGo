@@ -79,28 +79,28 @@
         </div>
 
         <div class="detail-section">
-          <h3>📋 模板与解释</h3>
+          <h3><el-icon><Tickets /></el-icon> 模板与解释</h3>
           <div class="detail-box">{{ selectedKnowledge.message }}</div>
           <div v-if="selectedKnowledge.description" class="detail-text">{{ selectedKnowledge.description }}</div>
         </div>
 
         <div v-if="selectedKnowledge.impact" class="detail-section">
-          <h3>⚠️ 系统影响</h3>
+          <h3><el-icon><Warning /></el-icon> 系统影响</h3>
           <div class="detail-box impact-box">{{ selectedKnowledge.impact }}</div>
         </div>
 
         <div class="detail-section">
-          <h3>🔍 官方可能原因</h3>
+          <h3><el-icon><Search /></el-icon> 官方可能原因</h3>
           <div class="detail-box cause-box">{{ selectedKnowledge.cause || '暂无详细原因记录' }}</div>
         </div>
 
         <div class="detail-section">
-          <h3>🛠️ 官方处理排错步骤</h3>
+          <h3><el-icon><Tools /></el-icon> 官方处理排错步骤</h3>
           <div class="detail-box action-box">{{ selectedKnowledge.action || '按标准网络排错规范处理' }}</div>
         </div>
 
         <div v-if="selectedKnowledge.versions && selectedKnowledge.versions.length" class="detail-section">
-          <h3>📦 适用产品与版本映射 ({{ selectedKnowledge.versions.length }} 个版本)</h3>
+          <h3><el-icon><Files /></el-icon> 适用产品与版本映射 ({{ selectedKnowledge.versions.length }} 个版本)</h3>
           <el-table :data="selectedKnowledge.versions" size="small" border>
             <el-table-column prop="product_type" label="产品系列" />
             <el-table-column prop="product_version" label="软件版本" />
@@ -115,6 +115,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
+import { Tickets, Warning, Search, Tools, Files } from '@element-plus/icons-vue'
 import api from '@/api'
 
 const loading = ref(false)

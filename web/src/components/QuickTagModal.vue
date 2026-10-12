@@ -11,7 +11,7 @@
   >
     <template #header>
       <div class="modal-custom-header">
-        <span class="header-title">🏷 快速打标签</span>
+        <span class="header-title"><el-icon><PriceTag /></el-icon> 快速打标签</span>
         <span v-if="log" class="header-subtitle">
           #{{ log.id }}
           <span class="header-log-brief">{{ log.module }}/{{ log.brief }}</span>
@@ -89,7 +89,7 @@
               :style="{ backgroundColor: tag.color || DEFAULT_TAG_COLOR }"
             />
             <span class="tag-name-text">{{ tag.name }}</span>
-            <span v-if="isTagAssigned(tag.id)" class="tag-status-check">✓</span>
+            <span v-if="isTagAssigned(tag.id)" class="tag-status-check"><el-icon><Check /></el-icon></span>
             <span v-else class="tag-count-sub">{{ tag.log_count || 0 }}</span>
           </div>
 
@@ -105,7 +105,7 @@
 
     <template #footer>
       <div class="quick-tag-footer">
-        <span class="footer-tip">💡 提示: 点击标签或按 Enter 快速打标 · Esc 关闭</span>
+        <span class="footer-tip"><el-icon><InfoFilled /></el-icon> 提示: 点击标签或按 Enter 快速打标 · Esc 关闭</span>
         <el-button size="small" type="primary" @click="dialogVisible = false">
           完成
         </el-button>
@@ -116,7 +116,7 @@
 
 <script setup>
 import { ref, computed, nextTick } from 'vue'
-import { Search } from '@element-plus/icons-vue'
+import { Search, PriceTag, Check, InfoFilled } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import { useTagStore } from '@/stores/tag'
 import { useTaskStore } from '@/stores/task'

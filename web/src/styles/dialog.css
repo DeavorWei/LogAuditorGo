@@ -1,0 +1,77 @@
+/* ==========================================================================
+   dialog.css —— 对话框标尺与骨架
+   ========================================================================== */
+
+/* 尺寸标尺：el-dialog 内部通过 CSS 变量优雅控制宽度 */
+.dlg-sm { --el-dialog-width: var(--dialog-sm); }
+.dlg-md { --el-dialog-width: var(--dialog-md); }
+.dlg-lg { --el-dialog-width: var(--dialog-lg); }
+.dlg-xl { --el-dialog-width: var(--dialog-xl); }
+.dlg-top { top: var(--dialog-top); }
+
+/* 通用弹窗骨架（非 scoped，teleport 生效） */
+.dlg .el-dialog__header {
+  padding: var(--sp-6) var(--sp-9);
+  margin: 0;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border-base);
+  flex-shrink: 0;
+}
+
+.dlg .el-dialog__body {
+  padding: var(--sp-8) var(--sp-9);
+}
+
+.dlg .el-dialog__footer {
+  padding: var(--sp-5) var(--sp-9);
+  border-top: 1px solid var(--border-light);
+}
+
+.dlg--fill {
+  display: flex;
+  flex-direction: column;
+  height: 82vh;
+  max-height: 90vh;
+  overflow: hidden;
+}
+
+.dlg--fill .el-dialog__body {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* 弹窗内双栏（AuditLogDetailModal 等专用，含窄屏响应式） */
+.dlg-dual {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
+}
+
+.dlg-dual-pane {
+  width: 50%;
+  overflow-y: auto;
+  padding: var(--sp-8);
+  background: var(--bg-surface);
+}
+
+.dlg-dual-pane + .dlg-dual-pane {
+  border-left: 1px solid var(--border-base);
+}
+
+@media (max-width: 1000px) {
+  .dlg--fill {
+    --el-dialog-width: 95vw;
+    height: 90vh;
+  }
+  .dlg-dual {
+    flex-direction: column;
+    height: auto;
+  }
+  .dlg-dual-pane {
+    width: 100%;
+  }
+  .dlg-dual-pane + .dlg-dual-pane {
+    border-left: none;
+    border-top: 1px solid var(--border-base);
+  }
+}

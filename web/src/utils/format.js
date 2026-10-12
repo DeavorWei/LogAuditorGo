@@ -43,4 +43,22 @@ export function formatSize(bytes, empty = '0 B') {
   return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB'
 }
 
-export default { formatTime, formatSize }
+/**
+ * 格式化文件大小快捷封装（空值或目录返回空字符串）
+ */
+export function formatFileSize(bytes) {
+  return formatSize(bytes, '')
+}
+
+/**
+ * 从绝对路径提取基础文件名（兼容 Windows 反斜杠与 Linux 正斜杠）
+ * @param {string} p
+ * @returns {string}
+ */
+export function pathBaseName(p) {
+  if (!p) return ''
+  const segs = String(p).replace(/\\/g, '/').split('/')
+  return segs[segs.length - 1] || p
+}
+
+export default { formatTime, formatSize, formatFileSize, pathBaseName }

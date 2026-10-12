@@ -106,7 +106,7 @@
         </el-table-column>
         <el-table-column prop="lib_name" label="产品文档全称" min-width="220" show-overflow-tooltip>
           <template #default="{ row }">
-            <span style="font-weight: 600; color: #0284c7;">📖 {{ row.lib_name }}</span>
+            <span class="doc-lib-name"><el-icon><Reading /></el-icon> {{ row.lib_name }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="product_type" label="适用产品型号" width="200" show-overflow-tooltip>
@@ -303,17 +303,24 @@
     </el-dialog>
 
     <!-- 同名 / 已存在文档冲突处理弹窗 -->
-    <el-dialog v-model="showConflictDialog" title="⚠️ 检测到已有同名/已导入文档" width="540px">
+    <el-dialog v-model="showConflictDialog" width="540px">
+      <template #header>
+        <div class="dlg-title-with-icon">
+          <el-icon color="var(--warning-strong)"><WarningFilled /></el-icon>
+          <span>检测到已有同名/已导入文档</span>
+        </div>
+      </template>
       <div class="conflict-dialog-body">
-        <p style="margin-bottom: 12px; line-height: 1.6; color: #334155;">
+        <p class="conflict-desc">
           所选文档中有 <strong>{{ conflictingFileNames.length }}</strong> 个在知识库中可能已存在同名或同版本记录：
         </p>
         <div class="conflict-file-list">
           <div v-for="name in conflictingFileNames" :key="name" class="conflict-item">
-            ⚠️ <strong>{{ name }}</strong>
+            <el-icon color="var(--warning-strong)"><Warning /></el-icon>
+            <strong>{{ name }}</strong>
           </div>
         </div>
-        <p style="margin-top: 14px; font-size: 13px; color: #64748b;">
+        <p class="conflict-sub">
           请选择冲突文档的处理方式：
         </p>
       </div>
@@ -360,12 +367,19 @@ import {
   Upload,
   InfoFilled,
   Loading,
-  Delete
+  Delete,
+  Reading,
+  Warning,
+  WarningFilled
 } from '@element-plus/icons-vue'
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
-import { formatTime as sharedFormatTime, formatSize as sharedFormatSize } from '@/utils/format'
+import {
+  formatTime as sharedFormatTime,
+  formatSize as sharedFormatSize,
+  pathBaseName
+} from '@/utils/format'
 
 const loading = ref(false)
 const docList = ref([])
@@ -596,13 +610,6 @@ const toggleSelectAllScanned = () => {
 // 扫描表格多选变动回调
 const handleScanSelectionChange = selection => {
   selectedItems.value = selection
-}
-
-// 取路径的末级名称（兼容 Windows 与 Unix 分隔符）
-const pathBaseName = p => {
-  if (!p) return ''
-  const segs = String(p).replace(/\\/g, '/').split('/').filter(Boolean)
-  return segs.length ? segs[segs.length - 1] : p
 }
 
 // 检查冲突并启动导入
@@ -934,5 +941,35 @@ onMounted(() => {
 .conflict-item {
   font-size: var(--fs-sm);
   color: var(--danger-text);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.doc-lib-name {
+  font-weight: 600;
+  color: var(--brand-600);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+.dlg-title-with-icon {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-weight: 600;
+}
+
+.conflict-desc {
+  margin-bottom: var(--sp-4);
+  line-height: var(--lh-normal);
+  color: var(--text-primary);
+}
+
+.conflict-sub {
+  margin-top: var(--sp-4);
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
 }
 </style>

@@ -15,7 +15,7 @@
 
     <div v-if="log" class="detail-container">
       <div class="panel-title">
-        <span>📄 日志报文结构化解析 (#{{ log.id }})</span>
+        <span><el-icon><Document /></el-icon> 日志报文结构化解析 (#{{ log.id }})</span>
         <el-tag v-if="log.module === 'COMMENT'" size="small" type="info" effect="plain">
           注释/元数据
         </el-tag>
@@ -26,7 +26,7 @@
 
       <!-- 标签展示与单条打标/摘标操作 -->
       <div class="log-detail-tags-bar">
-        <span class="detail-tags-label">🏷 标签:</span>
+        <span class="detail-tags-label"><el-icon><PriceTag /></el-icon> 标签:</span>
         <div class="detail-tags-list">
           <el-tag
             v-for="t in (log.tags || [])"
@@ -130,7 +130,7 @@
                 raw-content
                 :content="formatTooltipHtml(p.description)"
               >
-                <span class="p-desc-badge">📖 {{ p.description }}</span>
+                <span class="p-desc-badge"><el-icon><Reading /></el-icon> {{ p.description }}</span>
               </el-tooltip>
             </div>
             <div class="p-val-box">
@@ -147,7 +147,7 @@
       <!-- 消息模板动态实例化对照 -->
       <div v-if="log.knowledge && log.knowledge.message" class="section-box">
         <div class="box-title flex-between">
-          <span>📋 官方日志消息模板实例化 (Template Instantiation)</span>
+          <span><el-icon><Tickets /></el-icon> 官方日志消息模板实例化 (Template Instantiation)</span>
           <el-tag size="small" type="success" effect="plain">变量已注入</el-tag>
         </div>
         <div class="template-box">
@@ -161,7 +161,7 @@
 
       <!-- 关联根因提示 -->
       <div v-if="matchedRca" class="rca-alert">
-        <div class="rca-alert-title">🚨 关联根因事件预警</div>
+        <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联根因事件预警</div>
         <div>{{ matchedRca?.root_cause_summary }}</div>
       </div>
     </div>
@@ -174,7 +174,7 @@
 <script setup>
 import { computed, inject, h } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Aim, ArrowRight, InfoFilled, Close, Plus } from '@element-plus/icons-vue'
+import { Aim, ArrowRight, InfoFilled, Close, Plus, Document, PriceTag, Reading, Tickets, WarningFilled } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import { useTagStore } from '@/stores/tag'
 import { LOG_DETAIL_CONTEXT_KEY, formatTooltipHtml } from '@/utils/logFormatter'
@@ -446,44 +446,6 @@ const formatLogTime = (log) => {
   border-radius: var(--radius-sm);
 }
 
-.section-box {
-  background: var(--bg-subtle);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: 12px;
-}
-
-.box-title {
-  font-size: var(--fs-md);
-  font-weight: 600;
-  color: var(--gray-700);
-  margin-bottom: 8px;
-}
-
-.flex-between {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.raw-code {
-  font-family: monospace;
-  font-size: var(--fs-sm);
-  background: var(--gray-800);
-  color: var(--bg-subtle);
-  padding: 10px;
-  border-radius: var(--radius-sm);
-  word-break: break-all;
-  line-height: 1.5;
-  max-height: 240px;
-  overflow-y: auto;
-}
-
-.event-summary-box-wb {
-  background: var(--brand-50);
-  border: 1px solid var(--brand-200);
-}
-
 .event-summary-highlight-wb {
   display: flex;
   align-items: flex-start;
@@ -500,57 +462,6 @@ const formatLogTime = (log) => {
 .param-count-badge {
   font-size: var(--fs-xs);
   color: var(--brand-600);
-}
-
-.param-grid-enhanced {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-  gap: 8px;
-}
-
-.param-card {
-  background: var(--gray-0);
-  border: 1px solid var(--border-base);
-  border-radius: var(--radius-md);
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  transition: all 0.15s ease;
-}
-.param-card.has-desc {
-  border-left: 3px solid var(--brand-600);
-}
-
-.param-card-top {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
-
-.p-key {
-  color: var(--brand-600);
-  font-weight: 600;
-  font-size: var(--fs-sm);
-}
-
-.p-desc-badge {
-  font-size: var(--fs-xs);
-  color: var(--brand-700);
-  background: var(--brand-50);
-  padding: 1px 5px;
-  border-radius: var(--radius-xs);
-}
-
-.p-val-box {
-  font-size: var(--fs-sm);
-  color: var(--gray-800);
-  word-break: break-all;
-}
-
-.p-val-empty {
-  color: var(--gray-400);
-  font-style: italic;
 }
 
 .empty-hint {
@@ -573,22 +484,6 @@ const formatLogTime = (log) => {
   color: var(--gray-900);
 }
 
-:deep(.inst-param-injected) {
-  background: var(--inst-injected-bg);
-  color: var(--success-text);
-  font-weight: 600;
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-  border-bottom: 2px solid var(--inst-injected-border);
-}
-
-:deep(.inst-param-placeholder) {
-  background: var(--gray-100);
-  color: var(--gray-500);
-  padding: 1px 4px;
-  border-radius: var(--radius-xs);
-}
-
 .template-raw-sub {
   margin-top: 8px;
   font-size: var(--fs-sm);
@@ -599,28 +494,6 @@ const formatLogTime = (log) => {
   background: var(--gray-100);
   padding: 2px 6px;
   border-radius: var(--radius-xs);
-}
-
-.rca-alert {
-  background: var(--danger-bg);
-  border: 1px solid var(--danger-border);
-  border-radius: var(--radius-md);
-  padding: 10px 12px;
-  color: var(--danger-text);
-}
-
-.rca-alert-title {
-  font-weight: 600;
-  font-size: var(--fs-md);
-  margin-bottom: 4px;
-}
-
-.empty-state {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  min-height: 300px;
 }
 
 .tag-item-row {

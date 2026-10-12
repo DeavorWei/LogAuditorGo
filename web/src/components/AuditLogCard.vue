@@ -39,7 +39,7 @@
           {{ record.hostname }}
         </span>
         <span v-if="record.source_file" class="file-tag" :title="`来源文件: ${record.source_file}`">
-          📄 {{ record.source_file }}
+          <el-icon><Document /></el-icon> {{ record.source_file }}
         </span>
         <span v-if="record.slot_info" class="slot-tag" :title="`槽位: ${record.slot_info}`">
           {{ record.slot_info }}
@@ -72,6 +72,7 @@
 
 <script setup>
 import { computed } from 'vue'
+import { Document } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/format'
 import { useSeverity } from '@/composables/useSeverity'
 import SeverityTag from '@/components/SeverityTag.vue'

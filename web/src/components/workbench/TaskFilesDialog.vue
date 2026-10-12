@@ -36,7 +36,7 @@
       >
         <el-table-column prop="file_name" label="文件名" min-width="190" show-overflow-tooltip>
           <template #default="{ row }">
-            <span style="font-weight: 600; color: #0284c7;">📄 {{ row.file_name }}</span>
+            <span class="task-file-cell"><el-icon><Document /></el-icon> {{ row.file_name }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="line_count" label="日志行数" width="105" align="center">
@@ -77,7 +77,7 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Upload, Delete } from '@element-plus/icons-vue'
+import { Upload, Delete, Document } from '@element-plus/icons-vue'
 import api from '@/api'
 import { useTaskStore } from '@/stores/task'
 import { formatTime, formatSize } from '@/utils/format'
@@ -198,5 +198,13 @@ defineExpose({
 .dialog-footer {
   display: flex;
   justify-content: flex-end;
+}
+
+.task-file-cell {
+  font-weight: 600;
+  color: var(--brand-600);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
 }
 </style>
