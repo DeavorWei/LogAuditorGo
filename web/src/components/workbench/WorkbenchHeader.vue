@@ -4,7 +4,7 @@
       <el-select
         :model-value="taskStore.currentTaskId"
         placeholder="选择审计任务"
-        style="width: 280px;"
+        class="task-select"
         @update:model-value="onTaskChange"
       >
         <el-option
@@ -27,7 +27,7 @@
           type="info"
           plain
           icon="Files"
-          style="margin-left: 4px;"
+          class="files-btn"
           @click="$emit('open-files')"
         >
           已导入 {{ taskFiles.length }} 个文件 ({{ currentTask.log_count || 0 }} 行)
@@ -308,6 +308,14 @@ defineExpose({
   background: var(--border-base);
   padding: 3px 8px;
   border-radius: var(--radius-sm);
+}
+
+.task-select {
+  width: 280px;
+}
+
+.files-btn {
+  margin-left: 4px;
 }
 
 .header-right {

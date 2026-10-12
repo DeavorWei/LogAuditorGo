@@ -30,7 +30,7 @@
         border
         stripe
         size="small"
-        style="width: 100%;"
+        class="files-table"
         max-height="400px"
         empty-text="暂无已导入日志文件"
       >
@@ -206,5 +206,9 @@ defineExpose({
   display: inline-flex;
   align-items: center;
   gap: var(--sp-2);
+}
+
+.files-table {
+  width: 100%;
 }
 </style>

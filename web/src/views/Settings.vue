@@ -53,7 +53,7 @@
             type="info"
             :closable="false"
             show-icon
-            style="margin-bottom: 20px;"
+            class="alert-desc-box"
           >
             <template #default>
               <div class="rule-tip">
@@ -81,7 +81,7 @@
                     :min="10"
                     :max="102400"
                     :step="128"
-                    style="width: 100%;"
+                    class="w-full"
                   />
                   <div class="form-hint">
                     约等于 {{ (logForm.max_size_mb / 1024).toFixed(2) }} GB
@@ -95,7 +95,7 @@
                     :min="1"
                     :max="3650"
                     :step="30"
-                    style="width: 100%;"
+                    class="w-full"
                   />
                   <div class="form-hint">
                     超过 {{ logForm.max_days }} 天的旧日志将被自动清理
@@ -107,7 +107,7 @@
             <el-row :gutter="16">
               <el-col :span="12">
                 <el-form-item label="日志输出级别">
-                  <el-select v-model="logForm.level" style="width: 100%;">
+                  <el-select v-model="logForm.level" class="w-full">
                     <el-option label="DEBUG (详细调试)" value="debug" />
                     <el-option label="INFO (常规信息)" value="info" />
                     <el-option label="WARN (警告级别)" value="warn" />
@@ -117,7 +117,7 @@
               </el-col>
               <el-col :span="12">
                 <el-form-item label="日志格式">
-                  <el-select v-model="logForm.format" style="width: 100%;">
+                  <el-select v-model="logForm.format" class="w-full">
                     <el-option label="Console (可读文本)" value="console" />
                     <el-option label="JSON (结构化日志)" value="json" />
                   </el-select>
@@ -173,7 +173,7 @@
             :data="logStats.files || []"
             v-loading="loadingLogs"
             stripe
-            style="width: 100%;"
+            class="w-full"
             max-height="520"
           >
             <el-table-column prop="name" label="日志文件名" min-width="240">
@@ -415,5 +415,13 @@ onMounted(() => {
 .time-text {
   font-size: var(--fs-sm);
   color: var(--gray-500);
+}
+
+.alert-desc-box {
+  margin-bottom: 20px;
+}
+
+.w-full {
+  width: 100%;
 }
 </style>

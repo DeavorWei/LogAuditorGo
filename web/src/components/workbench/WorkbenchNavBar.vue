@@ -6,29 +6,29 @@
       @update:model-value="(val) => $emit('update:modelValue', val)"
     >
       <el-radio-button :value="VIEW_MODE.WORKBENCH">
-        <el-icon style="margin-right: 4px; vertical-align: middle;"><Document /></el-icon>
+        <el-icon><Document /></el-icon>
         <span>日志审计工作台</span>
       </el-radio-button>
       <el-radio-button :value="VIEW_MODE.DEVICES">
-        <el-icon style="margin-right: 4px; vertical-align: middle;"><Monitor /></el-icon>
+        <el-icon><Monitor /></el-icon>
         <span>设备管理</span>
         <span v-if="currentTask && currentTask.device_count" class="nav-count-badge">
           {{ currentTask.device_count }}
         </span>
       </el-radio-button>
       <el-radio-button :value="VIEW_MODE.MULTI_TIMELINE">
-        <el-icon style="margin-right: 4px; vertical-align: middle;"><Histogram /></el-icon>
+        <el-icon><Histogram /></el-icon>
         <span>多设备协同时间线</span>
       </el-radio-button>
       <el-radio-button :value="VIEW_MODE.RCA">
-        <el-icon style="margin-right: 4px; vertical-align: middle;"><Aim /></el-icon>
+        <el-icon><Aim /></el-icon>
         <span>RCA 故障联动</span>
         <el-tooltip
           v-if="currentTask && (currentTask.rca_status === 'QUEUED' || currentTask.rca_status === 'RUNNING')"
           content="根因拓扑正在后台推导中，工作台已就绪可正常审计"
           placement="top"
         >
-          <el-icon class="is-loading" style="margin-left: 6px; color: var(--brand-500); vertical-align: middle;"><Loading /></el-icon>
+          <el-icon class="is-loading nav-loading-icon"><Loading /></el-icon>
         </el-tooltip>
         <el-tooltip
           v-else-if="currentTask && currentTask.rca_status === 'TIMEOUT'"
@@ -47,7 +47,7 @@
         </span>
       </el-radio-button>
       <el-radio-button :value="VIEW_MODE.MULTI_REPORT">
-        <el-icon style="margin-right: 4px; vertical-align: middle;"><DataAnalysis /></el-icon>
+        <el-icon><DataAnalysis /></el-icon>
         <span>多设备对比诊断报告</span>
       </el-radio-button>
     </el-radio-group>
@@ -94,6 +94,17 @@ const currentTask = computed(() => taskStore.currentTask)
   line-height: 32px;
   padding: 0 14px;
   box-sizing: border-box;
+}
+
+.workbench-nav-bar :deep(.el-radio-button__inner .el-icon:first-child) {
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+.nav-loading-icon {
+  margin-left: 6px;
+  color: var(--brand-500);
+  vertical-align: middle;
 }
 
 .nav-count-badge {

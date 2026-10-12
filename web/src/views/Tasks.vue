@@ -3,8 +3,8 @@
     <el-card shadow="never" class="tasks-header-card">
       <div class="header-content">
         <div>
-          <h2 style="font-size: var(--fs-xl); margin-bottom: 4px;">历史日志审计任务</h2>
-          <p style="font-size: var(--fs-sm); color: var(--text-secondary);">每次日志审计任务使用独立物理 SQLite 数据库进行隔离存储，支持一键导出离线分析报告</p>
+          <h2 class="tasks-title">历史日志审计任务</h2>
+          <p class="tasks-subtitle">每次日志审计任务使用独立物理 SQLite 数据库进行隔离存储，支持一键导出离线分析报告</p>
         </div>
         <el-button type="primary" icon="Plus" @click="$router.push('/audit')">新建审计任务</el-button>
       </div>
@@ -31,7 +31,7 @@
         <el-table-column prop="log_count" label="日志条数" width="100" align="center" />
         <el-table-column prop="matched_count" label="知识匹配数" width="100" align="center">
           <template #default="{ row }">
-            <span style="color: var(--success-strong); font-weight: bold;">{{ row.matched_count }}</span>
+            <span class="matched-count-text">{{ row.matched_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="rca_count" label="根因事件" width="90" align="center">
@@ -181,5 +181,19 @@ onMounted(() => {
 }
 .table-card {
   border-radius: var(--radius-lg);
+}
+.tasks-title {
+  font-size: var(--fs-xl);
+  margin: 0 0 4px 0;
+  color: var(--text-primary);
+}
+.tasks-subtitle {
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  margin: 0;
+}
+.matched-count-text {
+  color: var(--success-strong);
+  font-weight: bold;
 }
 </style>

@@ -4,7 +4,7 @@
     <el-card shadow="never" class="doc-header-card">
       <div class="header-content">
         <div class="header-left">
-          <h2 style="font-size: 16px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px;">
+          <h2 class="doc-main-title">
             <span>华为官方产品文档知识库管理</span>
             <el-tag size="small" type="primary" effect="dark">
               已导入 {{ docList.length }} 个文档包
@@ -25,7 +25,7 @@
             prefix-icon="Search"
             clearable
             size="small"
-            style="width: 240px; margin-right: 8px;"
+            class="doc-search-input"
           />
           <el-button icon="Refresh" size="small" :loading="loading" @click="fetchDocs">刷新</el-button>
           <el-button type="primary" icon="Upload" size="small" @click="openImportDialog">
@@ -94,7 +94,7 @@
         ref="docTableRef"
         :data="filteredDocList"
         v-loading="loading"
-        style="width: 100%;"
+        class="doc-table"
         border
         @selection-change="handleDocSelectionChange"
       >
@@ -116,18 +116,18 @@
         </el-table-column>
         <el-table-column prop="product_version" label="软件版本" width="140">
           <template #default="{ row }">
-            <span style="font-family: monospace; font-weight: bold;">{{ row.product_version }}</span>
+            <span class="version-mono">{{ row.product_version }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="issue_date" label="发布日期" width="120" align="center" />
         <el-table-column prop="log_count" label="叶子日志数" width="110" align="center">
           <template #default="{ row }">
-            <span style="color: var(--brand-600); font-weight: bold;">{{ row.log_count }}</span>
+            <span class="log-count-highlight">{{ row.log_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="alarm_count" label="叶子告警数" width="110" align="center">
           <template #default="{ row }">
-            <span style="color: var(--warning-strong); font-weight: bold;">{{ row.alarm_count }}</span>
+            <span class="alarm-count-highlight">{{ row.alarm_count }}</span>
           </template>
         </el-table-column>
         <el-table-column prop="imported_at" label="导入时间" width="160" align="center">
@@ -167,7 +167,7 @@
           >
             <template #prepend>
               <el-icon><Folder /></el-icon>
-              <span style="margin-left: 4px;">文件夹</span>
+              <span class="prepend-folder-label">文件夹</span>
             </template>
           </el-input>
           <el-button type="primary" plain icon="FolderOpened" @click="openServerFolderPicker">
@@ -233,7 +233,7 @@
                   placeholder="过滤文档名/型号/LibID..."
                   prefix-icon="Search"
                   clearable
-                  style="width: 200px;"
+                  class="scan-filter-input"
                 />
               </div>
             </div>
@@ -275,7 +275,7 @@
               </el-table-column>
               <el-table-column label="大小" width="95" align="right">
                 <template #default="{ row }">
-                  <span style="color: var(--text-secondary); font-size: var(--fs-xs);">{{ formatSize(row.size) }}</span>
+                  <span class="file-size-cell">{{ formatSize(row.size) }}</span>
                 </template>
               </el-table-column>
               <el-table-column label="状态" width="120" align="center">
@@ -971,5 +971,50 @@ onMounted(() => {
   margin-top: var(--sp-4);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
+}
+
+.doc-main-title {
+  font-size: var(--fs-lg);
+  margin: 0 0 4px 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.version-mono {
+  font-family: monospace;
+  font-weight: bold;
+}
+
+.log-count-highlight {
+  color: var(--brand-600);
+  font-weight: bold;
+}
+
+.alarm-count-highlight {
+  color: var(--warning-strong);
+  font-weight: bold;
+}
+
+.file-size-cell {
+  color: var(--text-secondary);
+  font-size: var(--fs-xs);
+}
+
+.doc-search-input {
+  width: 240px;
+  margin-right: 8px;
+}
+
+.doc-table {
+  width: 100%;
+}
+
+.prepend-folder-label {
+  margin-left: 4px;
+}
+
+.scan-filter-input {
+  width: 200px;
 }
 </style>

@@ -7,15 +7,15 @@
             v-model="query.keyword"
             placeholder="输入日志简名、Trap OID、原因或排错关键词..."
             clearable
-            style="width: 320px;"
+            class="keyword-input"
             @keyup.enter="handleSearch"
           />
         </el-form-item>
         <el-form-item label="模块过滤">
-          <el-input v-model="query.module" placeholder="例如: BGP, AAA, IFNET" clearable style="width: 160px;" />
+          <el-input v-model="query.module" placeholder="例如: BGP, AAA, IFNET" clearable class="module-input" />
         </el-form-item>
         <el-form-item label="知识类型">
-          <el-select v-model="query.entryType" clearable placeholder="全部类型" style="width: 140px;">
+          <el-select v-model="query.entryType" clearable placeholder="全部类型" class="entry-type-select">
             <el-option label="Syslog 日志参考" value="LOG" />
             <el-option label="SNMP Trap 告警" value="ALARM" />
           </el-select>
@@ -211,6 +211,15 @@ onMounted(() => {
 }
 .search-form :deep(.el-form-item) {
   margin-bottom: 0;
+}
+.keyword-input {
+  width: 320px;
+}
+.module-input {
+  width: 160px;
+}
+.entry-type-select {
+  width: 140px;
 }
 .results-container {
   background: var(--gray-0);

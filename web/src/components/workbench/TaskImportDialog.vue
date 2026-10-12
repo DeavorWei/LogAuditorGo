@@ -22,7 +22,7 @@
               >
                 <template #prepend>
                   <el-icon><Folder /></el-icon>
-                  <span style="margin-left: 4px;">路径</span>
+                  <span class="prepend-label">路径</span>
                 </template>
               </el-input>
               <el-button type="primary" plain icon="FolderOpened" @click="openPicker">
@@ -34,7 +34,7 @@
                 :loading="statting"
                 @click="addManualPath"
               >
-                <el-icon style="margin-right: 4px"><Plus /></el-icon>
+                <el-icon class="btn-icon-prefix"><Plus /></el-icon>
                 添加到列表
               </el-button>
             </div>
@@ -481,5 +481,13 @@ defineExpose({
   margin-top: var(--sp-4);
   font-size: var(--fs-sm);
   color: var(--text-secondary);
+}
+
+.prepend-label {
+  margin-left: 4px;
+}
+
+.btn-icon-prefix {
+  margin-right: 4px;
 }
 </style>

@@ -49,10 +49,10 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span style="font-weight: 600;">分析达到超时上限 (已安全中止并保存部分结果)</span>
+        <span class="alert-title-strong">分析达到超时上限 (已安全中止并保存部分结果)</span>
       </template>
       <template #default>
-        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <div class="alert-action-body">
           <span>
             由于分析样本极大，本次分析在达到超时上限时安全中止。当前拓扑仅包含至
             <strong>{{ rcaAnalyzedUntilText }}</strong> 前的故障链路，后续时段可能存在未识别事件。
@@ -73,10 +73,10 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span style="font-weight: 600;">RCA 根因推导异常中断</span>
+        <span class="alert-title-strong">RCA 根因推导异常中断</span>
       </template>
       <template #default>
-        <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+        <div class="alert-action-body">
           <span>{{ taskInfo.rca_error_message || '计算过程发生异常' }}</span>
           <el-button type="danger" size="small" plain @click="handleReanalyzeRCA" :loading="reanalyzing">
             点击重试
@@ -94,7 +94,7 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span style="font-weight: 600;">RCA 根因拓扑正在后台重新推导中...</span>
+        <span class="alert-title-strong">RCA 根因拓扑正在后台重新推导中...</span>
       </template>
       <template #default>
         <span>
@@ -107,7 +107,7 @@
     <el-card v-if="isRcaRunning && rcaList.length === 0" shadow="never" class="running-card">
       <div class="running-header">
         <el-icon class="is-loading" size="44" color="var(--brand-600)"><Loading /></el-icon>
-        <h3 style="margin: 12px 0 6px 0; color: var(--gray-900);">根因拓扑正在后台推导中...</h3>
+        <h3 class="running-title">根因拓扑正在后台推导中...</h3>
         <p v-if="taskInfo?.rca_status === 'QUEUED'" class="running-tip">
           当前任务正在排队等待并发计算槽位，工作台已就绪可正常审计浏览日志。
         </p>
@@ -115,7 +115,7 @@
           正在基于全量时序关联与协议故障传播模型计算因果拓扑，完成后将自动刷新展示。
         </p>
       </div>
-      <el-skeleton :rows="7" animated style="margin-top: 24px;" />
+      <el-skeleton :rows="7" animated class="running-skeleton" />
     </el-card>
 
     <!-- 无联动事件空状态 -->
@@ -135,7 +135,7 @@
       <div class="col-event-list">
         <div class="list-header">
           <span>联动事件索引 ({{ filteredRcaList.length }})</span>
-          <el-select v-model="levelFilter" size="small" style="width: 110px;" placeholder="级别筛选">
+          <el-select v-model="levelFilter" size="small" class="level-filter-select" placeholder="级别筛选">
             <el-option label="全部级别" value="ALL" />
             <el-option label="CRITICAL" value="CRITICAL" />
             <el-option label="HIGH" value="HIGH" />
@@ -191,15 +191,15 @@
           <!-- 头部标题栏 -->
           <div class="detail-header-row">
             <div>
-              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 6px;">
+              <div class="rca-header-title-box">
                 <span :class="['level-tag', selectedRCA.impact_level?.toLowerCase()]">
                   {{ selectedRCA.impact_level || 'HIGH' }}
                 </span>
-                <h3 style="margin: 0; font-size: var(--fs-xl); color: var(--gray-900);">
+                <h3 class="rca-root-title">
                   [{{ selectedRCA.root_module }}/{{ selectedRCA.root_brief }}] 根因联动故障推断
                 </h3>
               </div>
-              <p style="margin: 0; font-size: var(--fs-md); color: var(--text-secondary);">
+              <p class="rca-root-subtitle">
                 始发于 {{ selectedRCA.root_timestamp }}，触发了 {{ selectedRCA.correlated_count }} 条衍生告警，整体置信度为 {{ Math.round((selectedRCA.confidence || 0.8) * 100) }}%
               </p>
             </div>
@@ -877,5 +877,42 @@ defineExpose({
   line-height: 1.6;
   white-space: pre-line;
   word-break: break-word;
+}
+.alert-title-strong {
+  font-weight: 600;
+}
+.alert-action-body {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+.running-title {
+  margin: 12px 0 6px 0;
+  color: var(--gray-900);
+}
+.rca-header-title-box {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.rca-root-title {
+  margin: 0;
+  font-size: var(--fs-xl);
+  color: var(--gray-900);
+}
+.rca-root-subtitle {
+  margin: 0;
+  font-size: var(--fs-md);
+  color: var(--text-secondary);
+}
+
+.running-skeleton {
+  margin-top: 24px;
+}
+
+.level-filter-select {
+  width: 110px;
 }
 </style>

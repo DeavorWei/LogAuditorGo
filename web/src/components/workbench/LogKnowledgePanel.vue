@@ -64,13 +64,13 @@
             <!-- 官方参数定义字典与现场对照表 -->
             <div v-if="detail.kbParamDefs && detail.kbParamDefs.length > 0" class="kb-block">
               <div class="kb-subtitle flex-between">
-                <div style="display: flex; align-items: center; gap: 6px;">
+                <div class="kb-subtitle-left">
                   <el-icon><Document /></el-icon>
                   <span>官方参数字典与现场实际值对照</span>
                 </div>
                 <span class="dict-count-tag">共 {{ detail.kbParamDefs.length }} 项参数定义</span>
               </div>
-              <el-table :data="detail.kbParamDefs" size="small" border style="width: 100%; margin-top: 6px;">
+              <el-table :data="detail.kbParamDefs" size="small" border class="kb-dict-table">
                 <el-table-column prop="name" label="参数名称" width="130">
                   <template #default="{ row }">
                     <span class="dict-pname">{{ row.name }}</span>
@@ -271,5 +271,16 @@ const detail = computed(() => {
 
 .rc-graph-container {
   height: 380px;
+}
+
+.kb-subtitle-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kb-dict-table {
+  width: 100%;
+  margin-top: 6px;
 }
 </style>

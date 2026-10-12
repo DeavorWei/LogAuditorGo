@@ -15,7 +15,7 @@
         />
       </el-form-item>
       <el-form-item label="设备类型">
-        <el-select v-model="form.deviceType" style="width: 100%;">
+        <el-select v-model="form.deviceType" class="full-width-select">
           <el-option
             v-for="opt in DEVICE_TYPE_OPTIONS"
             :key="opt.value"
@@ -79,3 +79,9 @@ const close = () => {
   emit('update:modelValue', false)
 }
 </script>
+
+<style scoped>
+.full-width-select {
+  width: 100%;
+}
+</style>

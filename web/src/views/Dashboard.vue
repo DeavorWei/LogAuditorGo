@@ -53,38 +53,38 @@
         <el-card shadow="hover" class="chart-card">
           <template #header>
             <div class="card-header">
-              <el-icon style="margin-right: 6px;"><DataAnalysis /></el-icon>
+              <el-icon><DataAnalysis /></el-icon>
               <span>知识库各网络模块知识分布 (Top 10)</span>
             </div>
           </template>
-          <div ref="moduleChartRef" style="width: 100%; height: 340px;"></div>
+          <div ref="moduleChartRef" class="module-chart-box"></div>
         </el-card>
       </el-col>
       <el-col :span="9">
         <el-card shadow="hover" class="action-card">
           <template #header>
             <div class="card-header">
-              <el-icon style="margin-right: 6px;"><Position /></el-icon>
+              <el-icon><Position /></el-icon>
               <span>快速开始</span>
             </div>
           </template>
           <div class="quick-actions">
             <button type="button" class="action-item reset" @click="showNewTaskDialog = true">
-              <el-icon class="action-icon" style="color: var(--brand-500);"><UploadFilled /></el-icon>
+              <el-icon class="action-icon tone-brand"><UploadFilled /></el-icon>
               <div>
                 <div class="action-title">新建日志审计任务</div>
                 <div class="action-desc">上传设备 Syslog 文本或日志文件进行智能分析与根因诊断</div>
               </div>
             </button>
             <button type="button" class="action-item reset" @click="$router.push('/documents')">
-              <el-icon class="action-icon" style="color: var(--success-strong);"><FolderAdd /></el-icon>
+              <el-icon class="action-icon tone-success"><FolderAdd /></el-icon>
               <div>
                 <div class="action-title">导入华为 HDX 产品文档</div>
                 <div class="action-desc">导入官方 HDX 文档压缩包或本地文件夹以扩充故障知识库</div>
               </div>
             </button>
             <button type="button" class="action-item reset" @click="$router.push('/knowledge')">
-              <el-icon class="action-icon" style="color: var(--purple-500);"><Search /></el-icon>
+              <el-icon class="action-icon tone-purple"><Search /></el-icon>
               <div>
                 <div class="action-title">检索官方故障知识库</div>
                 <div class="action-desc">根据报错简名、Trap OID 或关键词检索处理指导</div>
@@ -189,6 +189,7 @@ const renderModuleChart = (topModules) => {
         type: 'bar',
         barWidth: '45%',
         itemStyle: {
+          // [ECharts豁免项] Canvas 上下文渐变色，对应系统令牌 --brand-400 (#38bdf8) 与 --brand-600 (#0284c7)
           color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
             { offset: 0, color: '#38bdf8' },
             { offset: 1, color: '#0284c7' }
@@ -296,6 +297,13 @@ onUnmounted(() => {
 .card-header {
   font-weight: 600;
   font-size: 15px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.module-chart-box {
+  width: 100%;
+  height: 340px;
 }
 .quick-actions {
   display: flex;
@@ -321,6 +329,15 @@ onUnmounted(() => {
 }
 .action-icon {
   font-size: 28px;
+}
+.action-icon.tone-brand {
+  color: var(--brand-500);
+}
+.action-icon.tone-success {
+  color: var(--success-strong);
+}
+.action-icon.tone-purple {
+  color: var(--purple-500);
 }
 .action-title {
   font-size: var(--fs-lg);

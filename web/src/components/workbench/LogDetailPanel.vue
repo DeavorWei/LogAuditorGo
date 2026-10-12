@@ -67,8 +67,8 @@
                   暂无标签
                 </el-dropdown-item>
                 <el-dropdown-item divided command="__create__" class="create-tag-menu-item">
-                  <el-icon color="var(--brand-600)"><Plus /></el-icon>
-                  <span style="color: var(--brand-600); font-weight: 500;">+ 新增标签</span>
+                  <el-icon><Plus /></el-icon>
+                  <span>+ 新增标签</span>
                 </el-dropdown-item>
               </el-dropdown-menu>
             </template>
@@ -86,7 +86,7 @@
       <div v-if="log.event_summary" class="section-box event-summary-box-wb">
         <div class="box-title">事件语义解析摘要</div>
         <div class="event-summary-highlight-wb">
-          <el-icon color="var(--brand-600)" size="18" style="margin-right: 8px; flex-shrink: 0;"><InfoFilled /></el-icon>
+          <el-icon color="var(--brand-600)" size="18" class="summary-icon-wb"><InfoFilled /></el-icon>
           <span class="summary-text-wb">{{ log.event_summary }}</span>
         </div>
       </div>
@@ -449,10 +449,15 @@ const formatLogTime = (log) => {
 .event-summary-highlight-wb {
   display: flex;
   align-items: flex-start;
+  gap: 8px;
   font-size: var(--fs-md);
   font-weight: 500;
   color: var(--brand-700);
   line-height: 1.5;
+}
+
+.summary-icon-wb {
+  flex-shrink: 0;
 }
 
 .summary-text-wb {

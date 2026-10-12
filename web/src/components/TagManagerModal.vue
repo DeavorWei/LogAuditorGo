@@ -17,17 +17,15 @@
               v-model="form.name"
               placeholder="标签名称 (≤32字)"
               maxlength="32"
-              style="width: 160px"
+              class="tag-input-field"
             />
           </el-form-item>
-          <el-form-item label="颜色">
-            <el-color-picker v-model="form.color" :predefine="PREDEFINE_TAG_COLORS" />
-          </el-form-item>
+          <el-color-picker v-model="form.color" :predefine="PREDEFINE_TAG_COLORS" />
           <el-form-item label="备注">
             <el-input
               v-model="form.remark"
               placeholder="说明或备注"
-              style="width: 160px"
+              class="tag-input-field"
               maxlength="64"
             />
           </el-form-item>
@@ -49,7 +47,7 @@
         v-loading="tagStore.loading"
         :data="tagStore.tags"
         stripe
-        style="width: 100%; margin-top: 16px"
+        class="tag-table"
         max-height="380"
       >
         <el-table-column label="标签样式" width="160">
@@ -57,7 +55,7 @@
             <el-tag
               :color="row.color"
               effect="dark"
-              style="border: none; color: var(--text-on-brand); font-weight: 500"
+              class="tag-badge-preview"
             >
               {{ row.name }}
             </el-tag>
@@ -221,5 +219,17 @@ const filterByTag = (tag) => {
 }
 .tag-form :deep(.el-form-item) {
   margin-bottom: 0;
+}
+.tag-input-field {
+  width: 160px;
+}
+.tag-table {
+  width: 100%;
+  margin-top: 16px;
+}
+.tag-badge-preview {
+  border: none;
+  color: var(--text-on-brand);
+  font-weight: 500;
 }
 </style>

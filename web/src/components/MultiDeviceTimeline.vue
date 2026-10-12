@@ -115,7 +115,7 @@
             (已选择 {{ selectedDeviceIds.length }} 台设备，按绝对时间升序排列)
           </span>
         </div>
-        <div style="display: flex; align-items: center; gap: 10px;">
+        <div class="header-view-actions">
           <el-radio-group v-model="viewMode" size="small">
             <el-radio-button label="timeline">时间线视图</el-radio-button>
             <el-radio-button label="table">明细列表</el-radio-button>
@@ -194,7 +194,7 @@
         <el-table :data="timelineEvents" border style="width: 100%;">
           <el-table-column label="发生时间" width="165">
             <template #default="{ row }">
-              <span style="font-family: monospace;">{{ formatEventTime(row) }}</span>
+              <span class="time-mono">{{ formatEventTime(row) }}</span>
             </template>
           </el-table-column>
 
@@ -255,7 +255,7 @@
             </div>
             <div><strong>Host / IP:</strong> {{ selectedEvent.hostname || '-' }}</div>
             <div><strong>模块 / 简名:</strong> {{ selectedEvent.module }} / {{ selectedEvent.brief }}</div>
-            <div style="display: flex; align-items: center; gap: 6px;">
+            <div class="meta-row-align">
               <strong>日志级别:</strong>
               <SeverityTag :severity="selectedEvent.severity" :module="selectedEvent.module" />
             </div>
@@ -1024,5 +1024,18 @@ defineExpose({
 }
 .action-box p {
   color: var(--brand-900);
+}
+.header-view-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.time-mono {
+  font-family: monospace;
+}
+.meta-row-align {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 </style>

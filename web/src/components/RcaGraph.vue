@@ -36,6 +36,8 @@ const renderChart = () => {
   }
 
   const rootName = `根因: ${props.rcaEvent.root_module}/${props.rcaEvent.root_brief} (#${props.rcaEvent.root_log_id})`
+  // [ECharts豁免项] Canvas 上下文节点与文字颜色，对应设计令牌体系:
+  // 根因节点: #ef4444 (--sev-crit-bar), 衍生节点: #f97316 (--sev-err-bar), 拓扑边: #fb923c
   const nodes = [
     {
       name: rootName,
