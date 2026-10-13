@@ -29,10 +29,15 @@ var (
 		"match_tier":       "match_tier",
 		"match_confidence": "match_confidence",
 		"knowledge_id":     "knowledge_id",
+		"tag":              "tag",
 	}
 
 	// 字段支持的操作符白名单
 	fieldSupportedOps = map[string]map[string]bool{
+		"tag": {
+			"has_any": true, "has_all": true, "not_has": true,
+			"is_empty": true, "is_not_empty": true,
+		},
 		"raw_log": {
 			"contains": true, "not_contains": true, "regex": true, "not_regex": true,
 			"eq": true, "prefix": true, "suffix": true,
@@ -107,7 +112,49 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 		return nil, fmt.Errorf("condition #%d: value exceeds 256 bytes limit", idx+1)
 	}
 
-	// 1. 处理 KV 参数类操作符 (parameters)
+	// 1. 处理标签类操作符 (tag)
+	if field == "tag" {
+		if op == "is_empty" {
+			return &conditionSQL{
+				SQL: "id NOT IN (SELECT log_id FROM log_tag_relations WHERE log_id IS NOT NULL)",
+			}, nil
+		}
+		if op == "is_not_empty" {
+			return &conditionSQL{
+				SQL: "id IN (SELECT log_id FROM log_tag_relations WHERE log_id IS NOT NULL)",
+			}, nil
+		}
+
+		tagIDs := parsePositiveUintCSV(val)
+		if len(tagIDs) == 0 {
+			if op == "not_has" {
+				return &conditionSQL{SQL: "1 = 1"}, nil
+			}
+			return &conditionSQL{SQL: "1 = 0"}, nil
+		}
+
+		switch op {
+		case "has_any":
+			return &conditionSQL{
+				SQL:  "id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?))",
+				Args: []any{tagIDs},
+			}, nil
+		case "has_all":
+			return &conditionSQL{
+				SQL:  "id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?) GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = ?)",
+				Args: []any{tagIDs, len(tagIDs)},
+			}, nil
+		case "not_has":
+			return &conditionSQL{
+				SQL:  "id NOT IN (SELECT log_id FROM log_tag_relations WHERE log_id IS NOT NULL AND tag_id IN (?))",
+				Args: []any{tagIDs},
+			}, nil
+		default:
+			return nil, fmt.Errorf("condition #%d: unsupported tag op '%s'", idx+1, op)
+		}
+	}
+
+	// 2. 处理 KV 参数类操作符 (parameters)
 	if field == "parameters" {
 		parts := strings.SplitN(val, "=", 2)
 		if len(parts) != 2 {
@@ -315,6 +362,27 @@ func parseCSVList(s string) []string {
 	return res
 }
 
+func parsePositiveUintCSV(s string) []uint {
+	parts := strings.Split(s, ",")
+	res := make([]uint, 0, len(parts))
+	seen := make(map[uint]bool, len(parts))
+	for _, p := range parts {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
+			continue
+		}
+		num, err := strconv.ParseUint(trimmed, 10, 64)
+		if err == nil && num > 0 {
+			u := uint(num)
+			if !seen[u] {
+				seen[u] = true
+				res = append(res, u)
+			}
+		}
+	}
+	return res
+}
+
 // BuildLogFilterScope 编译统一查询请求体为 GORM Scope（未分页与排序），
 // 供日志列表查询、命中数统计、批量打标、批量摘标及报表导出共用单一逻辑源。
 func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.DB, error) {
@@ -356,28 +424,51 @@ func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.D
 	}
 
 	// 2. 标签条件过滤（严格采用子查询，禁止 JOIN 防止行膨胀破坏分页与计数）
-	if len(req.TagIDs) > 0 {
-		// 对 tag_ids 规范化去重，防止重复 ID 破坏 HAVING COUNT(DISTINCT tag_id) 断言
-		uniqueTagIDs := make([]uint, 0, len(req.TagIDs))
-		seen := make(map[uint]bool, len(req.TagIDs))
-		for _, id := range req.TagIDs {
-			if id > 0 && !seen[id] {
-				seen[id] = true
-				uniqueTagIDs = append(uniqueTagIDs, id)
+	if req.UntaggedOnly {
+		if len(req.TagIDs) > 0 || len(req.ExcludeTagIDs) > 0 {
+			return nil, fmt.Errorf("untagged_only is mutually exclusive with tag_ids and exclude_tag_ids")
+		}
+		query = query.Where("id NOT IN (SELECT log_id FROM log_tag_relations WHERE log_id IS NOT NULL)")
+	} else {
+		// 正向包含标签
+		if len(req.TagIDs) > 0 {
+			uniqueTagIDs := make([]uint, 0, len(req.TagIDs))
+			seen := make(map[uint]bool, len(req.TagIDs))
+			for _, id := range req.TagIDs {
+				if id > 0 && !seen[id] {
+					seen[id] = true
+					uniqueTagIDs = append(uniqueTagIDs, id)
+				}
+			}
+			if len(uniqueTagIDs) > 0 {
+				if strings.EqualFold(req.TagLogic, "all") {
+					query = query.Where(
+						"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?) GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = ?)",
+						uniqueTagIDs, len(uniqueTagIDs),
+					)
+				} else {
+					query = query.Where(
+						"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?))",
+						uniqueTagIDs,
+					)
+				}
 			}
 		}
-		if len(uniqueTagIDs) > 0 {
-			if strings.EqualFold(req.TagLogic, "all") {
-				// 全部满足：GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = len(uniqueTagIDs)
+
+		// 反向排除标签
+		if len(req.ExcludeTagIDs) > 0 {
+			uniqueExcludeIDs := make([]uint, 0, len(req.ExcludeTagIDs))
+			seenExclude := make(map[uint]bool, len(req.ExcludeTagIDs))
+			for _, id := range req.ExcludeTagIDs {
+				if id > 0 && !seenExclude[id] {
+					seenExclude[id] = true
+					uniqueExcludeIDs = append(uniqueExcludeIDs, id)
+				}
+			}
+			if len(uniqueExcludeIDs) > 0 {
 				query = query.Where(
-					"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?) GROUP BY log_id HAVING COUNT(DISTINCT tag_id) = ?)",
-					uniqueTagIDs, len(uniqueTagIDs),
-				)
-			} else {
-				// 任意满足 (any)
-				query = query.Where(
-					"id IN (SELECT log_id FROM log_tag_relations WHERE tag_id IN (?))",
-					uniqueTagIDs,
+					"id NOT IN (SELECT log_id FROM log_tag_relations WHERE log_id IS NOT NULL AND tag_id IN (?))",
+					uniqueExcludeIDs,
 				)
 			}
 		}
@@ -385,12 +476,15 @@ func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.D
 
 	// 3. 高级筛选条件 (AdvancedFilter)
 	if req.Advanced != nil && len(req.Advanced.Conditions) > 0 {
-		if len(req.Advanced.Conditions) > 10 {
-			return nil, fmt.Errorf("advanced conditions count %d exceeds maximum limit of 10", len(req.Advanced.Conditions))
+		if len(req.Advanced.Conditions) > 15 {
+			return nil, fmt.Errorf("advanced conditions count %d exceeds maximum limit of 15", len(req.Advanced.Conditions))
 		}
 
 		condSQLs := make([]*conditionSQL, 0, len(req.Advanced.Conditions))
 		for i, cond := range req.Advanced.Conditions {
+			if cond.Disabled {
+				continue
+			}
 			cSQL, err := compileSingleCondition(cond, i)
 			if err != nil {
 				return nil, err
@@ -398,20 +492,22 @@ func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.D
 			condSQLs = append(condSQLs, cSQL)
 		}
 
-		if strings.EqualFold(req.Advanced.Logic, "OR") {
-			// 顶层 OR 逻辑：用括号将所有高级条件包裹 (c1 OR c2 OR ...)
-			fragments := make([]string, 0, len(condSQLs))
-			allArgs := make([]any, 0)
-			for _, c := range condSQLs {
-				fragments = append(fragments, c.SQL)
-				allArgs = append(allArgs, c.Args...)
-			}
-			orClause := "(" + strings.Join(fragments, " OR ") + ")"
-			query = query.Where(orClause, allArgs...)
-		} else {
-			// 默认 AND 逻辑：逐条追加
-			for _, c := range condSQLs {
-				query = query.Where(c.SQL, c.Args...)
+		if len(condSQLs) > 0 {
+			if strings.EqualFold(req.Advanced.Logic, "OR") {
+				// 顶层 OR 逻辑：用括号将所有高级条件包裹 (c1 OR c2 OR ...)
+				fragments := make([]string, 0, len(condSQLs))
+				allArgs := make([]any, 0)
+				for _, c := range condSQLs {
+					fragments = append(fragments, c.SQL)
+					allArgs = append(allArgs, c.Args...)
+				}
+				orClause := "(" + strings.Join(fragments, " OR ") + ")"
+				query = query.Where(orClause, allArgs...)
+			} else {
+				// 默认 AND 逻辑：逐条追加
+				for _, c := range condSQLs {
+					query = query.Where(c.SQL, c.Args...)
+				}
 			}
 		}
 	}

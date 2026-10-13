@@ -2,150 +2,445 @@
   <el-drawer
     v-model="visible"
     title="高级筛选与规则圈选"
-    size="640px"
+    size="720px"
     destroy-on-close
     class="advanced-filter-drawer"
+    :before-close="handleBeforeClose"
   >
     <div class="drawer-container">
-      <!-- 基础筛选叠加提示条 -->
-      <div v-if="baseFilterSummary.length > 0" class="base-filter-alert">
-        <el-alert type="info" :closable="false" show-icon>
-          <template #title>
-            <span class="alert-title">当前与基础筛选条件为叠加 (AND) 关系：</span>
-          </template>
-          <div class="base-tags">
-            <el-tag
-              v-for="(item, idx) in baseFilterSummary"
-              :key="idx"
-              size="small"
-              type="info"
-              effect="plain"
-              class="base-tag-item"
-            >
-              {{ item.label }}: {{ item.value }}
+      <!-- 1. 基础检索维度控制矩阵 (Base Filter Matrix) -->
+      <div class="filter-section-card base-matrix-card">
+        <div class="section-header" @click="isBaseSectionCollapsed = !isBaseSectionCollapsed">
+          <div class="section-title">
+            <el-icon class="section-icon"><Search /></el-icon>
+            <span>基础检索维度</span>
+            <el-tag size="small" type="info" class="section-badge">
+              {{ activeBaseCount }} 项生效
             </el-tag>
           </div>
-        </el-alert>
-      </div>
+          <el-button link size="small" class="collapse-toggle-btn">
+            <el-icon><ArrowUp v-if="!isBaseSectionCollapsed" /><ArrowDown v-else /></el-icon>
+          </el-button>
+        </div>
 
-      <!-- 顶层组合逻辑切换 -->
-      <div class="logic-bar">
-        <span class="logic-label">条件组合关系：</span>
-        <el-radio-group v-model="localAdvanced.logic" size="small" @change="debouncedPreview">
-          <el-radio-button label="AND">全部满足 (AND)</el-radio-button>
-          <el-radio-button label="OR">满足任一 (OR)</el-radio-button>
-        </el-radio-group>
-      </div>
-
-      <!-- 条件列表构造器 -->
-      <div class="conditions-list">
-        <div
-          v-for="(cond, index) in localAdvanced.conditions"
-          :key="index"
-          class="condition-row"
-        >
-          <div class="row-index">#{{ index + 1 }}</div>
-
-          <!-- 字段选择 -->
-          <el-select
-            v-model="cond.field"
-            placeholder="字段"
-            size="default"
-            class="field-select"
-            @change="onFieldChange(cond)"
-          >
-            <el-option-group label="核心报文">
-              <el-option label="原始报文 (raw_log)" value="raw_log" />
-              <el-option label="消息正文 (message_body)" value="message_body" />
-              <el-option label="事件简名 (brief)" value="brief" />
-              <el-option label="模块名 (module)" value="module" />
-              <el-option label="主机名 (hostname)" value="hostname" />
-              <el-option label="插槽槽位 (slot_info)" value="slot_info" />
-            </el-option-group>
-            <el-option-group label="动态参数 (KV)">
-              <el-option label="参数提取 (parameters)" value="parameters" />
-            </el-option-group>
-            <el-option-group label="审计元数据">
-              <el-option label="来源文件 (source_file)" value="source_file" />
-              <el-option label="严重级别 (severity)" value="severity" />
-              <el-option label="匹配分层 (match_tier)" value="match_tier" />
-              <el-option label="置信度 (match_confidence)" value="match_confidence" />
-              <el-option label="知识库ID (knowledge_id)" value="knowledge_id" />
-            </el-option-group>
-          </el-select>
-
-          <!-- 操作符选择 -->
-          <el-select
-            v-model="cond.op"
-            placeholder="操作符"
-            size="default"
-            class="op-select"
-            @change="debouncedPreview"
-          >
-            <el-option
-              v-for="op in getAvailableOps(cond.field)"
-              :key="op.value"
-              :label="op.label"
-              :value="op.value"
-            />
-          </el-select>
-
-          <!-- 值输入框 -->
-          <div class="value-input-wrapper">
+        <div v-show="!isBaseSectionCollapsed" class="section-body base-matrix-body">
+          <!-- 关键词输入行 -->
+          <div class="matrix-row">
             <el-input
-              v-model="cond.value"
-              :placeholder="getValuePlaceholder(cond)"
+              v-model="draftBase.keyword"
+              placeholder="搜索报文内容、模块名或事件助记符..."
+              prefix-icon="Search"
               clearable
               size="default"
-              @input="onValueInput(cond)"
+              class="base-keyword-input"
+              @input="debouncedPreview"
+              @clear="debouncedPreview"
             />
-            <!-- 正则提示或错误校验 -->
-            <div v-if="getRegexError(cond)" class="regex-error-tip">
-              {{ getRegexError(cond) }}
+          </div>
+
+          <!-- 时间区间与快捷药丸 -->
+          <div class="matrix-row time-row">
+            <div class="time-picker-group">
+              <el-date-picker
+                v-model="draftBase.timeStart"
+                type="datetime"
+                placeholder="起始时间"
+                size="default"
+                format="YYYY-MM-DD HH:mm:ss"
+                value-format="YYYY-MM-DDTHH:mm:ssZ"
+                clearable
+                class="matrix-time-picker"
+                @change="debouncedPreview"
+              />
+              <span class="time-sep">~</span>
+              <el-date-picker
+                v-model="draftBase.timeEnd"
+                type="datetime"
+                placeholder="截止时间"
+                size="default"
+                format="YYYY-MM-DD HH:mm:ss"
+                value-format="YYYY-MM-DDTHH:mm:ssZ"
+                clearable
+                class="matrix-time-picker"
+                @change="debouncedPreview"
+              />
+            </div>
+            <div class="quick-time-pills">
+              <el-button size="small" plain @click="applyQuickTime('all')">全部时间</el-button>
+              <el-button size="small" plain @click="applyQuickTime('1h')">近 1 小时</el-button>
+              <el-button size="small" plain @click="applyQuickTime('24h')">近 24 小时</el-button>
             </div>
           </div>
 
-          <!-- 删除单行按钮 -->
-          <el-button
-            type="danger"
-            link
-            class="delete-btn"
-            @click="removeCondition(index)"
-          >
-            <el-icon><Delete /></el-icon>
-          </el-button>
-        </div>
+          <!-- 设备、级别、状态与排序网格 -->
+          <div class="matrix-grid">
+            <!-- 设备选择 -->
+            <div class="grid-item">
+              <span class="grid-label">设备范围：</span>
+              <el-select
+                v-model="draftBase.deviceId"
+                placeholder="全部设备"
+                clearable
+                size="default"
+                class="grid-control"
+                @change="debouncedPreview"
+              >
+                <el-option label="全部设备" :value="null" />
+                <el-option
+                  v-for="d in taskDevices"
+                  :key="d.id"
+                  :label="`${d.device_name} (${d.log_count}条)`"
+                  :value="d.id"
+                />
+              </el-select>
+            </div>
 
-        <!-- 空条件引导 -->
-        <div v-if="localAdvanced.conditions.length === 0" class="empty-conditions">
-          <p class="empty-tip">暂无高级条件，点击下方按钮添加条件</p>
-        </div>
+            <!-- 严重级别 -->
+            <div class="grid-item">
+              <span class="grid-label">严重级别：</span>
+              <el-select
+                v-model="draftBase.severity"
+                placeholder="全部级别"
+                clearable
+                size="default"
+                class="grid-control"
+                @change="debouncedPreview"
+              >
+                <el-option label="全部级别" :value="null" />
+                <el-option label="≤ 2 (紧急/告警)" :value="2" />
+                <el-option label="≤ 4 (错误及以上)" :value="4" />
+                <el-option label="≤ 6 (通知及以上)" :value="6" />
+              </el-select>
+            </div>
 
-        <!-- 添加条件按钮 -->
-        <div class="add-bar">
-          <el-button
-            type="primary"
-            plain
-            size="small"
-            :disabled="localAdvanced.conditions.length >= 10"
-            @click="addCondition"
-          >
-            + 添加筛选条件 ({{ localAdvanced.conditions.length }}/10)
-          </el-button>
+            <!-- 知识库匹配态 -->
+            <div class="grid-item">
+              <span class="grid-label">匹配状态：</span>
+              <el-select
+                v-model="draftBase.matched"
+                placeholder="全部状态"
+                clearable
+                size="default"
+                class="grid-control"
+                @change="debouncedPreview"
+              >
+                <el-option label="全部状态" :value="null" />
+                <el-option label="已收录知识库" :value="true" />
+                <el-option label="未匹配知识库" :value="false" />
+              </el-select>
+            </div>
+
+            <!-- 排序方式 -->
+            <div class="grid-item">
+              <span class="grid-label">排序方式：</span>
+              <el-select
+                v-model="currentSortOption"
+                placeholder="排序方式"
+                size="default"
+                class="grid-control"
+                @change="debouncedPreview"
+              >
+                <el-option label="时间正序 (最早在前)" value="time_asc" />
+                <el-option label="时间倒序 (最新在前)" value="time_desc" />
+                <el-option label="原始入库顺序" value="id_asc" />
+              </el-select>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- 实时匹配预览 -->
+      <!-- 2. 标签多模态筛选面板 (Tag Filter Ecosystem) -->
+      <div class="filter-section-card tag-matrix-card">
+        <div class="section-header">
+          <div class="section-title">
+            <el-icon class="section-icon"><PriceTag /></el-icon>
+            <span>标签多模态约束</span>
+          </div>
+          <el-checkbox
+            v-model="draftBase.untaggedOnly"
+            class="untagged-checkbox"
+            @change="handleUntaggedChange"
+          >
+            仅看未打标日志
+          </el-checkbox>
+        </div>
+
+        <div class="section-body tag-matrix-body" :class="{ 'is-disabled-body': draftBase.untaggedOnly }">
+          <!-- 包含标签行 -->
+          <div class="tag-control-row">
+            <span class="tag-control-label">包含标签：</span>
+            <el-select
+              v-model="draftBase.tagIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="选择必须包含的标签..."
+              size="default"
+              :disabled="draftBase.untaggedOnly"
+              class="tag-select-box"
+              @change="debouncedPreview"
+            >
+              <el-option
+                v-for="t in tagStore.tags"
+                :key="t.id"
+                :label="`${t.name} (${t.log_count || 0})`"
+                :value="t.id"
+              >
+                <div class="tag-option-item">
+                  <span>{{ t.name }} ({{ t.log_count || 0 }})</span>
+                  <span
+                    class="tag-dot-indicator"
+                    :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
+                  />
+                </div>
+              </el-option>
+            </el-select>
+
+            <el-button-group class="tag-logic-toggle">
+              <el-button
+                size="default"
+                :type="draftBase.tagLogic === 'any' ? 'primary' : 'default'"
+                :disabled="draftBase.untaggedOnly || draftBase.tagIds.length <= 1"
+                @click="setTagLogic('any')"
+              >
+                任一 (OR)
+              </el-button>
+              <el-button
+                size="default"
+                :type="draftBase.tagLogic === 'all' ? 'primary' : 'default'"
+                :disabled="draftBase.untaggedOnly || draftBase.tagIds.length <= 1"
+                @click="setTagLogic('all')"
+              >
+                全部 (AND)
+              </el-button>
+            </el-button-group>
+          </div>
+
+          <!-- 排除标签行 -->
+          <div class="tag-control-row exclude-row">
+            <span class="tag-control-label exclude-label">排除标签：</span>
+            <el-select
+              v-model="draftBase.excludeTagIds"
+              multiple
+              collapse-tags
+              collapse-tags-tooltip
+              clearable
+              placeholder="选择严格排除的标签 (如: 已知误报)..."
+              size="default"
+              :disabled="draftBase.untaggedOnly"
+              class="tag-select-box exclude-select-box"
+              @change="debouncedPreview"
+            >
+              <el-option
+                v-for="t in tagStore.tags"
+                :key="t.id"
+                :label="`${t.name} (${t.log_count || 0})`"
+                :value="t.id"
+              >
+                <div class="tag-option-item">
+                  <span class="danger-text">{{ t.name }} ({{ t.log_count || 0 }})</span>
+                  <span
+                    class="tag-dot-indicator"
+                    :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
+                  />
+                </div>
+              </el-option>
+            </el-select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3. 高级规则构造器 (Advanced Rule Builder) -->
+      <div class="filter-section-card rule-builder-card">
+        <div class="section-header">
+          <div class="section-title">
+            <el-icon class="section-icon"><Opportunity /></el-icon>
+            <span>高级规则构造器</span>
+            <span class="rule-limit-hint">({{ localAdvanced.conditions.length }}/15)</span>
+          </div>
+
+          <!-- 顶层组合逻辑切换 -->
+          <div class="logic-switch-wrapper">
+            <span class="logic-label">规则间逻辑：</span>
+            <el-radio-group v-model="localAdvanced.logic" size="small" @change="debouncedPreview">
+              <el-radio-button label="AND">全部满足 (AND)</el-radio-button>
+              <el-radio-button label="OR">满足任一 (OR)</el-radio-button>
+            </el-radio-group>
+          </div>
+        </div>
+
+        <div class="section-body rule-builder-body">
+          <!-- 条件行列表 -->
+          <div class="conditions-list">
+            <div
+              v-for="(cond, index) in localAdvanced.conditions"
+              :key="index"
+              class="condition-row"
+              :class="{ 'is-disabled-row': cond.disabled }"
+            >
+              <!-- 行级启用/禁用复选框 -->
+              <el-checkbox
+                v-model="cond.disabled"
+                :true-label="false"
+                :false-label="true"
+                class="cond-active-checkbox"
+                title="勾选启用该规则，取消勾选临时停用"
+                @change="debouncedPreview"
+              />
+
+              <div class="row-index">#{{ index + 1 }}</div>
+
+              <!-- 字段选择 -->
+              <el-select
+                v-model="cond.field"
+                placeholder="字段"
+                size="default"
+                class="field-select"
+                :disabled="cond.disabled"
+                @change="onFieldChange(cond)"
+              >
+                <el-option-group label="核心报文">
+                  <el-option label="原始报文 (raw_log)" value="raw_log" />
+                  <el-option label="消息正文 (message_body)" value="message_body" />
+                  <el-option label="事件简名 (brief)" value="brief" />
+                  <el-option label="模块名 (module)" value="module" />
+                  <el-option label="主机名 (hostname)" value="hostname" />
+                  <el-option label="插槽槽位 (slot_info)" value="slot_info" />
+                </el-option-group>
+                <el-option-group label="动态参数 (KV)">
+                  <el-option label="参数提取 (parameters)" value="parameters" />
+                </el-option-group>
+                <el-option-group label="标签维度">
+                  <el-option label="标签关联 (tag)" value="tag" />
+                </el-option-group>
+                <el-option-group label="审计元数据">
+                  <el-option label="来源文件 (source_file)" value="source_file" />
+                  <el-option label="严重级别 (severity)" value="severity" />
+                  <el-option label="匹配分层 (match_tier)" value="match_tier" />
+                  <el-option label="置信度 (match_confidence)" value="match_confidence" />
+                  <el-option label="知识库ID (knowledge_id)" value="knowledge_id" />
+                </el-option-group>
+              </el-select>
+
+              <!-- 操作符选择 -->
+              <el-select
+                v-model="cond.op"
+                placeholder="操作符"
+                size="default"
+                class="op-select"
+                :disabled="cond.disabled"
+                @change="onOpChange(cond)"
+              >
+                <el-option
+                  v-for="op in getAvailableOps(cond.field)"
+                  :key="op.value"
+                  :label="op.label"
+                  :value="op.value"
+                />
+              </el-select>
+
+              <!-- 值输入区 (针对 tag 与常规字段分支) -->
+              <div class="value-input-wrapper">
+                <!-- 场景 A: 字段为 tag 且属于无值操作符 (is_empty / is_not_empty) -->
+                <el-input
+                  v-if="cond.field === 'tag' && (cond.op === 'is_empty' || cond.op === 'is_not_empty')"
+                  model-value="（无须指定值）"
+                  disabled
+                  size="default"
+                />
+
+                <!-- 场景 B: 字段为 tag 且需选择标签 (has_any / has_all / not_has) -->
+                <el-select
+                  v-else-if="cond.field === 'tag'"
+                  :model-value="getTagSelectedIDs(cond)"
+                  multiple
+                  collapse-tags
+                  collapse-tags-tooltip
+                  placeholder="选择关联标签..."
+                  size="default"
+                  :disabled="cond.disabled"
+                  class="tag-value-select"
+                  @update:model-value="(val) => setTagSelectedIDs(cond, val)"
+                >
+                  <el-option
+                    v-for="t in tagStore.tags"
+                    :key="t.id"
+                    :label="`${t.name} (${t.log_count || 0})`"
+                    :value="t.id"
+                  >
+                    <div class="tag-option-item">
+                      <span>{{ t.name }} ({{ t.log_count || 0 }})</span>
+                      <span
+                        class="tag-dot-indicator"
+                        :style="{ backgroundColor: t.color || DEFAULT_TAG_COLOR }"
+                      />
+                    </div>
+                  </el-option>
+                </el-select>
+
+                <!-- 场景 C: 常规文本/参数/正则输入框 -->
+                <template v-else>
+                  <el-input
+                    v-model="cond.value"
+                    :placeholder="getValuePlaceholder(cond)"
+                    clearable
+                    size="default"
+                    :disabled="cond.disabled"
+                    @input="onValueInput(cond)"
+                  />
+                  <!-- 正则语法检验提示 -->
+                  <div v-if="getRegexError(cond)" class="regex-error-tip">
+                    {{ getRegexError(cond) }}
+                  </div>
+                </template>
+              </div>
+
+              <!-- 删除单行按钮 -->
+              <el-button
+                type="danger"
+                link
+                class="delete-btn"
+                title="删除此规则"
+                @click="removeCondition(index)"
+              >
+                <el-icon><Delete /></el-icon>
+              </el-button>
+            </div>
+
+            <!-- 空条件引导 -->
+            <div v-if="localAdvanced.conditions.length === 0" class="empty-conditions">
+              <p class="empty-tip">暂无高级条件，点击下方按钮添加规则</p>
+            </div>
+          </div>
+
+          <!-- 添加条件按钮 -->
+          <div class="add-bar">
+            <el-button
+              type="primary"
+              plain
+              size="small"
+              :disabled="localAdvanced.conditions.length >= 15"
+              @click="addCondition"
+            >
+              + 添加筛选条件 ({{ localAdvanced.conditions.length }}/15)
+            </el-button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4. 实时匹配预览 -->
       <div class="preview-box">
         <div class="preview-info">
-          <span><el-icon><Aim /></el-icon> 当前条件匹配预览：</span>
+          <el-icon class="preview-icon"><Aim /></el-icon>
+          <span class="preview-title">当前全量复合条件匹配预览：</span>
           <span v-if="previewLoading" class="preview-loading">计算中...</span>
           <span v-else class="preview-count">
             <strong>{{ previewTotal }}</strong> 条日志
           </span>
         </div>
         <div class="preview-hint">
-          * 预览结果已实时叠加左栏的设备、时间、级别等基础过滤条件
+          * 预览结果已实时叠加基础检索维度、标签多模态约束与高级启用的规则条件
         </div>
       </div>
     </div>
@@ -153,27 +448,34 @@
     <!-- 底部操作条 -->
     <template #footer>
       <div class="drawer-footer">
-        <el-button @click="clearAdvanced">清空并重置</el-button>
-        <el-button
-          type="warning"
-          :disabled="previewTotal <= 0"
-          @click="openBatchTagDialog"
-        >
-          <el-icon><PriceTag /></el-icon>
-          <span>批量打标…</span>
-        </el-button>
-        <el-button
-          type="danger"
-          plain
-          :disabled="previewTotal <= 0"
-          @click="openBatchUntagDialog"
-        >
-          <el-icon><PriceTag /></el-icon>
-          <span>批量摘标…</span>
-        </el-button>
-        <el-button type="primary" @click="applyFilters">
-          应用筛选并查看
-        </el-button>
+        <div class="footer-left-actions">
+          <el-button @click="resetToDefaults">清空全部条件</el-button>
+          <el-button @click="clearAdvancedOnly">仅清空高级条件</el-button>
+        </div>
+
+        <div class="footer-right-actions">
+          <el-button
+            type="warning"
+            plain
+            :disabled="previewTotal <= 0"
+            @click="openBatchTagDialog"
+          >
+            <el-icon><PriceTag /></el-icon>
+            <span>批量打标…</span>
+          </el-button>
+          <el-button
+            type="danger"
+            plain
+            :disabled="previewTotal <= 0"
+            @click="openBatchUntagDialog"
+          >
+            <el-icon><PriceTag /></el-icon>
+            <span>批量摘标…</span>
+          </el-button>
+          <el-button type="primary" @click="applyFilters">
+            应用筛选并查看
+          </el-button>
+        </div>
       </div>
     </template>
 
@@ -194,7 +496,7 @@
           v-if="previewTotal > 50000"
           type="warning"
           :closable="false"
-          style="margin-bottom: 12px"
+          class="batch-alert"
         >
           命中数量较大 ({{ previewTotal }} 条)，批量打标预计耗时数秒，请谨慎操作。
         </el-alert>
@@ -267,7 +569,7 @@
           v-if="previewTotal > 50000"
           type="warning"
           :closable="false"
-          style="margin-bottom: 12px"
+          class="batch-alert"
         >
           命中数量较大 ({{ previewTotal }} 条)，批量摘标预计耗时数秒，请谨慎操作。
         </el-alert>
@@ -310,7 +612,7 @@
       </template>
     </el-dialog>
 
-    <!-- 批量打标与摘标异步处理进度弹窗 -->
+    <!-- 批量处理异步进度弹窗 -->
     <ImportProgressModal
       v-model="showProgressModal"
       :job-id="progressJobId"
@@ -322,54 +624,218 @@
 
 <script setup>
 import { ref, reactive, computed, onUnmounted } from 'vue'
-import { Delete, PriceTag, Aim } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import {
+  Delete,
+  PriceTag,
+  Aim,
+  Opportunity,
+  Search,
+  ArrowDown,
+  ArrowUp
+} from '@element-plus/icons-vue'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
 import useFilterStore from '@/stores/filter'
 import useTagStore from '@/stores/tag'
+import useTaskStore from '@/stores/task'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const props = defineProps({
   taskId: {
     type: String,
-    required: true
+    default: ''
+  },
+  taskDevices: {
+    type: Array,
+    default: () => []
   }
 })
 
-const emit = defineEmits(['apply'])
+const emit = defineEmits(['apply', 'reset'])
 
 const filterStore = useFilterStore()
 const tagStore = useTagStore()
+const taskStore = useTaskStore()
 
 const visible = ref(false)
 const previewLoading = ref(false)
 const previewTotal = ref(0)
+const isBaseSectionCollapsed = ref(false)
 
+// 有效任务 ID 计算 (优先 props，兜底 store)
+const effectiveTaskId = computed(() => props.taskId || taskStore.currentTaskId || '')
+
+// 基础检索草稿状态
+const draftBase = reactive({
+  keyword: '',
+  timeStart: null,
+  timeEnd: null,
+  deviceId: null,
+  severity: null,
+  matched: null,
+  sortBy: 'time',
+  order: 'asc',
+  tagIds: [],
+  tagLogic: 'any',
+  excludeTagIds: [],
+  untaggedOnly: false
+})
+
+// 高级规则草稿状态
 const localAdvanced = reactive({
   logic: 'AND',
   conditions: []
 })
 
+// 快照用于脏检查 (isDirty)
+let snapshotJson = ''
+
+const currentSortOption = computed({
+  get() {
+    const { sortBy, order } = draftBase
+    if (sortBy === 'time' && order === 'asc') return 'time_asc'
+    if (sortBy === 'time' && order === 'desc') return 'time_desc'
+    if (sortBy === 'id' && order === 'asc') return 'id_asc'
+    return 'time_asc'
+  },
+  set(val) {
+    if (val === 'time_asc') {
+      draftBase.sortBy = 'time'
+      draftBase.order = 'asc'
+    } else if (val === 'time_desc') {
+      draftBase.sortBy = 'time'
+      draftBase.order = 'desc'
+    } else if (val === 'id_asc') {
+      draftBase.sortBy = 'id'
+      draftBase.order = 'asc'
+    }
+  }
+})
+
+// 活跃基础筛选数量计算
+const activeBaseCount = computed(() => {
+  let count = 0
+  if (draftBase.keyword) count++
+  if (draftBase.timeStart || draftBase.timeEnd) count++
+  if (draftBase.deviceId) count++
+  if (draftBase.severity !== null && draftBase.severity !== undefined) count++
+  if (draftBase.matched !== null && draftBase.matched !== undefined) count++
+  if (draftBase.untaggedOnly) {
+    count++
+  } else {
+    if (draftBase.tagIds.length > 0) count++
+    if (draftBase.excludeTagIds.length > 0) count++
+  }
+  return count
+})
+
 // 打开 Drawer
 const open = () => {
-  const current = filterStore.filters.advanced || { logic: 'AND', conditions: [] }
-  localAdvanced.logic = current.logic || 'AND'
-  localAdvanced.conditions = JSON.parse(JSON.stringify(current.conditions || []))
+  const f = filterStore.filters
+
+  // 1. 同步基础检索条件到草稿
+  draftBase.keyword = f.keyword || ''
+  draftBase.timeStart = f.timeStart || null
+  draftBase.timeEnd = f.timeEnd || null
+  draftBase.deviceId = f.deviceId || null
+  draftBase.severity = f.severity ?? null
+  draftBase.matched = f.matched ?? null
+  draftBase.sortBy = f.sortBy || 'time'
+  draftBase.order = f.order || 'asc'
+  draftBase.tagIds = Array.isArray(f.tagIds) ? [...f.tagIds] : []
+  draftBase.tagLogic = f.tagLogic || 'any'
+  draftBase.excludeTagIds = Array.isArray(f.excludeTagIds) ? [...f.excludeTagIds] : []
+  draftBase.untaggedOnly = !!f.untaggedOnly
+
+  // 2. 同步高级条件到草稿
+  const currentAdv = f.advanced || { logic: 'AND', conditions: [] }
+  localAdvanced.logic = currentAdv.logic || 'AND'
+  localAdvanced.conditions = JSON.parse(JSON.stringify(currentAdv.conditions || []))
   if (localAdvanced.conditions.length === 0) {
     addCondition()
   }
+
+  // 3. 记录打开快照
+  snapshotJson = serializeCurrentDraft()
+
   visible.value = true
-  tagStore.fetchTags(props.taskId)
+  if (effectiveTaskId.value) {
+    tagStore.fetchTags(effectiveTaskId.value)
+  }
   fetchPreviewCount()
+}
+
+const serializeCurrentDraft = () => {
+  return JSON.stringify({
+    base: draftBase,
+    adv: localAdvanced
+  })
+}
+
+// 检查是否有未保存的变更
+const isDirty = computed(() => {
+  if (!visible.value) return false
+  return serializeCurrentDraft() !== snapshotJson
+})
+
+// 抽屉退出拦截
+const handleBeforeClose = (done) => {
+  if (isDirty.value) {
+    ElMessageBox.confirm('当前筛选条件已修改但未应用，确定退出并放弃修改吗？', '放弃修改提示', {
+      confirmButtonText: '放弃修改',
+      cancelButtonText: '继续编辑',
+      type: 'warning'
+    })
+      .then(() => {
+        done()
+      })
+      .catch(() => {})
+  } else {
+    done()
+  }
 }
 
 defineExpose({ open, visible })
 
-// 添加条件
+// 快捷时间设置
+const applyQuickTime = (type) => {
+  if (type === 'all') {
+    draftBase.timeStart = null
+    draftBase.timeEnd = null
+  } else if (type === '1h') {
+    const end = new Date()
+    const start = new Date(end.getTime() - 60 * 60 * 1000)
+    draftBase.timeEnd = end.toISOString()
+    draftBase.timeStart = start.toISOString()
+  } else if (type === '24h') {
+    const end = new Date()
+    const start = new Date(end.getTime() - 24 * 60 * 60 * 1000)
+    draftBase.timeEnd = end.toISOString()
+    draftBase.timeStart = start.toISOString()
+  }
+  debouncedPreview()
+}
+
+// 标签与未打标互斥
+const handleUntaggedChange = (val) => {
+  if (val) {
+    draftBase.tagIds = []
+    draftBase.excludeTagIds = []
+  }
+  debouncedPreview()
+}
+
+const setTagLogic = (logic) => {
+  draftBase.tagLogic = logic
+  debouncedPreview()
+}
+
+// 添加条件 (上限 15 条)
 const addCondition = () => {
-  if (localAdvanced.conditions.length >= 10) return
+  if (localAdvanced.conditions.length >= 15) return
   localAdvanced.conditions.push({
+    disabled: false,
     field: 'raw_log',
     op: 'contains',
     value: ''
@@ -383,7 +849,7 @@ const removeCondition = (index) => {
   debouncedPreview()
 }
 
-// 字段与操作符联动配置（与后端白名单 100% 对齐）
+// 字段与操作符白名单联动配置
 const operatorMap = {
   raw_log: [
     { label: '包含', value: 'contains' },
@@ -455,6 +921,13 @@ const operatorMap = {
     { label: 'KV 正则 (如 PeerIP=^10\\.)', value: 'kv_regex' },
     { label: 'KV 正则不匹配', value: 'kv_not_regex' }
   ],
+  tag: [
+    { label: '包含任一 (has_any)', value: 'has_any' },
+    { label: '同时具备 (has_all)', value: 'has_all' },
+    { label: '排除包含 (not_has)', value: 'not_has' },
+    { label: '未打标 (is_empty)', value: 'is_empty' },
+    { label: '已有标签 (is_not_empty)', value: 'is_not_empty' }
+  ],
   severity: [
     { label: '级别 <=', value: 'lte' },
     { label: '级别 >=', value: 'gte' },
@@ -493,6 +966,28 @@ const onFieldChange = (cond) => {
   if (ops.length > 0) {
     cond.op = ops[0].value
   }
+  cond.value = ''
+  debouncedPreview()
+}
+
+const onOpChange = (cond) => {
+  if (cond.field === 'tag' && (cond.op === 'is_empty' || cond.op === 'is_not_empty')) {
+    cond.value = ''
+  }
+  debouncedPreview()
+}
+
+// 标签字段与 ID 列表序列化双向转换
+const getTagSelectedIDs = (cond) => {
+  if (!cond.value) return []
+  return cond.value
+    .split(',')
+    .map(s => parseInt(s.trim(), 10))
+    .filter(n => !isNaN(n) && n > 0)
+}
+
+const setTagSelectedIDs = (cond, ids) => {
+  cond.value = Array.isArray(ids) ? ids.join(',') : ''
   debouncedPreview()
 }
 
@@ -534,29 +1029,14 @@ const getRegexError = (cond) => {
   return ''
 }
 
-const onValueInput = (cond) => {
+const onValueInput = () => {
   debouncedPreview()
 }
 
-// 基础筛选概要
-const baseFilterSummary = computed(() => {
-  const f = filterStore.filters
-  const list = []
-  if (f.keyword) list.push({ label: '关键字', value: f.keyword })
-  if (f.severity !== null && f.severity !== undefined) list.push({ label: '严重级别 ≤', value: f.severity })
-  if (f.deviceId) list.push({ label: '设备ID', value: f.deviceId })
-  if (f.module) list.push({ label: '模块', value: f.module })
-  if (f.timeStart || f.timeEnd) {
-    list.push({ label: '时间范围', value: `${f.timeStart || '始'} ~ ${f.timeEnd || '末'}` })
-  }
-  if (Array.isArray(f.tagIds) && f.tagIds.length > 0) {
-    list.push({ label: '标签数', value: `${f.tagIds.length} 个` })
-  }
-  return list
-})
-
-// 防抖实时预览
+// 防抖实时预览与取消控制
 let timer = null
+let previewAbortController = null
+
 const debouncedPreview = () => {
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => {
@@ -569,52 +1049,135 @@ onUnmounted(() => {
     clearTimeout(timer)
     timer = null
   }
+  if (previewAbortController) {
+    previewAbortController.abort()
+  }
 })
 
 const fetchPreviewCount = async () => {
-  if (!props.taskId) return
+  if (!effectiveTaskId.value) return
+  if (previewAbortController) {
+    previewAbortController.abort()
+  }
+  previewAbortController = new AbortController()
+
   previewLoading.value = true
   try {
+    // 过滤未禁用且有效的条件
     const validConds = localAdvanced.conditions.filter(
-      c => c.field && c.op && c.value !== undefined && c.value !== '' && !getRegexError(c)
+      c => !c.disabled && c.field && c.op && (
+        (c.field === 'tag' && (c.op === 'is_empty' || c.op === 'is_not_empty')) ||
+        (c.value !== undefined && c.value !== '' && !getRegexError(c))
+      )
     )
-    const baseBody = filterStore.toLogQueryBody(1, 1)
-    baseBody.advanced = {
-      logic: localAdvanced.logic || 'AND',
-      conditions: validConds
+
+    // 组装全量草稿请求体
+    const queryBody = {
+      page: 1,
+      page_size: 1,
+      sort_by: draftBase.sortBy,
+      order: draftBase.order
+    }
+    if (draftBase.keyword) queryBody.keyword = draftBase.keyword
+    if (draftBase.severity !== null && draftBase.severity !== undefined) queryBody.severity = draftBase.severity
+    if (draftBase.matched !== null && draftBase.matched !== undefined) queryBody.matched = !!draftBase.matched
+    if (draftBase.deviceId) queryBody.device_id = draftBase.deviceId
+    if (draftBase.timeStart) queryBody.time_start = draftBase.timeStart
+    if (draftBase.timeEnd) queryBody.time_end = draftBase.timeEnd
+
+    if (draftBase.untaggedOnly) {
+      queryBody.untagged_only = true
+    } else {
+      if (draftBase.tagIds.length > 0) {
+        queryBody.tag_ids = draftBase.tagIds
+        queryBody.tag_logic = draftBase.tagLogic
+      }
+      if (draftBase.excludeTagIds.length > 0) {
+        queryBody.exclude_tag_ids = draftBase.excludeTagIds
+      }
     }
 
-    const res = await api.queryTaskLogsUnified(props.taskId, baseBody)
+    if (validConds.length > 0) {
+      queryBody.advanced = {
+        logic: localAdvanced.logic || 'AND',
+        conditions: validConds
+      }
+    }
+
+    const res = await api.queryTaskLogsUnified(effectiveTaskId.value, queryBody, {
+      signal: previewAbortController.signal
+    })
     if (res.code === 0) {
       previewTotal.value = res.data.total || 0
     }
   } catch (e) {
-    console.error('Fetch preview count failed:', e)
+    if (e.name !== 'CanceledError' && e.name !== 'AbortError') {
+      console.error('Fetch preview count failed:', e)
+    }
   } finally {
     previewLoading.value = false
   }
 }
 
-// 清空高级筛选（立即同步清空并刷新列表，保证状态与视图一致）
-const clearAdvanced = () => {
+// 仅清空高级筛选
+const clearAdvancedOnly = () => {
   localAdvanced.conditions = []
-  filterStore.filters.advanced = { logic: 'AND', conditions: [] }
-  filterStore.resetPagination()
   debouncedPreview()
-  emit('apply')
-  ElMessage.info('已清空高级筛选条件')
+  ElMessage.info('已清空高级规则条件')
 }
 
-// 应用筛选
+// 清空全部条件 (基础 + 高级)
+const resetToDefaults = () => {
+  draftBase.keyword = ''
+  draftBase.timeStart = null
+  draftBase.timeEnd = null
+  draftBase.deviceId = null
+  draftBase.severity = null
+  draftBase.matched = null
+  draftBase.sortBy = 'time'
+  draftBase.order = 'asc'
+  draftBase.tagIds = []
+  draftBase.tagLogic = 'any'
+  draftBase.excludeTagIds = []
+  draftBase.untaggedOnly = false
+  localAdvanced.conditions = []
+  debouncedPreview()
+  ElMessage.info('已重置所有筛选草稿')
+}
+
+// 应用筛选 (原子化写入 store)
 const applyFilters = () => {
+  const f = filterStore.filters
+
+  // 1. 同步基础条件
+  f.keyword = draftBase.keyword
+  f.timeStart = draftBase.timeStart
+  f.timeEnd = draftBase.timeEnd
+  f.deviceId = draftBase.deviceId
+  f.severity = draftBase.severity
+  f.matched = draftBase.matched
+  f.sortBy = draftBase.sortBy
+  f.order = draftBase.order
+  f.tagIds = [...draftBase.tagIds]
+  f.tagLogic = draftBase.tagLogic
+  f.excludeTagIds = [...draftBase.excludeTagIds]
+  f.untaggedOnly = draftBase.untaggedOnly
+
+  // 2. 同步高级条件
   const validConds = localAdvanced.conditions.filter(
-    c => c.field && c.op && c.value !== undefined && c.value !== '' && !getRegexError(c)
+    c => c.field && c.op && (
+      (c.field === 'tag' && (c.op === 'is_empty' || c.op === 'is_not_empty')) ||
+      (c.value !== undefined && c.value !== '' && !getRegexError(c))
+    )
   )
-  filterStore.filters.advanced = {
+
+  f.advanced = {
     logic: localAdvanced.logic || 'AND',
     conditions: validConds
   }
+
   filterStore.resetPagination()
+  snapshotJson = serializeCurrentDraft()
   visible.value = false
   emit('apply')
 }
@@ -627,11 +1190,13 @@ const pendingTagId = ref(null)
 const handleBatchCompleted = async () => {
   showProgressModal.value = false
   ElMessage.success('批量标签处理完成')
-  if (pendingTagId.value && !filterStore.filters.tagIds.includes(pendingTagId.value)) {
-    filterStore.filters.tagIds.push(pendingTagId.value)
+  if (pendingTagId.value && !draftBase.tagIds.includes(pendingTagId.value)) {
+    draftBase.tagIds.push(pendingTagId.value)
   }
   pendingTagId.value = null
-  await tagStore.fetchTags(props.taskId)
+  if (effectiveTaskId.value) {
+    await tagStore.fetchTags(effectiveTaskId.value)
+  }
   applyFilters()
 }
 
@@ -656,9 +1221,8 @@ const confirmBatchTag = async () => {
   let targetTagId = selectedTagId.value
   taggingLoading.value = true
   try {
-    // 若输入了新标签名，优先创建新标签
     if (newTagName.value.trim()) {
-      const created = await tagStore.createTag(props.taskId, {
+      const created = await tagStore.createTag(effectiveTaskId.value, {
         name: newTagName.value.trim(),
         color: newTagColor.value
       })
@@ -672,15 +1236,32 @@ const confirmBatchTag = async () => {
     }
 
     const validConds = localAdvanced.conditions.filter(
-      c => c.field && c.op && c.value !== undefined && c.value !== '' && !getRegexError(c)
+      c => !c.disabled && c.field && c.op && (
+        (c.field === 'tag' && (c.op === 'is_empty' || c.op === 'is_not_empty')) ||
+        (c.value !== undefined && c.value !== '' && !getRegexError(c))
+      )
     )
-    const baseBody = filterStore.toLogQueryBody(1, 50)
-    baseBody.advanced = {
-      logic: localAdvanced.logic || 'AND',
-      conditions: validConds
+
+    const baseBody = {
+      page: 1,
+      page_size: 50,
+      keyword: draftBase.keyword || undefined,
+      severity: draftBase.severity ?? undefined,
+      matched: draftBase.matched ?? undefined,
+      device_id: draftBase.deviceId || undefined,
+      time_start: draftBase.timeStart || undefined,
+      time_end: draftBase.timeEnd || undefined,
+      tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.tagIds.length > 0 ? draftBase.tagIds : undefined),
+      tag_logic: draftBase.tagLogic,
+      exclude_tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.excludeTagIds.length > 0 ? draftBase.excludeTagIds : undefined),
+      untagged_only: draftBase.untaggedOnly || undefined,
+      advanced: validConds.length > 0 ? {
+        logic: localAdvanced.logic || 'AND',
+        conditions: validConds
+      } : undefined
     }
 
-    const res = await api.batchTagLogs(props.taskId, targetTagId, baseBody)
+    const res = await api.batchTagLogs(effectiveTaskId.value, targetTagId, baseBody)
     if (res.code === 0) {
       if (res.data?.job_id) {
         batchTagDialogVisible.value = false
@@ -690,11 +1271,10 @@ const confirmBatchTag = async () => {
       } else {
         ElMessage.success(`成功为 ${res.data.tagged_count} 条日志添加标签`)
         batchTagDialogVisible.value = false
-        // 自动把该标签加入当前筛选勾选，形成闭环
-        if (!filterStore.filters.tagIds.includes(targetTagId)) {
-          filterStore.filters.tagIds.push(targetTagId)
+        if (!draftBase.tagIds.includes(targetTagId)) {
+          draftBase.tagIds.push(targetTagId)
         }
-        await tagStore.fetchTags(props.taskId)
+        await tagStore.fetchTags(effectiveTaskId.value)
         applyFilters()
       }
     }
@@ -727,15 +1307,32 @@ const confirmBatchUntag = async () => {
   untaggingLoading.value = true
   try {
     const validConds = localAdvanced.conditions.filter(
-      c => c.field && c.op && c.value !== undefined && c.value !== '' && !getRegexError(c)
+      c => !c.disabled && c.field && c.op && (
+        (c.field === 'tag' && (c.op === 'is_empty' || c.op === 'is_not_empty')) ||
+        (c.value !== undefined && c.value !== '' && !getRegexError(c))
+      )
     )
-    const baseBody = filterStore.toLogQueryBody(1, 50)
-    baseBody.advanced = {
-      logic: localAdvanced.logic || 'AND',
-      conditions: validConds
+
+    const baseBody = {
+      page: 1,
+      page_size: 50,
+      keyword: draftBase.keyword || undefined,
+      severity: draftBase.severity ?? undefined,
+      matched: draftBase.matched ?? undefined,
+      device_id: draftBase.deviceId || undefined,
+      time_start: draftBase.timeStart || undefined,
+      time_end: draftBase.timeEnd || undefined,
+      tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.tagIds.length > 0 ? draftBase.tagIds : undefined),
+      tag_logic: draftBase.tagLogic,
+      exclude_tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.excludeTagIds.length > 0 ? draftBase.excludeTagIds : undefined),
+      untagged_only: draftBase.untaggedOnly || undefined,
+      advanced: validConds.length > 0 ? {
+        logic: localAdvanced.logic || 'AND',
+        conditions: validConds
+      } : undefined
     }
 
-    const res = await api.batchUntagLogs(props.taskId, selectedUntagId.value, baseBody)
+    const res = await api.batchUntagLogs(effectiveTaskId.value, selectedUntagId.value, baseBody)
     if (res.code === 0) {
       if (res.data?.job_id) {
         batchUntagDialogVisible.value = false
@@ -745,7 +1342,7 @@ const confirmBatchUntag = async () => {
       } else {
         ElMessage.success(`成功从 ${res.data.untagged_count} 条日志中移除标签`)
         batchUntagDialogVisible.value = false
-        await tagStore.fetchTags(props.taskId)
+        await tagStore.fetchTags(effectiveTaskId.value)
         applyFilters()
       }
     }
@@ -762,145 +1359,338 @@ const confirmBatchUntag = async () => {
   display: flex;
   flex-direction: column;
   gap: 16px;
+  padding-bottom: 8px;
 }
-.base-filter-alert {
-  margin-bottom: 4px;
+
+/* 分区通用卡片设计 (符合前端样式规范) */
+.filter-section-card {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-base, var(--gray-200));
+  border-radius: var(--radius-lg, 8px);
+  overflow: hidden;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-.alert-title {
-  font-size: var(--fs-md);
-  font-weight: 600;
+
+.filter-section-card:hover {
+  border-color: var(--brand-300, #7dd3fc);
 }
-.base-tags {
-  margin-top: 6px;
+
+.section-header {
   display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  background: var(--bg-subtle, var(--gray-50));
+  border-bottom: 1px solid var(--border-base, var(--gray-200));
+  cursor: pointer;
+  user-select: none;
 }
-.base-tag-item {
-  font-size: var(--fs-sm);
+
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--fs-md, 14px);
+  font-weight: 600;
+  color: var(--text-primary, var(--gray-900));
 }
-.logic-bar {
+
+.section-icon {
+  font-size: 16px;
+  color: var(--brand-600, #0284c7);
+}
+
+.section-badge {
+  font-size: var(--fs-xs, 11px);
+}
+
+.section-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 基础检索矩阵样式 */
+.matrix-row {
   display: flex;
   align-items: center;
   gap: 12px;
-  background: var(--el-fill-color-light, var(--bg-subtle));
-  padding: 8px 12px;
-  border-radius: var(--radius-md);
 }
+
+.base-keyword-input {
+  width: 100%;
+}
+
+.time-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.time-picker-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+}
+
+.matrix-time-picker {
+  flex: 1;
+}
+
+.time-sep {
+  color: var(--text-secondary, var(--gray-500));
+  font-weight: 600;
+}
+
+.quick-time-pills {
+  display: flex;
+  gap: 6px;
+}
+
+.matrix-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.grid-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grid-label {
+  font-size: var(--fs-sm, 12px);
+  color: var(--text-secondary, var(--gray-500));
+  white-space: nowrap;
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.grid-control {
+  flex: 1;
+}
+
+/* 标签面板样式 */
+.tag-control-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.tag-control-label {
+  font-size: var(--fs-sm, 12px);
+  color: var(--text-secondary, var(--gray-500));
+  width: 70px;
+  flex-shrink: 0;
+}
+
+.tag-select-box {
+  flex: 1;
+}
+
+.tag-logic-toggle {
+  flex-shrink: 0;
+}
+
+.exclude-label {
+  color: var(--danger-text, #991b1b);
+}
+
+.danger-text {
+  color: var(--danger-text, #991b1b);
+}
+
+.is-disabled-body {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* 高级规则构造器样式 */
+.rule-limit-hint {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, var(--gray-500));
+  font-weight: normal;
+}
+
+.logic-switch-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .logic-label {
-  font-size: var(--fs-md);
-  font-weight: 500;
-  color: var(--el-text-color-regular, var(--gray-600));
+  font-size: var(--fs-sm, 12px);
+  color: var(--text-secondary, var(--gray-500));
 }
+
 .conditions-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
+
 .condition-row {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: var(--gray-0);
-  border: 1px solid var(--el-border-color-lighter, var(--border-light));
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-light, var(--gray-100));
   padding: 8px 10px;
-  border-radius: var(--radius-md);
-  transition: border-color 0.2s;
+  border-radius: var(--radius-md, 6px);
+  transition: all 0.2s;
 }
+
 .condition-row:hover {
-  border-color: var(--el-color-primary-light-5, var(--brand-300));
+  border-color: var(--brand-300, #7dd3fc);
 }
+
+.is-disabled-row {
+  opacity: 0.45;
+  background: var(--bg-subtle, var(--gray-50));
+}
+
+.cond-active-checkbox {
+  margin-top: 5px;
+  margin-right: 2px;
+}
+
 .row-index {
-  font-size: var(--fs-sm);
+  font-size: var(--fs-sm, 12px);
   font-weight: 600;
-  color: var(--gray-500);
+  color: var(--text-secondary, var(--gray-500));
   line-height: 32px;
-  width: 20px;
+  width: 24px;
+  flex-shrink: 0;
 }
+
 .field-select {
   width: 175px;
   flex-shrink: 0;
 }
+
 .op-select {
-  width: 140px;
+  width: 145px;
   flex-shrink: 0;
 }
+
 .value-input-wrapper {
   flex: 1;
   display: flex;
   flex-direction: column;
 }
+
+.tag-value-select {
+  width: 100%;
+}
+
 .regex-error-tip {
-  font-size: var(--fs-xs);
-  color: var(--danger-strong);
+  font-size: var(--fs-xs, 11px);
+  color: var(--danger-strong, #dc2626);
   margin-top: 3px;
   line-height: 1.2;
 }
+
 .delete-btn {
   line-height: 32px;
   padding: 0 4px;
 }
+
 .empty-conditions {
   text-align: center;
   padding: 24px 0;
-  color: var(--gray-500);
-  font-size: var(--fs-md);
-  border: 1px dashed var(--el-border-color, var(--gray-300));
-  border-radius: var(--radius-md);
+  color: var(--text-secondary, var(--gray-500));
+  font-size: var(--fs-md, 14px);
+  border: 1px dashed var(--border-base, var(--gray-300));
+  border-radius: var(--radius-md, 6px);
 }
+
 .add-bar {
   display: flex;
   justify-content: flex-start;
-}
-.preview-box {
-  background: var(--warning-bg);
-  border: 1px solid var(--warning-bg);
-  padding: 12px 16px;
-  border-radius: var(--radius-md);
-  margin-top: 8px;
-}
-.preview-info {
-  font-size: var(--fs-lg);
-  color: var(--warning-strong);
-  display: flex;
-  align-items: center;
-}
-.preview-count {
-  font-size: var(--fs-xl);
-  color: var(--danger-strong);
-  margin-left: 4px;
-}
-.preview-loading {
-  font-size: var(--fs-md);
-  color: var(--gray-500);
-  margin-left: 6px;
-}
-.preview-hint {
-  font-size: var(--fs-sm);
-  color: var(--gray-500);
   margin-top: 4px;
 }
+
+/* 实时预览盒 */
+.preview-box {
+  background: var(--warning-bg, #fffbeb);
+  border: 1px solid var(--warning-bg, #fffbeb);
+  padding: 12px 16px;
+  border-radius: var(--radius-md, 6px);
+}
+
+.preview-info {
+  font-size: var(--fs-md, 14px);
+  color: var(--warning-text, #92400e);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-icon {
+  font-size: 16px;
+  color: var(--warning-strong, #d97706);
+}
+
+.preview-title {
+  font-weight: 600;
+}
+
+.preview-count {
+  font-size: var(--fs-xl, 18px);
+  color: var(--danger-strong, #dc2626);
+  margin-left: 2px;
+}
+
+.preview-loading {
+  font-size: var(--fs-sm, 12px);
+  color: var(--text-secondary, var(--gray-500));
+}
+
+.preview-hint {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, var(--gray-500));
+  margin-top: 4px;
+}
+
+/* 底部操作区 */
 .drawer-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
   width: 100%;
 }
+
+.footer-left-actions,
+.footer-right-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .batch-tag-tip {
-  font-size: var(--fs-md);
-  color: var(--gray-600);
+  font-size: var(--fs-md, 14px);
+  color: var(--text-regular, var(--gray-700));
   margin-bottom: 12px;
 }
+
+.batch-alert {
+  margin-bottom: 12px;
+}
+
 .tag-option-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
   width: 100%;
 }
+
 .tag-dot-indicator {
   display: inline-block;
-  width: 12px;
-  height: 12px;
+  width: 10px;
+  height: 10px;
   border-radius: 50%;
   flex-shrink: 0;
 }

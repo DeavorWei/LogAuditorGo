@@ -534,3 +534,228 @@ func TestModuleFilterCaseInsensitivity(t *testing.T) {
 		})
 	}
 }
+
+// 验证 UntaggedOnly、ExcludeTagIDs 及其互斥校验
+func TestAdvancedFilterUntaggedAndExclude(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(svc.taskDir, taskID)
+	if err != nil {
+		t.Fatalf("get task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	tag1 := model.LogTag{Name: "TagA", Color: "#409EFF"}
+	tag2 := model.LogTag{Name: "TagB", Color: "#67C23A"}
+	taskDB.Create(&tag1)
+	taskDB.Create(&tag2)
+
+	// Log 1 打 TagA
+	taskDB.Create(&model.LogTagRelation{TagID: tag1.ID, LogID: 1})
+	// Log 2 打 TagB
+	taskDB.Create(&model.LogTagRelation{TagID: tag2.ID, LogID: 2})
+	// Log 3, 4 未打标 (共 4 条记录)
+
+	// 1. 测试 UntaggedOnly
+	reqUntagged := model.LogQueryRequestBody{
+		PageSize:     10,
+		UntaggedOnly: true,
+	}
+	records, total, err := svc.QueryTaskLogsUnified(taskID, reqUntagged)
+	if err != nil {
+		t.Fatalf("query untagged failed: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected 2 untagged records, got %d", total)
+	}
+	for _, r := range records {
+		if r.ID != 3 && r.ID != 4 {
+			t.Fatalf("unexpected record id %d for untagged query", r.ID)
+		}
+	}
+
+	// 2. 测试 UntaggedOnly 与 TagIDs 互斥报错
+	reqConflict := model.LogQueryRequestBody{
+		UntaggedOnly: true,
+		TagIDs:       []uint{tag1.ID},
+	}
+	_, _, err = svc.QueryTaskLogsUnified(taskID, reqConflict)
+	if err == nil {
+		t.Fatalf("expected error for conflicting untagged_only and tag_ids, got nil")
+	}
+
+	// 3. 测试 ExcludeTagIDs
+	reqExclude := model.LogQueryRequestBody{
+		PageSize:      10,
+		ExcludeTagIDs: []uint{tag1.ID},
+	}
+	_, totalExclude, err := svc.QueryTaskLogsUnified(taskID, reqExclude)
+	if err != nil {
+		t.Fatalf("query exclude failed: %v", err)
+	}
+	if totalExclude != 3 {
+		t.Fatalf("expected 3 records excluding tag1, got %d", totalExclude)
+	}
+}
+
+// 验证高级条件中的 tag 字段操作符 (has_any, has_all, not_has, is_empty, is_not_empty)
+func TestAdvancedFilterTagConditions(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(svc.taskDir, taskID)
+	if err != nil {
+		t.Fatalf("get task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	tagA := model.LogTag{Name: "TagA", Color: "#409EFF"}
+	tagB := model.LogTag{Name: "TagB", Color: "#67C23A"}
+	taskDB.Create(&tagA)
+	taskDB.Create(&tagB)
+
+	// Log 1: TagA
+	taskDB.Create(&model.LogTagRelation{TagID: tagA.ID, LogID: 1})
+	// Log 2: TagA + TagB
+	taskDB.Create(&model.LogTagRelation{TagID: tagA.ID, LogID: 2})
+	taskDB.Create(&model.LogTagRelation{TagID: tagB.ID, LogID: 2})
+	// Log 3, 4: 无标签
+
+	// 1. is_empty
+	reqEmpty := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "tag", Op: "is_empty", Value: ""},
+			},
+		},
+	}
+	_, totalEmpty, err := svc.QueryTaskLogsUnified(taskID, reqEmpty)
+	if err != nil {
+		t.Fatalf("tag is_empty query failed: %v", err)
+	}
+	if totalEmpty != 2 {
+		t.Fatalf("expected 2 empty tag records, got %d", totalEmpty)
+	}
+
+	// 2. is_not_empty
+	reqNotEmpty := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "tag", Op: "is_not_empty", Value: ""},
+			},
+		},
+	}
+	_, totalNotEmpty, err := svc.QueryTaskLogsUnified(taskID, reqNotEmpty)
+	if err != nil {
+		t.Fatalf("tag is_not_empty query failed: %v", err)
+	}
+	if totalNotEmpty != 2 {
+		t.Fatalf("expected 2 not_empty tag records, got %d", totalNotEmpty)
+	}
+
+	// 3. has_all
+	reqHasAll := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "tag", Op: "has_all", Value: fmt.Sprintf("%d,%d", tagA.ID, tagB.ID)},
+			},
+		},
+	}
+	_, totalHasAll, err := svc.QueryTaskLogsUnified(taskID, reqHasAll)
+	if err != nil {
+		t.Fatalf("tag has_all query failed: %v", err)
+	}
+	if totalHasAll != 1 {
+		t.Fatalf("expected 1 record with both tags, got %d", totalHasAll)
+	}
+
+	// 4. not_has
+	reqNotHas := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "tag", Op: "not_has", Value: fmt.Sprintf("%d", tagA.ID)},
+			},
+		},
+	}
+	_, totalNotHas, err := svc.QueryTaskLogsUnified(taskID, reqNotHas)
+	if err != nil {
+		t.Fatalf("tag not_has query failed: %v", err)
+	}
+	if totalNotHas != 2 {
+		t.Fatalf("expected 2 records not having tagA, got %d", totalNotHas)
+	}
+}
+
+// 验证条件上限提升至 15 条以及 Disabled 忽略机制
+func TestAdvancedFilterConditionLimitAndDisabled(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	// 1. 15 条条件正常通过
+	conds15 := make([]model.AdvancedCondition, 15)
+	for i := 0; i < 15; i++ {
+		conds15[i] = model.AdvancedCondition{
+			Field: "raw_log",
+			Op:    "contains",
+			Value: "SW",
+		}
+	}
+	req15 := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic:      "AND",
+			Conditions: conds15,
+		},
+	}
+	_, _, err := svc.QueryTaskLogsUnified(taskID, req15)
+	if err != nil {
+		t.Fatalf("expected 15 conditions to pass, got error: %v", err)
+	}
+
+	// 2. 超过 15 条报错
+	conds16 := append(conds15, model.AdvancedCondition{
+		Field: "raw_log",
+		Op:    "contains",
+		Value: "SW",
+	})
+	req16 := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic:      "AND",
+			Conditions: conds16,
+		},
+	}
+	_, _, err = svc.QueryTaskLogsUnified(taskID, req16)
+	if err == nil {
+		t.Fatalf("expected error for 16 conditions, got nil")
+	}
+
+	// 3. Disabled 条件被忽略
+	reqDisabled := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "module", Op: "eq", Value: "BFD"},
+				{Field: "module", Op: "eq", Value: "NON_EXIST", Disabled: true}, // 禁用后不应过滤掉结果
+			},
+		},
+	}
+	_, totalDisabled, err := svc.QueryTaskLogsUnified(taskID, reqDisabled)
+	if err != nil {
+		t.Fatalf("query with disabled condition failed: %v", err)
+	}
+	if totalDisabled != 1 {
+		t.Fatalf("expected 1 record when invalid condition is disabled, got %d", totalDisabled)
+	}
+}
+
