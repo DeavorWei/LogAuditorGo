@@ -1357,6 +1357,10 @@ func (h *TaskHandler) GetTaskFacets(c *gin.Context) {
 
 	facets, err := h.taskSvc.GetTaskFacets(taskID, field)
 	if err != nil {
+		if strings.Contains(err.Error(), "unsupported facet field") {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+			return
+		}
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
 	}

@@ -125,12 +125,13 @@ func compileSingleCondition(cond model.AdvancedCondition, idx int) (*conditionSQ
 			}, nil
 		}
 
+		if val == "" {
+			return nil, fmt.Errorf("condition #%d: tag value cannot be empty for operator '%s'", idx+1, op)
+		}
+
 		tagIDs := parsePositiveUintCSV(val)
 		if len(tagIDs) == 0 {
-			if op == "not_has" {
-				return &conditionSQL{SQL: "1 = 1"}, nil
-			}
-			return &conditionSQL{SQL: "1 = 0"}, nil
+			return nil, fmt.Errorf("condition #%d: tag value '%s' contains no valid positive tag IDs", idx+1, val)
 		}
 
 		switch op {

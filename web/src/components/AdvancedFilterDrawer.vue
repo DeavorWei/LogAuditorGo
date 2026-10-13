@@ -1966,7 +1966,7 @@ const confirmBatchUntag = async () => {
 
 .preset-icon {
   font-size: 16px;
-  color: var(--brand-600, #0284c7);
+  color: var(--brand-600);
 }
 
 .preset-label {
@@ -2011,7 +2011,7 @@ const confirmBatchUntag = async () => {
 
 /* 分区通用卡片设计 (符合前端样式规范) */
 .filter-section-card {
-  background: var(--bg-surface, #ffffff);
+  background: var(--bg-surface);
   border: 1px solid var(--border-base, var(--gray-200));
   border-radius: var(--radius-lg, 8px);
   overflow: hidden;
@@ -2019,7 +2019,7 @@ const confirmBatchUntag = async () => {
 }
 
 .filter-section-card:hover {
-  border-color: var(--brand-300, #7dd3fc);
+  border-color: var(--brand-300);
 }
 
 .section-header {
@@ -2044,7 +2044,7 @@ const confirmBatchUntag = async () => {
 
 .section-icon {
   font-size: 16px;
-  color: var(--brand-600, #0284c7);
+  color: var(--brand-600);
 }
 
 .section-badge {
@@ -2143,11 +2143,11 @@ const confirmBatchUntag = async () => {
 }
 
 .exclude-label {
-  color: var(--danger-text, #991b1b);
+  color: var(--danger-text);
 }
 
 .danger-text {
-  color: var(--danger-text, #991b1b);
+  color: var(--danger-text);
 }
 
 .is-disabled-body {
@@ -2183,7 +2183,7 @@ const confirmBatchUntag = async () => {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  background: var(--bg-surface, #ffffff);
+  background: var(--bg-surface);
   border: 1px solid var(--border-light, var(--gray-100));
   padding: 8px 10px;
   border-radius: var(--radius-md, 6px);
@@ -2191,7 +2191,7 @@ const confirmBatchUntag = async () => {
 }
 
 .condition-row:hover {
-  border-color: var(--brand-300, #7dd3fc);
+  border-color: var(--brand-300);
 }
 
 .is-disabled-row {
@@ -2235,7 +2235,7 @@ const confirmBatchUntag = async () => {
 }
 
 .invert-op-btn:hover {
-  color: var(--brand-600, #0284c7);
+  color: var(--brand-600);
 }
 
 .value-input-wrapper {
@@ -2267,7 +2267,7 @@ const confirmBatchUntag = async () => {
 
 .regex-error-tip {
   font-size: var(--fs-xs, 11px);
-  color: var(--danger-strong, #dc2626);
+  color: var(--danger-strong);
   margin-top: 3px;
   line-height: 1.2;
 }
@@ -2294,7 +2294,7 @@ const confirmBatchUntag = async () => {
 
 /* 实时预览盒与时序直方图 (Phase 3) */
 .preview-box {
-  background: var(--warning-bg, #fffbeb);
+  background: var(--warning-bg);
   border: 1px solid var(--border-base, var(--gray-200));
   padding: 12px 16px;
   border-radius: var(--radius-lg, 8px);
@@ -2313,7 +2313,7 @@ const confirmBatchUntag = async () => {
 
 .preview-info {
   font-size: var(--fs-md, 14px);
-  color: var(--warning-text, #92400e);
+  color: var(--warning-text);
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2321,7 +2321,7 @@ const confirmBatchUntag = async () => {
 
 .preview-icon {
   font-size: 16px;
-  color: var(--warning-strong, #d97706);
+  color: var(--warning-strong);
 }
 
 .preview-title {
@@ -2330,7 +2330,7 @@ const confirmBatchUntag = async () => {
 
 .preview-count {
   font-size: var(--fs-xl, 18px);
-  color: var(--danger-strong, #dc2626);
+  color: var(--danger-strong);
   margin-left: 2px;
 }
 
@@ -2350,12 +2350,12 @@ const confirmBatchUntag = async () => {
 }
 
 .copy-desc-btn {
-  background: var(--bg-surface, #ffffff);
+  background: var(--bg-surface);
 }
 
 /* 迷你时序直方图样式 */
 .sparkline-wrapper {
-  background: var(--bg-surface, #ffffff);
+  background: var(--bg-surface);
   border: 1px solid var(--border-base, var(--gray-200));
   border-radius: var(--radius-md, 6px);
   padding: 8px 12px;
@@ -2402,21 +2402,21 @@ const confirmBatchUntag = async () => {
 .sparkline-bar {
   width: 100%;
   border-radius: 2px 2px 0 0;
-  background: var(--brand-400, #38bdf8);
+  background: var(--brand-400);
   transition: height 0.2s ease, background 0.15s ease;
 }
 
 .sparkline-bar-col:hover .sparkline-bar {
-  background: var(--brand-600, #0284c7);
+  background: var(--brand-600);
   box-shadow: 0 0 4px rgba(2, 132, 199, 0.4);
 }
 
 .sparkline-bar-col.is-peak .sparkline-bar {
-  background: var(--danger-500, #ef4444);
+  background: var(--danger-strong);
 }
 
 .sparkline-bar-col.is-zero .sparkline-bar {
-  background: var(--gray-200, #e2e8f0);
+  background: var(--gray-200);
 }
 
 .preview-hint {

@@ -283,7 +283,7 @@ const handleLogPivot = ({ type, record }) => {
       ElMessage.success(`已设置模块筛选: ${record.module}`)
       break
     case 'filter-out-module':
-      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'not_contains', value: record.module }, true)
+      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'not_in', value: record.module }, true)
       ElMessage.success(`已排除模块: ${record.module}`)
       break
     case 'filter-in-host':

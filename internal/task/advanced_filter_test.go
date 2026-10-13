@@ -757,6 +757,21 @@ func TestAdvancedFilterConditionLimitAndDisabled(t *testing.T) {
 	if totalDisabled != 1 {
 		t.Fatalf("expected 1 record when invalid condition is disabled, got %d", totalDisabled)
 	}
+
+	// 4. 非法 tag 值报错断言 (P2-3 验收)
+	reqInvalidTag := model.LogQueryRequestBody{
+		PageSize: 10,
+		Advanced: &model.AdvancedFilter{
+			Logic: "AND",
+			Conditions: []model.AdvancedCondition{
+				{Field: "tag", Op: "has_any", Value: "invalid_id"},
+			},
+		},
+	}
+	_, _, err = svc.QueryTaskLogsUnified(taskID, reqInvalidTag)
+	if err == nil {
+		t.Fatalf("expected error for invalid tag value, got nil")
+	}
 }
 
 // 验证筛选预设 CRUD
@@ -848,11 +863,22 @@ func TestGetTaskLogSparkline(t *testing.T) {
 	}
 
 	var totalCount int64
+	var nonZeroBuckets int
 	for _, b := range resp.Buckets {
 		totalCount += b.Count
+		if b.Count > 0 {
+			nonZeroBuckets++
+		}
 	}
 	if totalCount != 4 {
 		t.Fatalf("expected total 4 logs in sparkline buckets, got %d", totalCount)
+	}
+	// P0 重点防御：4 条日志时间跨度 6 分钟，在 24 个桶中绝不可能全部落入 bucket 0
+	if nonZeroBuckets < 2 {
+		t.Fatalf("expected logs distributed across multiple buckets, but only got %d non-zero buckets (all in bucket 0 regression)", nonZeroBuckets)
+	}
+	if resp.Buckets[0].Count == 4 {
+		t.Fatalf("all 4 logs clustered in bucket 0, strftime expression regression")
 	}
 	if resp.PeakBucket == nil || resp.PeakBucket.Count == 0 {
 		t.Fatalf("expected valid peak bucket, got nil or 0 count")
@@ -871,6 +897,25 @@ func TestGetTaskLogSparkline(t *testing.T) {
 	}
 	if bfdCount != 1 {
 		t.Fatalf("expected 1 log for BFD in sparkline, got %d", bfdCount)
+	}
+
+	// 3. 显式指定 TimeStart 和 TimeEnd 快速分桶分支验证 (P1-4 覆盖)
+	now := time.Now()
+	tStart := model.NewCustomTime(now.Add(-15 * time.Minute))
+	tEnd := model.NewCustomTime(now.Add(1 * time.Minute))
+	rangeResp, err := svc.GetTaskLogSparkline(taskID, model.LogQueryRequestBody{
+		TimeStart: tStart,
+		TimeEnd:   tEnd,
+	})
+	if err != nil {
+		t.Fatalf("get explicit range sparkline failed: %v", err)
+	}
+	var rangeCount int64
+	for _, b := range rangeResp.Buckets {
+		rangeCount += b.Count
+	}
+	if rangeCount != 4 {
+		t.Fatalf("expected 4 logs in explicit range sparkline, got %d", rangeCount)
 	}
 }
 

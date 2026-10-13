@@ -2493,54 +2493,64 @@ func (s *Service) GetTaskLogSparkline(taskID string, req model.LogQueryRequestBo
 		return nil, err
 	}
 
-	// 1. 查找当前过滤条件下的时间边界
-	type BoundaryResult struct {
-		MinTime *string `gorm:"column:min_time"`
-		MaxTime *string `gorm:"column:max_time"`
-		Count   int64   `gorm:"column:count"`
-	}
-	var b BoundaryResult
-	err = filterQuery.Where("timestamp IS NOT NULL AND timestamp > '0001-01-01 00:00:00'").
-		Select("MIN(timestamp) as min_time, MAX(timestamp) as max_time, COUNT(*) as count").
-		Scan(&b).Error
-	if err != nil {
-		return nil, err
-	}
-
 	bucketCount := 24
 	resp := &model.SparklineResponse{
 		Buckets: make([]model.SparklineBucket, bucketCount),
 	}
 
-	if b.Count == 0 || b.MinTime == nil || b.MaxTime == nil || *b.MinTime == "" || *b.MaxTime == "" {
-		now := time.Now()
-		for i := 0; i < bucketCount; i++ {
-			resp.Buckets[i] = model.SparklineBucket{
-				Start: now.Format(time.RFC3339),
-				End:   now.Format(time.RFC3339),
-				Count: 0,
-			}
-		}
-		return resp, nil
-	}
+	var minT, maxT time.Time
+	hasExplicitRange := req.TimeStart != nil && !req.TimeStart.IsZero() &&
+		req.TimeEnd != nil && !req.TimeEnd.IsZero() && req.TimeEnd.After(req.TimeStart.Time)
 
-	parsedMin, err := model.ParseCustomTime(*b.MinTime)
-	if err != nil || parsedMin == nil {
-		return nil, fmt.Errorf("parse min time failed: %v", err)
-	}
-	parsedMax, err := model.ParseCustomTime(*b.MaxTime)
-	if err != nil || parsedMax == nil {
-		return nil, fmt.Errorf("parse max time failed: %v", err)
-	}
-
-	minT := parsedMin.Time
-	maxT := parsedMax.Time
-
-	if req.TimeStart != nil && !req.TimeStart.IsZero() {
+	if hasExplicitRange {
+		// 优化 P1-4: 当请求已显式携带有效时间窗时，免除全量 MIN/MAX 边界表扫描
 		minT = req.TimeStart.Time
-	}
-	if req.TimeEnd != nil && !req.TimeEnd.IsZero() {
 		maxT = req.TimeEnd.Time
+	} else {
+		// 1. 查找当前过滤条件下的时间边界
+		type BoundaryResult struct {
+			MinTime *string `gorm:"column:min_time"`
+			MaxTime *string `gorm:"column:max_time"`
+			Count   int64   `gorm:"column:count"`
+		}
+		var b BoundaryResult
+		err = filterQuery.Where("timestamp IS NOT NULL AND timestamp > '0001-01-01 00:00:00'").
+			Select("MIN(timestamp) as min_time, MAX(timestamp) as max_time, COUNT(*) as count").
+			Scan(&b).Error
+		if err != nil {
+			return nil, err
+		}
+
+		if b.Count == 0 || b.MinTime == nil || b.MaxTime == nil || *b.MinTime == "" || *b.MaxTime == "" {
+			now := time.Now()
+			for i := 0; i < bucketCount; i++ {
+				resp.Buckets[i] = model.SparklineBucket{
+					Start: now.Format(time.RFC3339),
+					End:   now.Format(time.RFC3339),
+					Count: 0,
+				}
+			}
+			return resp, nil
+		}
+
+		parsedMin, err := model.ParseCustomTime(*b.MinTime)
+		if err != nil || parsedMin == nil {
+			return nil, fmt.Errorf("parse min time failed: %v", err)
+		}
+		parsedMax, err := model.ParseCustomTime(*b.MaxTime)
+		if err != nil || parsedMax == nil {
+			return nil, fmt.Errorf("parse max time failed: %v", err)
+		}
+
+		minT = parsedMin.Time
+		maxT = parsedMax.Time
+
+		if req.TimeStart != nil && !req.TimeStart.IsZero() {
+			minT = req.TimeStart.Time
+		}
+		if req.TimeEnd != nil && !req.TimeEnd.IsZero() {
+			maxT = req.TimeEnd.Time
+		}
 	}
 
 	minSec := minT.Unix()
@@ -2579,7 +2589,8 @@ func (s *Service) GetTaskLogSparkline(taskID string, req model.LogQueryRequestBo
 		return nil, err
 	}
 
-	calcExpr := fmt.Sprintf("MIN(%d, MAX(0, CAST((strftime('%%%%s', timestamp) - %d) / %f AS INTEGER)))", bucketCount-1, minSec, stepSec)
+	// 修复 P0: strftime('%%s', timestamp) 在 fmt.Sprintf 下输出 strftime('%s', timestamp)
+	calcExpr := fmt.Sprintf("MIN(%d, MAX(0, CAST((strftime('%%s', timestamp) - %d) / %f AS INTEGER)))", bucketCount-1, minSec, stepSec)
 	err = aggQuery.Where("timestamp IS NOT NULL AND timestamp > '0001-01-01 00:00:00'").
 		Select(fmt.Sprintf("%s as bucket_idx, COUNT(*) as cnt", calcExpr)).
 		Group("bucket_idx").
