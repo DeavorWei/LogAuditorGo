@@ -13,7 +13,7 @@
     @mouseenter="$emit('hover-enter', record, $event)"
     @mouseleave="$emit('hover-leave', record)"
   >
-    <!-- 头部: 级别徽标 + 日志序号 + 模块/简名 + 匹配标签 -->
+    <!-- 头部: 级别徽标 + 日志序号 + 模块/简名 + 匹配标签 + 探索性钻取操作 -->
     <div class="log-card-header">
       <SeverityTag :severity="record.severity" :module="record.module" />
       <span class="log-seq" :title="`日志序号: #${record.id}`">#{{ record.id }}</span>
@@ -24,6 +24,30 @@
         {{ record.match_tier }}
       </span>
       <span v-else-if="record.module === 'COMMENT'" class="comment-tag">注释</span>
+
+      <div class="log-card-header-actions" @click.stop>
+        <el-dropdown trigger="click" size="small" @command="handlePivotCommand">
+          <button class="card-pivot-btn" title="探索性钻取筛选">
+            <el-icon><Filter /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item v-if="record.module && record.module !== 'COMMENT'" command="filter-in-module">
+                <el-icon><CirclePlus /></el-icon> 仅看此模块 ({{ record.module }})
+              </el-dropdown-item>
+              <el-dropdown-item v-if="record.module && record.module !== 'COMMENT'" command="filter-out-module">
+                <el-icon><Remove /></el-icon> 排除此模块 ({{ record.module }})
+              </el-dropdown-item>
+              <el-dropdown-item v-if="record.hostname" command="filter-in-host">
+                <el-icon><Monitor /></el-icon> 仅看此设备 ({{ record.hostname }})
+              </el-dropdown-item>
+              <el-dropdown-item v-if="hasValidTimestamp" command="pivot-time">
+                <el-icon><Timer /></el-icon> 以此时间钻取 (±5m)
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </div>
 
     <!-- 中部: 事件语义解析摘要 (或原始报文回退)，两行严格截断 -->
@@ -75,7 +99,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Document } from '@element-plus/icons-vue'
+import { Document, Filter, CirclePlus, Remove, Monitor, Timer } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/format'
 import { useSeverity } from '@/composables/useSeverity'
 import SeverityTag from '@/components/SeverityTag.vue'
@@ -92,12 +116,20 @@ const props = defineProps({
   }
 })
 
-defineEmits(['click', 'hover-enter', 'hover-leave'])
+const emit = defineEmits(['click', 'hover-enter', 'hover-leave', 'pivot'])
 
 const { stripClass } = useSeverity(
   () => props.record.severity,
   () => props.record.module
 )
+
+const hasValidTimestamp = computed(() => {
+  return props.record?.timestamp && !String(props.record.timestamp).startsWith('0001')
+})
+
+const handlePivotCommand = (cmd) => {
+  emit('pivot', { type: cmd, record: props.record })
+}
 
 const displayTime = computed(() => {
   const r = props.record
@@ -271,5 +303,38 @@ const displayTime = computed(() => {
   line-height: 16px;
   padding: 0 4px;
   border: none;
+}
+
+.log-card-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.audit-log-card:hover .log-card-header-actions,
+.log-card-header-actions:focus-within {
+  opacity: 1;
+}
+
+.card-pivot-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text-secondary, var(--gray-500));
+  cursor: pointer;
+  padding: 2px 4px;
+  border-radius: var(--radius-xs);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  transition: all 0.15s ease;
+}
+
+.card-pivot-btn:hover {
+  background: var(--gray-200);
+  color: var(--brand-600);
+  border-color: var(--border-base);
 }
 </style>

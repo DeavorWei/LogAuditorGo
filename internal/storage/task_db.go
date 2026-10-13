@@ -489,6 +489,7 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 		&model.Device{},
 		&model.LogTag{},
 		&model.LogTagRelation{},
+		&model.FilterPreset{},
 	); err != nil {
 		if strings.Contains(err.Error(), "duplicate column name") {
 			logger.Log.Warnf("[openTaskDB] task %s auto migrate encountered duplicate column, safely ignored: %v", taskID, err)
@@ -507,6 +508,7 @@ func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
 				&model.Device{},
 				&model.LogTag{},
 				&model.LogTagRelation{},
+				&model.FilterPreset{},
 			)
 			// 降级迁移完成后立即补跑孤儿清理，确保数据自洽 (PRAGMA foreign_key_check 零违规)
 			if _, purgeErr := purgeOrphanTagRelations(db, taskID); purgeErr != nil {

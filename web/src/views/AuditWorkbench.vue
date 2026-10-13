@@ -74,6 +74,7 @@
           @filter-change="onFilterChange"
           @filter-reset="handleResetFilters"
           @open-advanced-filter="advFilterDrawerRef?.open"
+          @pivot="handleLogPivot"
           @select="handleLogCardClick"
           @hover-enter="handleLogHoverEnter"
           @hover-leave="handleLogHoverLeave"
@@ -159,6 +160,7 @@
 <script setup>
 import { ref, provide, watch, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { VIEW_MODE } from '@/constants/viewModes'
@@ -272,6 +274,28 @@ const {
   handleTaskMetadataUpdated,
   handleLogImportCompleted
 } = taskContext
+
+const handleLogPivot = ({ type, record }) => {
+  if (!record) return
+  switch (type) {
+    case 'filter-in-module':
+      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'eq', value: record.module }, true)
+      ElMessage.success(`已设置模块筛选: ${record.module}`)
+      break
+    case 'filter-out-module':
+      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'not_contains', value: record.module }, true)
+      ElMessage.success(`已排除模块: ${record.module}`)
+      break
+    case 'filter-in-host':
+      advFilterDrawerRef.value?.openWithCondition({ field: 'hostname', op: 'eq', value: record.hostname }, true)
+      ElMessage.success(`已筛选主机: ${record.hostname}`)
+      break
+    case 'pivot-time':
+      advFilterDrawerRef.value?.openWithTimePivot(record.timestamp, 5, true)
+      ElMessage.success('已锁定前后 5 分钟时间窗口')
+      break
+  }
+}
 
 // 5. 富文本解析上下文提供 (WeakMap 缓存驱动)
 provide(LOG_DETAIL_CONTEXT_KEY, {

@@ -8,6 +8,68 @@
     :before-close="handleBeforeClose"
   >
     <div class="drawer-container">
+      <!-- 0. 顶栏预设方案选择器 (Preset Selector Bar) -->
+      <div class="preset-bar-wrapper">
+        <div class="preset-label-group">
+          <el-icon class="preset-icon"><CollectionTag /></el-icon>
+          <span class="preset-label">场景预设：</span>
+        </div>
+        <el-select
+          v-model="selectedPresetId"
+          placeholder="选择系统排查场景或自定义预设..."
+          size="default"
+          clearable
+          class="preset-select"
+          @change="onPresetSelected"
+        >
+          <el-option-group label="系统内置专家场景">
+            <el-option
+              v-for="p in SYSTEM_EXPERT_PRESETS"
+              :key="p.id"
+              :label="p.name"
+              :value="p.id"
+            >
+              <div class="preset-option-item">
+                <span class="preset-name">{{ p.name }}</span>
+                <span class="preset-desc">{{ p.description }}</span>
+              </div>
+            </el-option>
+          </el-option-group>
+
+          <el-option-group v-if="customPresets.length > 0" label="任务自定义预设">
+            <el-option
+              v-for="p in customPresets"
+              :key="p.id"
+              :label="p.name"
+              :value="String(p.id)"
+            >
+              <div class="preset-option-item">
+                <span class="preset-name">{{ p.name }}</span>
+                <el-button
+                  type="danger"
+                  link
+                  size="small"
+                  class="preset-del-btn"
+                  @click.stop="confirmDeletePreset(p)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </div>
+            </el-option>
+          </el-option-group>
+        </el-select>
+
+        <el-button
+          type="primary"
+          plain
+          size="default"
+          class="save-preset-btn"
+          @click="openSavePresetDialog"
+        >
+          另存为预设
+        </el-button>
+      </div>
+
       <!-- 1. 基础检索维度控制矩阵 (Base Filter Matrix) -->
       <div class="filter-section-card base-matrix-card">
         <div class="section-header" @click="isBaseSectionCollapsed = !isBaseSectionCollapsed">
@@ -323,24 +385,38 @@
                 </el-option-group>
               </el-select>
 
-              <!-- 操作符选择 -->
-              <el-select
-                v-model="cond.op"
-                placeholder="操作符"
-                size="default"
-                class="op-select"
-                :disabled="cond.disabled"
-                @change="onOpChange(cond)"
-              >
-                <el-option
-                  v-for="op in getAvailableOps(cond.field)"
-                  :key="op.value"
-                  :label="op.label"
-                  :value="op.value"
-                />
-              </el-select>
+              <!-- 操作符选择 + 一键取反按钮 -->
+              <div class="op-wrapper">
+                <el-select
+                  v-model="cond.op"
+                  placeholder="操作符"
+                  size="default"
+                  class="op-select"
+                  :disabled="cond.disabled"
+                  @change="onOpChange(cond)"
+                >
+                  <el-option
+                    v-for="op in getAvailableOps(cond.field)"
+                    :key="op.value"
+                    :label="op.label"
+                    :value="op.value"
+                  />
+                </el-select>
 
-              <!-- 值输入区 (针对 tag 与常规字段分支) -->
+                <el-tooltip content="一键取反 (Invert/NOT)" placement="top">
+                  <el-button
+                    link
+                    size="small"
+                    class="invert-op-btn"
+                    :disabled="cond.disabled"
+                    @click="invertConditionOp(cond)"
+                  >
+                    <el-icon><RefreshRight /></el-icon>
+                  </el-button>
+                </el-tooltip>
+              </div>
+
+              <!-- 值输入区 (针对 tag、facets 联想与常规输入) -->
               <div class="value-input-wrapper">
                 <!-- 场景 A: 字段为 tag 且属于无值操作符 (is_empty / is_not_empty) -->
                 <el-input
@@ -379,7 +455,27 @@
                   </el-option>
                 </el-select>
 
-                <!-- 场景 C: 常规文本/参数/正则输入框 -->
+                <!-- 场景 C: 针对 module、brief、hostname、source_file 提供带频次的输入联想 -->
+                <el-autocomplete
+                  v-else-if="['module', 'brief', 'hostname', 'source_file'].includes(cond.field)"
+                  v-model="cond.value"
+                  :fetch-suggestions="(queryString, cb) => queryFacetSuggestions(cond.field, queryString, cb)"
+                  :placeholder="getValuePlaceholder(cond)"
+                  clearable
+                  size="default"
+                  :disabled="cond.disabled"
+                  @input="onValueInput"
+                  @select="onValueInput"
+                >
+                  <template #default="{ item }">
+                    <div class="facet-suggest-item">
+                      <span class="facet-suggest-val">{{ item.value }}</span>
+                      <span class="facet-suggest-cnt">{{ item.count }} 次</span>
+                    </div>
+                  </template>
+                </el-autocomplete>
+
+                <!-- 场景 D: 常规文本/参数/正则输入框 -->
                 <template v-else>
                   <el-input
                     v-model="cond.value"
@@ -387,7 +483,7 @@
                     clearable
                     size="default"
                     :disabled="cond.disabled"
-                    @input="onValueInput(cond)"
+                    @input="onValueInput"
                   />
                   <!-- 正则语法检验提示 -->
                   <div v-if="getRegexError(cond)" class="regex-error-tip">
@@ -478,6 +574,44 @@
         </div>
       </div>
     </template>
+
+    <!-- 另存为预设弹窗 (Phase 2) -->
+    <el-dialog
+      v-model="savePresetDialogVisible"
+      title="将当前筛选条件另存为任务预设"
+      width="440px"
+      append-to-body
+      destroy-on-close
+    >
+      <el-form label-position="top">
+        <el-form-item label="预设名称" required>
+          <el-input
+            v-model="newPresetName"
+            placeholder="例如: 核心BGP震荡排查 / 未打标告警清单"
+            maxlength="48"
+          />
+        </el-form-item>
+        <el-form-item label="场景说明 (可选)">
+          <el-input
+            v-model="newPresetDescription"
+            type="textarea"
+            rows="2"
+            placeholder="简要描述适用场景与排查意图..."
+            maxlength="200"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="savePresetDialogVisible = false">取消</el-button>
+        <el-button
+          type="primary"
+          :loading="savingPresetLoading"
+          @click="confirmSavePreset"
+        >
+          保存预设
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 批量打标确认弹窗 -->
     <el-dialog
@@ -631,7 +765,9 @@ import {
   Opportunity,
   Search,
   ArrowDown,
-  ArrowUp
+  ArrowUp,
+  RefreshRight,
+  CollectionTag
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
@@ -639,6 +775,7 @@ import useFilterStore from '@/stores/filter'
 import useTagStore from '@/stores/tag'
 import useTaskStore from '@/stores/task'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
+import { SYSTEM_EXPERT_PRESETS } from '@/constants/filterPresets'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const props = defineProps({
@@ -665,6 +802,14 @@ const isBaseSectionCollapsed = ref(false)
 
 // 有效任务 ID 计算 (优先 props，兜底 store)
 const effectiveTaskId = computed(() => props.taskId || taskStore.currentTaskId || '')
+
+// 预设列表与选中状态 (Phase 2)
+const selectedPresetId = ref('')
+const customPresets = ref([])
+const savePresetDialogVisible = ref(false)
+const newPresetName = ref('')
+const newPresetDescription = ref('')
+const savingPresetLoading = ref(false)
 
 // 基础检索草稿状态
 const draftBase = reactive({
@@ -730,6 +875,19 @@ const activeBaseCount = computed(() => {
   return count
 })
 
+// 加载预设列表
+const loadPresets = async () => {
+  if (!effectiveTaskId.value) return
+  try {
+    const res = await api.listFilterPresets(effectiveTaskId.value)
+    if (res.code === 0 && Array.isArray(res.data)) {
+      customPresets.value = res.data
+    }
+  } catch (e) {
+    console.warn('Load filter presets failed:', e)
+  }
+}
+
 // 打开 Drawer
 const open = () => {
   const f = filterStore.filters
@@ -758,12 +916,52 @@ const open = () => {
 
   // 3. 记录打开快照
   snapshotJson = serializeCurrentDraft()
+  selectedPresetId.value = ''
 
   visible.value = true
   if (effectiveTaskId.value) {
     tagStore.fetchTags(effectiveTaskId.value)
+    loadPresets()
   }
   fetchPreviewCount()
+}
+
+// 外部上下文一键钻取支持 (One-Click Pivot)
+const openWithCondition = (cond, autoApply = false) => {
+  open()
+  if (
+    localAdvanced.conditions.length === 1 &&
+    !localAdvanced.conditions[0].value &&
+    localAdvanced.conditions[0].field === 'raw_log'
+  ) {
+    localAdvanced.conditions = []
+  }
+  localAdvanced.conditions.push({
+    disabled: false,
+    field: cond.field || 'raw_log',
+    op: cond.op || 'contains',
+    value: cond.value || ''
+  })
+  if (autoApply) {
+    applyFilters()
+  } else {
+    debouncedPreview()
+  }
+}
+
+const openWithTimePivot = (timeISO, windowMinutes = 5, autoApply = false) => {
+  open()
+  const target = new Date(timeISO)
+  if (!isNaN(target.getTime())) {
+    const ms = windowMinutes * 60 * 1000
+    draftBase.timeStart = new Date(target.getTime() - ms).toISOString()
+    draftBase.timeEnd = new Date(target.getTime() + ms).toISOString()
+    if (autoApply) {
+      applyFilters()
+    } else {
+      debouncedPreview()
+    }
+  }
 }
 
 const serializeCurrentDraft = () => {
@@ -796,7 +994,133 @@ const handleBeforeClose = (done) => {
   }
 }
 
-defineExpose({ open, visible })
+defineExpose({
+  open,
+  openWithCondition,
+  openWithTimePivot,
+  visible
+})
+
+// 预设选中加载
+const onPresetSelected = (val) => {
+  if (!val) return
+
+  // 1. 查找系统专家预设
+  const sys = SYSTEM_EXPERT_PRESETS.find(p => p.id === val)
+  if (sys) {
+    applyPresetConfig(sys.filters)
+    ElMessage.success(`已载入专家场景: ${sys.name}`)
+    return
+  }
+
+  // 2. 查找自定义任务预设
+  const custom = customPresets.value.find(p => String(p.id) === String(val))
+  if (custom && custom.filters) {
+    applyPresetConfig(custom.filters)
+    ElMessage.success(`已载入自定义预设: ${custom.name}`)
+  }
+}
+
+const applyPresetConfig = (cfg) => {
+  if (!cfg) return
+  if (cfg.keyword !== undefined) draftBase.keyword = cfg.keyword || ''
+  if (cfg.severity !== undefined) draftBase.severity = cfg.severity
+  if (cfg.matched !== undefined) draftBase.matched = cfg.matched
+  if (cfg.deviceId !== undefined) draftBase.deviceId = cfg.deviceId
+  if (cfg.timeStart !== undefined) draftBase.timeStart = cfg.timeStart
+  if (cfg.timeEnd !== undefined) draftBase.timeEnd = cfg.timeEnd
+  if (cfg.untaggedOnly !== undefined) draftBase.untaggedOnly = !!cfg.untaggedOnly
+  if (cfg.tagIds !== undefined) draftBase.tagIds = [...cfg.tagIds]
+  if (cfg.tagLogic !== undefined) draftBase.tagLogic = cfg.tagLogic
+  if (cfg.excludeTagIds !== undefined) draftBase.excludeTagIds = [...cfg.excludeTagIds]
+
+  if (cfg.advanced) {
+    localAdvanced.logic = cfg.advanced.logic || 'AND'
+    localAdvanced.conditions = JSON.parse(JSON.stringify(cfg.advanced.conditions || []))
+  }
+  debouncedPreview()
+}
+
+// 另存为预设
+const openSavePresetDialog = () => {
+  newPresetName.value = ''
+  newPresetDescription.value = ''
+  savePresetDialogVisible.value = true
+}
+
+const confirmSavePreset = async () => {
+  if (!newPresetName.value.trim()) {
+    ElMessage.warning('请输入预设名称')
+    return
+  }
+
+  savingPresetLoading.value = true
+  try {
+    const validConds = localAdvanced.conditions.filter(
+      c => c.field && c.op && (
+        (c.field === 'tag' && (c.op === 'is_empty' || c.op === 'is_not_empty')) ||
+        (c.value !== undefined && c.value !== '' && !getRegexError(c))
+      )
+    )
+
+    const payload = {
+      name: newPresetName.value.trim(),
+      description: newPresetDescription.value.trim(),
+      filters: {
+        keyword: draftBase.keyword || undefined,
+        severity: draftBase.severity ?? undefined,
+        matched: draftBase.matched ?? undefined,
+        device_id: draftBase.deviceId || undefined,
+        time_start: draftBase.timeStart || undefined,
+        time_end: draftBase.timeEnd || undefined,
+        tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.tagIds.length > 0 ? draftBase.tagIds : undefined),
+        tag_logic: draftBase.tagLogic,
+        exclude_tag_ids: draftBase.untaggedOnly ? undefined : (draftBase.excludeTagIds.length > 0 ? draftBase.excludeTagIds : undefined),
+        untagged_only: draftBase.untaggedOnly || undefined,
+        advanced: validConds.length > 0 ? {
+          logic: localAdvanced.logic || 'AND',
+          conditions: validConds
+        } : undefined
+      }
+    }
+
+    const res = await api.createFilterPreset(effectiveTaskId.value, payload)
+    if (res.code === 0) {
+      ElMessage.success('预设保存成功')
+      savePresetDialogVisible.value = false
+      await loadPresets()
+      selectedPresetId.value = String(res.data.id)
+    }
+  } catch (e) {
+    ElMessage.error(e.message || '保存预设失败')
+  } finally {
+    savingPresetLoading.value = false
+  }
+}
+
+// 删除自定义预设
+const confirmDeletePreset = (preset) => {
+  ElMessageBox.confirm(`确定删除自定义预设「${preset.name}」吗？`, '删除确认', {
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+    type: 'warning'
+  })
+    .then(async () => {
+      try {
+        const res = await api.deleteFilterPreset(effectiveTaskId.value, preset.id)
+        if (res.code === 0) {
+          ElMessage.success('预设已删除')
+          if (selectedPresetId.value === String(preset.id)) {
+            selectedPresetId.value = ''
+          }
+          await loadPresets()
+        }
+      } catch (e) {
+        ElMessage.error(e.message || '删除预设失败')
+      }
+    })
+    .catch(() => {})
+}
 
 // 快捷时间设置
 const applyQuickTime = (type) => {
@@ -961,6 +1285,32 @@ const getAvailableOps = (field) => {
   return operatorMap[field] || operatorMap.raw_log
 }
 
+// 一键取反映射 (Phase 2 Invert/NOT)
+const invertOpMap = {
+  contains: 'not_contains',
+  not_contains: 'contains',
+  regex: 'not_regex',
+  not_regex: 'regex',
+  kv_contains: 'kv_not_contains',
+  kv_not_contains: 'kv_contains',
+  kv_regex: 'kv_not_regex',
+  kv_not_regex: 'kv_regex',
+  in: 'not_in',
+  not_in: 'in',
+  has_any: 'not_has',
+  not_has: 'has_any',
+  is_empty: 'is_not_empty',
+  is_not_empty: 'is_empty',
+  eq: 'not_contains'
+}
+
+const invertConditionOp = (cond) => {
+  if (invertOpMap[cond.op]) {
+    cond.op = invertOpMap[cond.op]
+    debouncedPreview()
+  }
+}
+
 const onFieldChange = (cond) => {
   const ops = getAvailableOps(cond.field)
   if (ops.length > 0) {
@@ -989,6 +1339,42 @@ const getTagSelectedIDs = (cond) => {
 const setTagSelectedIDs = (cond, ids) => {
   cond.value = Array.isArray(ids) ? ids.join(',') : ''
   debouncedPreview()
+}
+
+// 元数据候选词联想缓存 (30s TTL 避免高频请求)
+const facetCache = new Map()
+
+const queryFacetSuggestions = async (field, queryString, cb) => {
+  if (!effectiveTaskId.value) {
+    cb([])
+    return
+  }
+
+  const cacheKey = `${effectiveTaskId.value}:${field}`
+  const cached = facetCache.get(cacheKey)
+  const now = Date.now()
+
+  let list = []
+  if (cached && now - cached.timestamp < 30000) {
+    list = cached.data
+  } else {
+    try {
+      const res = await api.getTaskFacets(effectiveTaskId.value, field)
+      if (res.code === 0 && Array.isArray(res.data)) {
+        list = res.data
+        facetCache.set(cacheKey, { timestamp: now, data: list })
+      }
+    } catch (e) {
+      console.warn('Query facets failed:', e)
+    }
+  }
+
+  const q = (queryString || '').trim().toLowerCase()
+  const results = q
+    ? list.filter(item => String(item.value).toLowerCase().includes(q))
+    : list
+
+  cb(results)
 }
 
 const getValuePlaceholder = (cond) => {
@@ -1141,6 +1527,7 @@ const resetToDefaults = () => {
   draftBase.excludeTagIds = []
   draftBase.untaggedOnly = false
   localAdvanced.conditions = []
+  selectedPresetId.value = ''
   debouncedPreview()
   ElMessage.info('已重置所有筛选草稿')
 }
@@ -1362,6 +1749,69 @@ const confirmBatchUntag = async () => {
   padding-bottom: 8px;
 }
 
+/* 预设工具栏样式 (Phase 2) */
+.preset-bar-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg-subtle, var(--gray-50));
+  padding: 10px 14px;
+  border-radius: var(--radius-lg, 8px);
+  border: 1px solid var(--border-base, var(--gray-200));
+}
+
+.preset-label-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.preset-icon {
+  font-size: 16px;
+  color: var(--brand-600, #0284c7);
+}
+
+.preset-label {
+  font-size: var(--fs-sm, 12px);
+  font-weight: 600;
+  color: var(--text-primary, var(--gray-900));
+}
+
+.preset-select {
+  flex: 1;
+}
+
+.save-preset-btn {
+  flex-shrink: 0;
+}
+
+.preset-option-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 10px;
+}
+
+.preset-name {
+  font-weight: 500;
+  color: var(--text-primary, var(--gray-900));
+}
+
+.preset-desc {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, var(--gray-500));
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.preset-del-btn {
+  padding: 0 4px;
+}
+
 /* 分区通用卡片设计 (符合前端样式规范) */
 .filter-section-card {
   background: var(--bg-surface, #ffffff);
@@ -1567,13 +2017,28 @@ const confirmBatchUntag = async () => {
 }
 
 .field-select {
-  width: 175px;
+  width: 170px;
+  flex-shrink: 0;
+}
+
+.op-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   flex-shrink: 0;
 }
 
 .op-select {
   width: 145px;
-  flex-shrink: 0;
+}
+
+.invert-op-btn {
+  line-height: 32px;
+  color: var(--text-secondary, var(--gray-500));
+}
+
+.invert-op-btn:hover {
+  color: var(--brand-600, #0284c7);
 }
 
 .value-input-wrapper {
@@ -1584,6 +2049,23 @@ const confirmBatchUntag = async () => {
 
 .tag-value-select {
   width: 100%;
+}
+
+.facet-suggest-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+}
+
+.facet-suggest-val {
+  font-weight: 500;
+  color: var(--text-primary, var(--gray-900));
+}
+
+.facet-suggest-cnt {
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, var(--gray-500));
 }
 
 .regex-error-tip {

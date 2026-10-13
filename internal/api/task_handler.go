@@ -1281,3 +1281,85 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 
 	SuccessResponse(c, taskInfo, "Task reanalyzed successfully")
 }
+
+// ListFilterPresets 获取任务筛选预设列表
+func (h *TaskHandler) ListFilterPresets(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	presets, err := h.taskSvc.ListFilterPresets(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, presets)
+}
+
+// CreateFilterPreset 为任务新建筛选预设
+func (h *TaskHandler) CreateFilterPreset(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req model.FilterPresetCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+		return
+	}
+
+	preset, err := h.taskSvc.CreateFilterPreset(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, preset, "Preset created successfully")
+}
+
+// DeleteFilterPreset 删除指定筛选预设
+func (h *TaskHandler) DeleteFilterPreset(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	presetIDStr := c.Param("preset_id")
+	presetID, err := strconv.ParseUint(presetIDStr, 10, 64)
+	if err != nil || presetID == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid preset ID format")
+		return
+	}
+
+	if err := h.taskSvc.DeleteFilterPreset(taskID, uint(presetID)); err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, nil, "Preset deleted successfully")
+}
+
+// GetTaskFacets 获取任务日志元数据字段枚举及频次
+func (h *TaskHandler) GetTaskFacets(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	field := c.Query("field")
+	if field == "" {
+		field = "module"
+	}
+
+	facets, err := h.taskSvc.GetTaskFacets(taskID, field)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, facets)
+}
+

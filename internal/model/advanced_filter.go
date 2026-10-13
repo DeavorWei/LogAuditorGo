@@ -1,5 +1,7 @@
 package model
 
+import "time"
+
 // AdvancedCondition 高级筛选单条条件
 type AdvancedCondition struct {
 	Field    string `json:"field"`              // 白名单字段键，如 raw_log, parameters, severity, module, tag 等
@@ -57,3 +59,33 @@ type TagUpdateRequest struct {
 type SingleTagRequestBody struct {
 	TagID uint `json:"tag_id" binding:"required"`
 }
+
+// FilterPreset 任务数据库中的筛选预设实体
+type FilterPreset struct {
+	ID          uint                 `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskID      string               `gorm:"size:64;index" json:"task_id"`
+	Name        string               `gorm:"size:64;not null" json:"name"`
+	Description string               `gorm:"size:255" json:"description,omitempty"`
+	IsSystem    bool                 `gorm:"default:false" json:"is_system"`       // 是否为系统内置专家场景
+	Scope       string               `gorm:"size:16;default:'task'" json:"scope"`  // "task" | "system"
+	ConfigJSON  string               `gorm:"type:text" json:"-"`                   // 序列化存储 (已剥离 page/pageSize)
+	Filters     *LogQueryRequestBody `gorm:"-" json:"filters,omitempty"`           // 反序列化只读字段
+	CreatedAt   time.Time            `json:"created_at"`
+	UpdatedAt   time.Time            `json:"updated_at"`
+}
+
+func (FilterPreset) TableName() string { return "filter_presets" }
+
+// FilterPresetCreateRequest 保存筛选预设请求体
+type FilterPresetCreateRequest struct {
+	Name        string               `json:"name" binding:"required"`
+	Description string               `json:"description"`
+	Filters     LogQueryRequestBody `json:"filters" binding:"required"`
+}
+
+// FacetValueItem 字段枚举聚合项
+type FacetValueItem struct {
+	Value string `json:"value"`
+	Count int64  `json:"count"`
+}
+

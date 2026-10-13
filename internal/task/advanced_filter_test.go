@@ -759,3 +759,78 @@ func TestAdvancedFilterConditionLimitAndDisabled(t *testing.T) {
 	}
 }
 
+// 验证筛选预设 CRUD
+func TestFilterPresetsCRUD(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	// 1. 创建自定义预设
+	created, err := svc.CreateFilterPreset(taskID, model.FilterPresetCreateRequest{
+		Name:        "测试预设A",
+		Description: "BGP 告警场景",
+		Filters: model.LogQueryRequestBody{
+			Keyword:  "session",
+			Severity: func() *int { v := 3; return &v }(),
+			Advanced: &model.AdvancedFilter{
+				Logic: "AND",
+				Conditions: []model.AdvancedCondition{
+					{Field: "module", Op: "eq", Value: "BGP"},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create filter preset failed: %v", err)
+	}
+	if created.ID == 0 || created.Name != "测试预设A" {
+		t.Fatalf("unexpected created preset: %+v", created)
+	}
+
+	// 2. 列表查询
+	list, err := svc.ListFilterPresets(taskID)
+	if err != nil {
+		t.Fatalf("list presets failed: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected 1 preset, got %d", len(list))
+	}
+	if list[0].Filters == nil || list[0].Filters.Keyword != "session" {
+		t.Fatalf("expected deserialized filters in preset, got: %+v", list[0].Filters)
+	}
+
+	// 3. 删除预设
+	err = svc.DeleteFilterPreset(taskID, created.ID)
+	if err != nil {
+		t.Fatalf("delete preset failed: %v", err)
+	}
+
+	listAfter, err := svc.ListFilterPresets(taskID)
+	if err != nil {
+		t.Fatalf("list after delete failed: %v", err)
+	}
+	if len(listAfter) != 0 {
+		t.Fatalf("expected 0 presets after delete, got %d", len(listAfter))
+	}
+}
+
+// 验证元数据 Facets 聚合
+func TestGetTaskFacets(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	facets, err := svc.GetTaskFacets(taskID, "module")
+	if err != nil {
+		t.Fatalf("get module facets failed: %v", err)
+	}
+	if len(facets) == 0 {
+		t.Fatalf("expected non-empty facets for module, got empty")
+	}
+
+	// 验证非法字段报错
+	_, err = svc.GetTaskFacets(taskID, "illegal_field")
+	if err == nil {
+		t.Fatalf("expected error for unsupported facet field, got nil")
+	}
+}
+
+

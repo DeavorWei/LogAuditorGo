@@ -307,6 +307,20 @@ export default {
     return request.delete(`/tasks/${taskId}/logs/${logId}/tags/${tagId}`)
   },
 
+  // 筛选预设与元数据聚合 (Phase 2)
+  listFilterPresets(taskId) {
+    return request.get(`/tasks/${taskId}/presets`)
+  },
+  createFilterPreset(taskId, data) {
+    return request.post(`/tasks/${taskId}/presets`, data)
+  },
+  deleteFilterPreset(taskId, presetId) {
+    return request.delete(`/tasks/${taskId}/presets/${presetId}`)
+  },
+  getTaskFacets(taskId, field = 'module', options = {}) {
+    return request.get(`/tasks/${taskId}/facets`, { params: { field }, ...options })
+  },
+
   // 报表导出下载 (基于 Blob，防御重复提交并由拦截器统一弹窗报错)
   // 支持传入 queryBody 协同导出高级筛选与标签圈选子集 (EXP-01)
   async downloadTaskReport(taskId, format = 'html', queryBody = null) {

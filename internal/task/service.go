@@ -2339,3 +2339,139 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 
 	return &taskInfo, nil
 }
+
+// ListFilterPresets 获取指定任务的所有自定义筛选预设
+func (s *Service) ListFilterPresets(taskID string) ([]model.FilterPreset, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	var list []model.FilterPreset
+	if err := taskDB.Where("task_id = ? OR scope = 'system'", taskID).Order("id asc").Find(&list).Error; err != nil {
+		return nil, err
+	}
+
+	for i := range list {
+		if list[i].ConfigJSON != "" {
+			var body model.LogQueryRequestBody
+			if jsonErr := json.Unmarshal([]byte(list[i].ConfigJSON), &body); jsonErr == nil {
+				list[i].Filters = &body
+			}
+		}
+	}
+	return list, nil
+}
+
+// CreateFilterPreset 为指定任务保存筛选预设（自动剥离瞬态字段 page/pageSize）
+func (s *Service) CreateFilterPreset(taskID string, req model.FilterPresetCreateRequest) (*model.FilterPreset, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	trimmedName := strings.TrimSpace(req.Name)
+	if trimmedName == "" {
+		return nil, fmt.Errorf("preset name cannot be empty")
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	// 剥离瞬态分页字段
+	cleanFilters := req.Filters
+	cleanFilters.Page = 0
+	cleanFilters.PageSize = 0
+	cleanFilters.AfterID = 0
+
+	rawJSON, err := json.Marshal(cleanFilters)
+	if err != nil {
+		return nil, fmt.Errorf("serialize filter config failed: %w", err)
+	}
+
+	preset := model.FilterPreset{
+		TaskID:      taskID,
+		Name:        trimmedName,
+		Description: strings.TrimSpace(req.Description),
+		IsSystem:    false,
+		Scope:       "task",
+		ConfigJSON:  string(rawJSON),
+		CreatedAt:   time.Now(),
+		UpdatedAt:   time.Now(),
+	}
+
+	if err := taskDB.Create(&preset).Error; err != nil {
+		return nil, err
+	}
+	preset.Filters = &cleanFilters
+	return &preset, nil
+}
+
+// DeleteFilterPreset 删除指定任务的筛选预设（系统预设禁止删除）
+func (s *Service) DeleteFilterPreset(taskID string, presetID uint) error {
+	if !isValidTaskID(taskID) {
+		return fmt.Errorf("invalid task id: %s", taskID)
+	}
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	var preset model.FilterPreset
+	if err := taskDB.Where("id = ? AND task_id = ?", presetID, taskID).First(&preset).Error; err != nil {
+		return err
+	}
+	if preset.IsSystem {
+		return fmt.Errorf("system preset cannot be deleted")
+	}
+
+	return taskDB.Delete(&preset).Error
+}
+
+// GetTaskFacets 获取任务日志元数据字段的聚合枚举列表
+func (s *Service) GetTaskFacets(taskID string, field string) ([]model.FacetValueItem, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+
+	// 仅允许白名单列进行聚合
+	var colName string
+	switch strings.ToLower(strings.TrimSpace(field)) {
+	case "module":
+		colName = "module"
+	case "brief":
+		colName = "brief"
+	case "hostname":
+		colName = "hostname"
+	case "source_file":
+		colName = "source_file"
+	default:
+		return nil, fmt.Errorf("unsupported facet field: %s", field)
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	var items []model.FacetValueItem
+	err = taskDB.Model(&model.LogRecord{}).
+		Select(fmt.Sprintf("%s as value, count(*) as count", colName)).
+		Where(fmt.Sprintf("%s IS NOT NULL AND %s != ''", colName, colName)).
+		Group(colName).
+		Order("count desc").
+		Limit(20).
+		Scan(&items).Error
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+

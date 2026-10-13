@@ -46,6 +46,7 @@
         @click="$emit('select', rec)"
         @hover-enter="$emit('hover-enter', rec, $event)"
         @hover-leave="$emit('hover-leave', rec, $event)"
+        @pivot="$emit('pivot', $event)"
       />
       <el-empty
         v-if="!loading && logRecords.length === 0"
@@ -131,6 +132,7 @@ const emit = defineEmits([
   'filter-change',
   'filter-reset',
   'open-advanced-filter',
+  'pivot',
   'select',
   'hover-enter',
   'hover-leave',
