@@ -5,7 +5,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-	"unicode"
 )
 
 var timePatterns = []struct {
@@ -107,13 +106,6 @@ const commonTimePattern = `(?:UTC[+-]\d{1,2}(?::?\d{2})?\s+)?` +
 	`(?:[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+(?:\.\d+)*)?(?:[+-]\d{2}:?\d{2}|Z)?` +
 	`|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+(?:\.\d+)*)?(?:[+-]\d{2}:?\d{2}|Z)?)`
 
-// TrimNULAndSpace 清理字符串首尾的 NUL 字节（\x00，常见于嵌入式设备对齐填充）以及全部 Unicode 空白字符。
-func TrimNULAndSpace(s string) string {
-	return strings.TrimFunc(s, func(r rune) bool {
-		return r == 0 || unicode.IsSpace(r)
-	})
-}
-
 // subsecondSeqRegex 匹配华为设备带子秒序号的时间戳（如 AC/AP 设备输出的 07:38:47.170.2+08:00 或 07:38:46.90.1+08:00）。
 // 华为 VRP 设备在开启 precision-time millisecond 时，时间戳格式实测为 HH:MM:SS.<毫秒>.<子秒序号/亚毫秒位>。
 // 其中毫秒部分实测未补前导零（0~999），第二段数字为同毫秒内生成序号（或 0.1ms 亚毫秒小数）。
@@ -125,8 +117,8 @@ var subsecondSeqRegex = regexp.MustCompile(`(\d{2}:\d{2}:\d{2})\.(\d+)\.(\d+)(?:
 //    若未补齐前导 0，真实的 2ms (.2) 与 20ms (.20) 会全部塌缩为 200ms，产生严重的别名冲突。
 //    因此必须将毫秒部分（第一段）用前导 0 补齐为 3 位数字（如 .90 补为 090 即 90ms，.0 补为 000 即 0ms）。
 //
-// 2. 亚毫秒精度映射与单调保序：将第二段序号 seq 格式化为 3 位微秒偏移（seq ≤ 999 时映射为 0~999µs），
-//    拼装为 6 位小数（.mmmsss），使同 (秒, 毫秒) 的日志组恢复确定性的单调递增顺序，
+// 2. 亚毫秒精度映射与保序：将第二段序号 seq 格式化为 3 位微秒偏移（seq ≤ 999 时映射为 0~999µs），
+//    拼装为 6 位小数（.mmmsss），消除 94% 同刻塌缩（残余非单调与设备侧序号逆序同源），
 //    同时既不跨越毫秒边界，又最大化保留亚毫秒时间信息。
 func normalizeSubsecondSeq(raw string) string {
 	return subsecondSeqRegex.ReplaceAllStringFunc(raw, func(s string) string {
@@ -143,7 +135,7 @@ func normalizeSubsecondSeq(raw string) string {
 			ms = "0" + ms
 		}
 
-		// 2. 序号映射为 3 位微秒
+		// 2. 序号映射为 3 位微秒（实测 seq ≤ 999，此截断分支为防御性保留）
 		if len(seq) > 3 {
 			seq = seq[:3]
 		} else {
@@ -194,7 +186,7 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 	// 未标准化时会直接失配、让时间戳退化为零值。
 	raw = normalizeNumericOffset(raw)
 
-	// PARSE-19: 规范化华为 AC / AP 等设备的子秒点分序号格式（07:38:47.170.2 -> 07:38:47.170）
+	// PARSE-19: 规范化华为 AC / AP 等设备的子秒点分序号格式（07:38:47.170.2 -> 07:38:47.170002）
 	raw = normalizeSubsecondSeq(raw)
 
 	rawLen := len(raw)

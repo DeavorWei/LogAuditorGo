@@ -5,9 +5,17 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"unicode"
 
 	"logauditorgo/internal/model"
 )
+
+// TrimNULAndSpace 清理字符串首尾的 NUL 字节（\x00，常见于嵌入式设备对齐填充）以及全部 Unicode 空白字符。
+func TrimNULAndSpace(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		return r == 0 || unicode.IsSpace(r)
+	})
+}
 
 // LogParser 统一日志解析接口
 type LogParser interface {
