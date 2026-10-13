@@ -2434,6 +2434,9 @@ func (s *Service) DeleteFilterPreset(taskID string, presetID uint) error {
 	return taskDB.Delete(&preset).Error
 }
 
+// ErrUnsupportedFacetField 不支持的元数据聚合字段哨兵错误 (P3)
+var ErrUnsupportedFacetField = errors.New("unsupported facet field")
+
 // GetTaskFacets 获取任务日志元数据字段的聚合枚举列表
 func (s *Service) GetTaskFacets(taskID string, field string) ([]model.FacetValueItem, error) {
 	if !isValidTaskID(taskID) {
@@ -2452,7 +2455,7 @@ func (s *Service) GetTaskFacets(taskID string, field string) ([]model.FacetValue
 	case "source_file":
 		colName = "source_file"
 	default:
-		return nil, fmt.Errorf("unsupported facet field: %s", field)
+		return nil, fmt.Errorf("%w: %s", ErrUnsupportedFacetField, field)
 	}
 
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)

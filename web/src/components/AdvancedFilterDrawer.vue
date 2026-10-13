@@ -1062,8 +1062,15 @@ const handleBeforeClose = (done) => {
   }
 }
 
+const close = () => {
+  handleBeforeClose(() => {
+    visible.value = false
+  })
+}
+
 defineExpose({
   open,
+  close,
   openWithCondition,
   openWithTimePivot,
   visible
@@ -2408,7 +2415,7 @@ const confirmBatchUntag = async () => {
 
 .sparkline-bar-col:hover .sparkline-bar {
   background: var(--brand-600);
-  box-shadow: 0 0 4px rgba(2, 132, 199, 0.4);
+  box-shadow: var(--glow-brand);
 }
 
 .sparkline-bar-col.is-peak .sparkline-bar {

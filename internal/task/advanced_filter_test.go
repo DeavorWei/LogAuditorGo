@@ -2,6 +2,7 @@ package task
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -841,10 +842,10 @@ func TestGetTaskFacets(t *testing.T) {
 		t.Fatalf("expected non-empty facets for module, got empty")
 	}
 
-	// 验证非法字段报错
+	// 验证非法字段报错且匹配哨兵错误 (P3)
 	_, err = svc.GetTaskFacets(taskID, "illegal_field")
-	if err == nil {
-		t.Fatalf("expected error for unsupported facet field, got nil")
+	if err == nil || !errors.Is(err, ErrUnsupportedFacetField) {
+		t.Fatalf("expected ErrUnsupportedFacetField error, got %v", err)
 	}
 }
 

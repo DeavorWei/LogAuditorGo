@@ -353,6 +353,9 @@ useWorkbenchHotkeys({
   onEscape: () => {
     if (showQuickTagModal.value) showQuickTagModal.value = false
     else if (showLogDetailModal.value) showLogDetailModal.value = false
+    else if (advFilterDrawerRef.value?.visible) {
+      advFilterDrawerRef.value?.close?.()
+    }
     else if (workbenchUIStore.isImmersive) {
       workbenchUIStore.exitImmersive()
       logStreamRef.value?.scrollToLog(selectedLog.value?.id)
