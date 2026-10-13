@@ -124,19 +124,19 @@ func TestNULByteTrimming(t *testing.T) {
 	}
 }
 
-// TestUSGBriefWithSpaces 验证 USG 防火墙解析器同时支持真实单词助记符与带空格助记符，保持解析器间认知对称且不被改写设备类型
+// TestUSGBriefWithSpaces 验证 USG 防火墙解析器同时支持标准单词助记符与带空格助记符，保持解析器间认知对称且不被改写设备类型
 func TestUSGBriefWithSpaces(t *testing.T) {
-	// 1. 真实华为 USG 防火墙标准会话日志（单词型助记符）
-	realLine := "2026-04-15 16:00:00 USG-FW-01 %%01SEC/4/SESSION_CLOSE(s): Protocol=TCP, SrcIP=10.1.1.1, DstIP=192.168.1.1, Policy=default"
-	normReal, errReal := logparser.ParseLine(realLine)
-	if errReal != nil {
-		t.Fatalf("ParseLine real USG SEC failed: %v", errReal)
+	// 1. 源码基线用例（取自 sec_parser.go:15，验证放宽未破坏原标准单词型路径）
+	baseLine := "2026-04-15 16:00:00 USG-FW-01 %%01SEC/4/SESSION_CLOSE(s): Protocol=TCP, SrcIP=10.1.1.1, DstIP=192.168.1.1, Policy=default"
+	normBase, errBase := logparser.ParseLine(baseLine)
+	if errBase != nil {
+		t.Fatalf("ParseLine baseline USG SEC failed: %v", errBase)
 	}
-	if normReal.DeviceType != "Huawei-USG-Firewall" {
-		t.Errorf("expected Huawei-USG-Firewall, got %s", normReal.DeviceType)
+	if normBase.DeviceType != "Huawei-USG-Firewall" {
+		t.Errorf("expected Huawei-USG-Firewall, got %s", normBase.DeviceType)
 	}
-	if normReal.Brief != "SESSION_CLOSE" {
-		t.Errorf("expected brief 'SESSION_CLOSE', got %q", normReal.Brief)
+	if normBase.Brief != "SESSION_CLOSE" {
+		t.Errorf("expected brief 'SESSION_CLOSE', got %q", normBase.Brief)
 	}
 
 	// 2. 带空格多词助记符变体
