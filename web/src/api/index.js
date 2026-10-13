@@ -320,6 +320,9 @@ export default {
   getTaskFacets(taskId, field = 'module', options = {}) {
     return request.get(`/tasks/${taskId}/facets`, { params: { field }, ...options })
   },
+  getTaskLogSparkline(taskId, body, options = {}) {
+    return request.post(`/tasks/${taskId}/logs/sparkline`, body, options)
+  },
 
   // 报表导出下载 (基于 Blob，防御重复提交并由拦截器统一弹窗报错)
   // 支持传入 queryBody 协同导出高级筛选与标签圈选子集 (EXP-01)

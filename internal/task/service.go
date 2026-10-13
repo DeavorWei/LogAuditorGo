@@ -2475,3 +2475,137 @@ func (s *Service) GetTaskFacets(taskID string, field string) ([]model.FacetValue
 	return items, nil
 }
 
+// GetTaskLogSparkline 聚合计算当前筛选条件下的 24 桶迷你时序直方图
+func (s *Service) GetTaskLogSparkline(taskID string, req model.LogQueryRequestBody) (*model.SparklineResponse, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	baseQuery := taskDB.Model(&model.LogRecord{})
+	filterQuery, err := BuildLogFilterScope(baseQuery, req)
+	if err != nil {
+		return nil, err
+	}
+
+	// 1. 查找当前过滤条件下的时间边界
+	type BoundaryResult struct {
+		MinTime *string `gorm:"column:min_time"`
+		MaxTime *string `gorm:"column:max_time"`
+		Count   int64   `gorm:"column:count"`
+	}
+	var b BoundaryResult
+	err = filterQuery.Where("timestamp IS NOT NULL AND timestamp > '0001-01-01 00:00:00'").
+		Select("MIN(timestamp) as min_time, MAX(timestamp) as max_time, COUNT(*) as count").
+		Scan(&b).Error
+	if err != nil {
+		return nil, err
+	}
+
+	bucketCount := 24
+	resp := &model.SparklineResponse{
+		Buckets: make([]model.SparklineBucket, bucketCount),
+	}
+
+	if b.Count == 0 || b.MinTime == nil || b.MaxTime == nil || *b.MinTime == "" || *b.MaxTime == "" {
+		now := time.Now()
+		for i := 0; i < bucketCount; i++ {
+			resp.Buckets[i] = model.SparklineBucket{
+				Start: now.Format(time.RFC3339),
+				End:   now.Format(time.RFC3339),
+				Count: 0,
+			}
+		}
+		return resp, nil
+	}
+
+	parsedMin, err := model.ParseCustomTime(*b.MinTime)
+	if err != nil || parsedMin == nil {
+		return nil, fmt.Errorf("parse min time failed: %v", err)
+	}
+	parsedMax, err := model.ParseCustomTime(*b.MaxTime)
+	if err != nil || parsedMax == nil {
+		return nil, fmt.Errorf("parse max time failed: %v", err)
+	}
+
+	minT := parsedMin.Time
+	maxT := parsedMax.Time
+
+	if req.TimeStart != nil && !req.TimeStart.IsZero() {
+		minT = req.TimeStart.Time
+	}
+	if req.TimeEnd != nil && !req.TimeEnd.IsZero() {
+		maxT = req.TimeEnd.Time
+	}
+
+	minSec := minT.Unix()
+	maxSec := maxT.Unix()
+	diffSec := maxSec - minSec
+	if diffSec < int64(bucketCount) {
+		diffSec = int64(bucketCount)
+		maxSec = minSec + diffSec
+	}
+
+	stepSec := float64(diffSec) / float64(bucketCount)
+	if stepSec <= 0 {
+		stepSec = 1.0
+	}
+
+	// 初始化 24 个桶的起止时间
+	for i := 0; i < bucketCount; i++ {
+		bStart := minT.Add(time.Duration(float64(i)*stepSec) * time.Second)
+		bEnd := minT.Add(time.Duration(float64(i+1)*stepSec) * time.Second)
+		resp.Buckets[i] = model.SparklineBucket{
+			Start: bStart.Format(time.RFC3339),
+			End:   bEnd.Format(time.RFC3339),
+			Count: 0,
+		}
+	}
+
+	// 2. 在 SQLite 引擎中分组聚合
+	type BucketAggregate struct {
+		BucketIdx int   `gorm:"column:bucket_idx"`
+		Cnt       int64 `gorm:"column:cnt"`
+	}
+	var aggRows []BucketAggregate
+	aggBase := taskDB.Model(&model.LogRecord{})
+	aggQuery, err := BuildLogFilterScope(aggBase, req)
+	if err != nil {
+		return nil, err
+	}
+
+	calcExpr := fmt.Sprintf("MIN(%d, MAX(0, CAST((strftime('%%%%s', timestamp) - %d) / %f AS INTEGER)))", bucketCount-1, minSec, stepSec)
+	err = aggQuery.Where("timestamp IS NOT NULL AND timestamp > '0001-01-01 00:00:00'").
+		Select(fmt.Sprintf("%s as bucket_idx, COUNT(*) as cnt", calcExpr)).
+		Group("bucket_idx").
+		Order("bucket_idx ASC").
+		Scan(&aggRows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	var peakIdx = -1
+	var maxCount int64 = -1
+
+	for _, row := range aggRows {
+		if row.BucketIdx >= 0 && row.BucketIdx < bucketCount {
+			resp.Buckets[row.BucketIdx].Count = row.Cnt
+			if row.Cnt > maxCount {
+				maxCount = row.Cnt
+				peakIdx = row.BucketIdx
+			}
+		}
+	}
+
+	if peakIdx >= 0 && maxCount > 0 {
+		resp.PeakBucket = &resp.Buckets[peakIdx]
+	}
+
+	return resp, nil
+}
+

@@ -89,3 +89,16 @@ type FacetValueItem struct {
 	Count int64  `json:"count"`
 }
 
+// SparklineBucket 单个时间桶聚合
+type SparklineBucket struct {
+	Start string `json:"start"`
+	End   string `json:"end"`
+	Count int64  `json:"count"`
+}
+
+// SparklineResponse 迷你时序直方图响应
+type SparklineResponse struct {
+	Buckets    []SparklineBucket `json:"buckets"`
+	PeakBucket *SparklineBucket  `json:"peak_bucket,omitempty"`
+}
+

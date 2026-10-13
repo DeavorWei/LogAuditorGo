@@ -154,6 +154,7 @@ func SetupRouter(
 		v1.POST("/tasks/:id/import", taskHandler.ImportLogs)
 		v1.GET("/tasks/:id/logs", taskHandler.QueryLogs)
 		v1.POST("/tasks/:id/logs/query", taskHandler.QueryLogsUnified)
+		v1.POST("/tasks/:id/logs/sparkline", taskHandler.GetTaskLogSparkline)
 		v1.GET("/tasks/:id/modules", taskHandler.GetTaskModules)
 		v1.GET("/tasks/:id/facets", taskHandler.GetTaskFacets)
 		v1.GET("/tasks/:id/presets", taskHandler.ListFilterPresets)

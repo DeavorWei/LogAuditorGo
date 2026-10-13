@@ -1363,3 +1363,27 @@ func (h *TaskHandler) GetTaskFacets(c *gin.Context) {
 	SuccessResponse(c, facets)
 }
 
+// GetTaskLogSparkline 获取当前筛选条件下的迷你时间时序直方图 (Phase 3)
+func (h *TaskHandler) GetTaskLogSparkline(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+
+	var req model.LogQueryRequestBody
+	if c.Request.ContentLength > 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+
+	res, err := h.taskSvc.GetTaskLogSparkline(taskID, req)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, res)
+}
+

@@ -347,6 +347,9 @@ useWorkbenchHotkeys({
   onToggleBrowserFullscreen: () => {
     workbenchUIStore.toggleBrowserFullscreen()
   },
+  onOpenAdvancedFilter: () => {
+    advFilterDrawerRef.value?.open()
+  },
   onEscape: () => {
     if (showQuickTagModal.value) showQuickTagModal.value = false
     else if (showLogDetailModal.value) showLogDetailModal.value = false

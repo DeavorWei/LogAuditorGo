@@ -6,6 +6,7 @@
     destroy-on-close
     class="advanced-filter-drawer"
     :before-close="handleBeforeClose"
+    @keydown="handleDrawerKeydown"
   >
     <div class="drawer-container">
       <!-- 0. 顶栏预设方案选择器 (Preset Selector Bar) -->
@@ -525,18 +526,74 @@
         </div>
       </div>
 
-      <!-- 4. 实时匹配预览 -->
+      <!-- 4. 实时匹配预览与迷你时序直方图 (Phase 3) -->
       <div class="preview-box">
-        <div class="preview-info">
-          <el-icon class="preview-icon"><Aim /></el-icon>
-          <span class="preview-title">当前全量复合条件匹配预览：</span>
-          <span v-if="previewLoading" class="preview-loading">计算中...</span>
-          <span v-else class="preview-count">
-            <strong>{{ previewTotal }}</strong> 条日志
-          </span>
+        <div class="preview-header-line">
+          <div class="preview-info">
+            <el-icon class="preview-icon"><Aim /></el-icon>
+            <span class="preview-title">当前全量复合条件匹配预览：</span>
+            <span v-if="previewLoading" class="preview-loading">计算中...</span>
+            <span v-else class="preview-count">
+              <strong>{{ previewTotal }}</strong> 条日志
+            </span>
+          </div>
+
+          <div class="preview-header-actions">
+            <!-- 发生高峰 15m 快捷药丸 -->
+            <el-button
+              v-if="sparklineData?.peak_bucket && sparklineData.peak_bucket.count > 0"
+              size="small"
+              type="danger"
+              plain
+              class="peak-pill-btn"
+              title="根据时序直方图自动锁定日志发生最高峰 15 分钟窗口"
+              @click="applyPeakTimeWindow"
+            >
+              <el-icon><Timer /></el-icon>
+              <span>发生高峰 15m ({{ sparklineData.peak_bucket.count }}条)</span>
+            </el-button>
+
+            <!-- 复制自然语言筛选描述 -->
+            <el-button
+              size="small"
+              class="copy-desc-btn"
+              title="生成并复制人类可读的结构化中文筛选条件描述"
+              @click="copyFilterDescription"
+            >
+              <el-icon><CopyDocument /></el-icon>
+              <span>复制条件摘要</span>
+            </el-button>
+          </div>
         </div>
+
+        <!-- 迷你时序直方图 (24 桶 Sparkline) -->
+        <div v-if="sparklineBuckets.length > 0" class="sparkline-wrapper">
+          <div class="sparkline-title-row">
+            <span class="sparkline-meta">24 桶时序分布直方图 (点击单柱聚焦时间)</span>
+            <span v-if="sparklineTimeRange" class="sparkline-time-range">{{ sparklineTimeRange }}</span>
+          </div>
+          <div class="sparkline-chart">
+            <div
+              v-for="(b, idx) in sparklineBuckets"
+              :key="idx"
+              class="sparkline-bar-col"
+              :class="{
+                'is-peak': sparklineData?.peak_bucket && b.start === sparklineData.peak_bucket.start && b.count > 0,
+                'is-zero': b.count === 0
+              }"
+              :title="formatBucketTooltip(b)"
+              @click="zoomToBucket(b)"
+            >
+              <div
+                class="sparkline-bar"
+                :style="{ height: getBarHeightPercent(b) + '%' }"
+              />
+            </div>
+          </div>
+        </div>
+
         <div class="preview-hint">
-          * 预览结果已实时叠加基础检索维度、标签多模态约束与高级启用的规则条件
+          * 预览结果已实时叠加基础检索维度、标签多模态约束与高级启用的规则条件；支持快捷键 Alt+F 呼出、Ctrl+Enter 立即应用。
         </div>
       </div>
     </div>
@@ -767,7 +824,9 @@ import {
   ArrowDown,
   ArrowUp,
   RefreshRight,
-  CollectionTag
+  CollectionTag,
+  Timer,
+  CopyDocument
 } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '@/api'
@@ -777,6 +836,7 @@ import useTaskStore from '@/stores/task'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import { SYSTEM_EXPERT_PRESETS } from '@/constants/filterPresets'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import { formatTime } from '@/utils/format'
 
 const props = defineProps({
   taskId: {
@@ -799,6 +859,14 @@ const visible = ref(false)
 const previewLoading = ref(false)
 const previewTotal = ref(0)
 const isBaseSectionCollapsed = ref(false)
+
+// 时序直方图与高峰分析 (Phase 3)
+const sparklineData = ref(null)
+const sparklineBuckets = computed(() => sparklineData.value?.buckets || [])
+const maxBucketCount = computed(() => {
+  const counts = sparklineBuckets.value.map(b => b.count)
+  return counts.length > 0 ? Math.max(...counts, 1) : 1
+})
 
 // 有效任务 ID 计算 (优先 props，兜底 store)
 const effectiveTaskId = computed(() => props.taskId || taskStore.currentTaskId || '')
@@ -1490,11 +1558,20 @@ const fetchPreviewCount = async () => {
       }
     }
 
-    const res = await api.queryTaskLogsUnified(effectiveTaskId.value, queryBody, {
-      signal: previewAbortController.signal
-    })
-    if (res.code === 0) {
-      previewTotal.value = res.data.total || 0
+    const [res, sparkRes] = await Promise.allSettled([
+      api.queryTaskLogsUnified(effectiveTaskId.value, queryBody, {
+        signal: previewAbortController.signal
+      }),
+      api.getTaskLogSparkline(effectiveTaskId.value, queryBody, {
+        signal: previewAbortController.signal
+      })
+    ])
+
+    if (res.status === 'fulfilled' && res.value?.code === 0) {
+      previewTotal.value = res.value.data?.total || 0
+    }
+    if (sparkRes.status === 'fulfilled' && sparkRes.value?.code === 0) {
+      sparklineData.value = sparkRes.value.data || null
     }
   } catch (e) {
     if (e.name !== 'CanceledError' && e.name !== 'AbortError') {
@@ -1502,6 +1579,126 @@ const fetchPreviewCount = async () => {
     }
   } finally {
     previewLoading.value = false
+  }
+}
+
+// 直方图高度比例
+const getBarHeightPercent = (b) => {
+  if (!b.count) return 4
+  const pct = Math.round((b.count / maxBucketCount.value) * 100)
+  return Math.max(pct, 8)
+}
+
+// 桶悬浮提示
+const formatBucketTooltip = (b) => {
+  const s = b.start ? formatTime(b.start) : ''
+  const e = b.end ? formatTime(b.end) : ''
+  return `${s} ~ ${e}\n日志数量: ${b.count} 条 (点击直接聚焦此时段)`
+}
+
+// 聚焦到指定时间桶
+const zoomToBucket = (b) => {
+  if (!b.start || !b.end) return
+  draftBase.timeStart = b.start
+  draftBase.timeEnd = b.end
+  debouncedPreview()
+  ElMessage.success('已缩放时间至选定时间桶')
+}
+
+// 发生高峰 15m 药丸：锁定最高峰时间
+const applyPeakTimeWindow = () => {
+  const p = sparklineData.value?.peak_bucket
+  if (!p || !p.start || !p.end) {
+    ElMessage.info('未识别到日志高峰时段')
+    return
+  }
+  const startMs = new Date(p.start).getTime()
+  const endMs = new Date(p.end).getTime()
+  if (isNaN(startMs) || isNaN(endMs)) return
+  const midMs = (startMs + endMs) / 2
+  const halfWindowMs = 7.5 * 60 * 1000 // 15分钟窗口
+  draftBase.timeStart = new Date(midMs - halfWindowMs).toISOString()
+  draftBase.timeEnd = new Date(midMs + halfWindowMs).toISOString()
+  debouncedPreview()
+  ElMessage.success(`已锁定最高峰 15 分钟窗口 (峰值: ${p.count} 条)`)
+}
+
+// 直方图总时间跨度文字
+const sparklineTimeRange = computed(() => {
+  const bs = sparklineBuckets.value
+  if (bs.length < 2) return ''
+  const first = bs[0].start
+  const last = bs[bs.length - 1].end
+  if (!first || !last) return ''
+  return `${formatTime(first)} 至 ${formatTime(last)}`
+})
+
+// 生成人类可读的结构化中文筛选条件描述
+const generateFilterDescription = () => {
+  const parts = []
+  if (draftBase.keyword) parts.push(`关键词: "${draftBase.keyword}"`)
+  if (draftBase.deviceId) {
+    const d = props.taskDevices.find(x => x.id === draftBase.deviceId)
+    parts.push(`设备: ${d ? (d.device_name || d.device_ip) : draftBase.deviceId}`)
+  }
+  if (draftBase.severity !== null && draftBase.severity !== undefined && draftBase.severity !== '') {
+    const sevMap = { 0: 'EMERGENCY', 1: 'ALERT', 2: 'CRITICAL', 3: 'ERROR', 4: 'WARNING', 5: 'NOTICE', 6: 'INFO', 7: 'DEBUG' }
+    parts.push(`级别: ${sevMap[draftBase.severity] || draftBase.severity}`)
+  }
+  if (draftBase.matched !== null && draftBase.matched !== undefined && draftBase.matched !== '') {
+    parts.push(`匹配状态: ${draftBase.matched ? '已匹配' : '未匹配'}`)
+  }
+  if (draftBase.timeStart || draftBase.timeEnd) {
+    const s = draftBase.timeStart ? formatTime(draftBase.timeStart) : '起始'
+    const e = draftBase.timeEnd ? formatTime(draftBase.timeEnd) : '现在'
+    parts.push(`时间跨度: ${s} 至 ${e}`)
+  }
+  if (draftBase.untaggedOnly) {
+    parts.push('标签筛选: 仅未打标日志')
+  } else {
+    if (draftBase.tagIds.length > 0) {
+      const names = draftBase.tagIds.map(id => tagStore.tags.find(t => t.id === id)?.name || id).join(', ')
+      parts.push(`包含标签 (${draftBase.tagLogic}): [${names}]`)
+    }
+    if (draftBase.excludeTagIds.length > 0) {
+      const names = draftBase.excludeTagIds.map(id => tagStore.tags.find(t => t.id === id)?.name || id).join(', ')
+      parts.push(`排除标签: [${names}]`)
+    }
+  }
+  const validAdv = localAdvanced.conditions.filter(c => !c.disabled && c.value)
+  if (validAdv.length > 0) {
+    const fieldMap = {
+      raw_log: '原始报文',
+      module: '模块',
+      brief: '摘要',
+      hostname: '主机名',
+      slot_info: '槽位',
+      source_file: '来源文件',
+      parameters: '参数',
+      tag: '标签'
+    }
+    const condStrs = validAdv.map(c => `${fieldMap[c.field] || c.field} ${c.op} "${c.value}"`)
+    parts.push(`高级规则 (${localAdvanced.logic}): (${condStrs.join(localAdvanced.logic === 'OR' ? ' 或 ' : ' 且 ')})`)
+  }
+  return parts.length > 0 ? `【日志审计筛选条件】\n${parts.join('\n')}` : '【日志审计筛选条件】全量日志 (无额外限制)'
+}
+
+// 复制条件描述到剪贴板
+const copyFilterDescription = async () => {
+  const text = generateFilterDescription()
+  try {
+    await navigator.clipboard.writeText(text)
+    ElMessage.success('筛选条件中文描述已复制到剪贴板')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择')
+  }
+}
+
+// 抽屉内键盘快捷键监听 (Ctrl+Enter 立即应用)
+const handleDrawerKeydown = (e) => {
+  if (e.ctrlKey && e.key === 'Enter') {
+    e.preventDefault()
+    applyFilters()
   }
 }
 
@@ -2095,12 +2292,23 @@ const confirmBatchUntag = async () => {
   margin-top: 4px;
 }
 
-/* 实时预览盒 */
+/* 实时预览盒与时序直方图 (Phase 3) */
 .preview-box {
   background: var(--warning-bg, #fffbeb);
-  border: 1px solid var(--warning-bg, #fffbeb);
+  border: 1px solid var(--border-base, var(--gray-200));
   padding: 12px 16px;
-  border-radius: var(--radius-md, 6px);
+  border-radius: var(--radius-lg, 8px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.preview-header-line {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
 }
 
 .preview-info {
@@ -2131,10 +2339,89 @@ const confirmBatchUntag = async () => {
   color: var(--text-secondary, var(--gray-500));
 }
 
+.preview-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.peak-pill-btn {
+  font-weight: 500;
+}
+
+.copy-desc-btn {
+  background: var(--bg-surface, #ffffff);
+}
+
+/* 迷你时序直方图样式 */
+.sparkline-wrapper {
+  background: var(--bg-surface, #ffffff);
+  border: 1px solid var(--border-base, var(--gray-200));
+  border-radius: var(--radius-md, 6px);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sparkline-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-xs, 11px);
+  color: var(--text-secondary, var(--gray-500));
+}
+
+.sparkline-meta {
+  font-weight: 500;
+}
+
+.sparkline-time-range {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.sparkline-chart {
+  display: flex;
+  align-items: flex-end;
+  height: 44px;
+  gap: 3px;
+  background: var(--bg-subtle, var(--gray-50));
+  border-radius: var(--radius-xs, 4px);
+  padding: 4px 6px 0;
+}
+
+.sparkline-bar-col {
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  cursor: pointer;
+  padding: 0 1px;
+}
+
+.sparkline-bar {
+  width: 100%;
+  border-radius: 2px 2px 0 0;
+  background: var(--brand-400, #38bdf8);
+  transition: height 0.2s ease, background 0.15s ease;
+}
+
+.sparkline-bar-col:hover .sparkline-bar {
+  background: var(--brand-600, #0284c7);
+  box-shadow: 0 0 4px rgba(2, 132, 199, 0.4);
+}
+
+.sparkline-bar-col.is-peak .sparkline-bar {
+  background: var(--danger-500, #ef4444);
+}
+
+.sparkline-bar-col.is-zero .sparkline-bar {
+  background: var(--gray-200, #e2e8f0);
+}
+
 .preview-hint {
   font-size: var(--fs-xs, 11px);
   color: var(--text-secondary, var(--gray-500));
-  margin-top: 4px;
 }
 
 /* 底部操作区 */

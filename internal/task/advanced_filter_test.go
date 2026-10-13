@@ -833,4 +833,45 @@ func TestGetTaskFacets(t *testing.T) {
 	}
 }
 
+// 验证 Sparkline 24 桶聚合
+func TestGetTaskLogSparkline(t *testing.T) {
+	svc, taskID, cleanup := setupTestTaskWithLogs(t)
+	defer cleanup()
+
+	// 1. 无过滤条件全量
+	resp, err := svc.GetTaskLogSparkline(taskID, model.LogQueryRequestBody{})
+	if err != nil {
+		t.Fatalf("get sparkline failed: %v", err)
+	}
+	if len(resp.Buckets) != 24 {
+		t.Fatalf("expected 24 buckets, got %d", len(resp.Buckets))
+	}
+
+	var totalCount int64
+	for _, b := range resp.Buckets {
+		totalCount += b.Count
+	}
+	if totalCount != 4 {
+		t.Fatalf("expected total 4 logs in sparkline buckets, got %d", totalCount)
+	}
+	if resp.PeakBucket == nil || resp.PeakBucket.Count == 0 {
+		t.Fatalf("expected valid peak bucket, got nil or 0 count")
+	}
+
+	// 2. 带高级条件过滤 (module = 'BFD')
+	bfdResp, err := svc.GetTaskLogSparkline(taskID, model.LogQueryRequestBody{
+		Module: "BFD",
+	})
+	if err != nil {
+		t.Fatalf("get bfd sparkline failed: %v", err)
+	}
+	var bfdCount int64
+	for _, b := range bfdResp.Buckets {
+		bfdCount += b.Count
+	}
+	if bfdCount != 1 {
+		t.Fatalf("expected 1 log for BFD in sparkline, got %d", bfdCount)
+	}
+}
+
 
