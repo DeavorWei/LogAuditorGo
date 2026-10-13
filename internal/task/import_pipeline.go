@@ -119,7 +119,11 @@ func scanLineSource(r io.Reader, sampleN int) (total int, sample []string, err e
 	scanner.Buffer(scanBuf, maxScanLineBytes)
 
 	for scanner.Scan() {
-		l := strings.TrimSpace(scanner.Text())
+		text := scanner.Text()
+		if logparser.IsBlankOrGarbageLine(text) {
+			continue
+		}
+		l := logparser.SanitizeLogLine(text)
 		if l == "" {
 			continue
 		}
@@ -141,7 +145,11 @@ func loadAllLines(r io.Reader, sampleN int) (lines []string, sample []string, er
 	scanner.Buffer(scanBuf, maxScanLineBytes)
 
 	for scanner.Scan() {
-		l := strings.TrimSpace(scanner.Text())
+		text := scanner.Text()
+		if logparser.IsBlankOrGarbageLine(text) {
+			continue
+		}
+		l := logparser.SanitizeLogLine(text)
 		if l == "" {
 			continue
 		}
@@ -224,7 +232,13 @@ func (s *Service) parseAndMatchChunk(lines []string, cleanName string, deviceID 
 	close(jobs)
 	wg.Wait()
 
-	return records
+	validRecords := make([]model.LogRecord, 0, len(records))
+	for _, rec := range records {
+		if strings.TrimSpace(rec.RawLog) != "" {
+			validRecords = append(validRecords, rec)
+		}
+	}
+	return validRecords
 }
 
 // parseLogLine 解析单行日志并匹配知识库，返回可直接落库的 LogRecord。
@@ -232,6 +246,10 @@ func (s *Service) parseAndMatchChunk(lines []string, cleanName string, deviceID 
 // 9.1: 这是 ImportLogsWithDevice 与 ReanalyzeTask 原本各自复制一份的核心逻辑（约 45 行），
 // 抽取后两条链路共享同一实现，不会再出现"重分析结果与首次导入不一致"。
 func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType, deviceVersion string) (rec model.LogRecord) {
+	// 纵深防御：前置确保单行必定经过清洗。SanitizeLogLine 具备 Fast-Path（纯字节扫描零内存分配），
+	// 若前置 scanner 已清洗则直接瞬时幂等返回，保证 panic recover 和 ParseLine fallback 分支绝对安全。
+	line = logparser.SanitizeLogLine(line)
+
 	// 兜底：单行 panic 只影响这一行，绝不拖垮整个批次
 	defer func() {
 		if r := recover(); r != nil {
@@ -482,7 +500,7 @@ func (s *Service) persistFileBundle(
 			cleanup()
 			return err
 		}
-		processed += len(chunk)
+		processed += len(records)
 		if onProgress != nil {
 			onProgress(processed)
 		}
@@ -509,7 +527,11 @@ func (s *Service) persistFileBundle(
 		scanner.Buffer(scanBuf, maxScanLineBytes)
 
 		for scanner.Scan() {
-			l := strings.TrimSpace(scanner.Text())
+			text := scanner.Text()
+			if logparser.IsBlankOrGarbageLine(text) {
+				continue
+			}
+			l := logparser.SanitizeLogLine(text)
 			if l == "" {
 				continue
 			}

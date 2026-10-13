@@ -11,6 +11,11 @@ import (
 )
 
 // TrimNULAndSpace 清理字符串首尾的 NUL 字节（\x00，常见于嵌入式设备对齐填充）以及全部 Unicode 空白字符。
+//
+// 注意（历史兜底冗余）：
+// 当前日志在进入 ParseLine 时已统一由 SanitizeLogLine 完成全量清洗与控制字符规范化。
+// 本函数目前保留供各子解析器（vrp_parser / sec_parser / time_parser）作为历史调用兼容与局部首尾兜底；
+// 本函数仅扫描并剥离【首尾】字符，切勿依赖本函数处理字符串内部夹杂的 NUL 字节或控制字符。
 func TrimNULAndSpace(s string) string {
 	return strings.TrimFunc(s, func(r rune) bool {
 		return r == 0 || unicode.IsSpace(r)
@@ -60,7 +65,7 @@ func ParseLine(line string) (norm *model.NormalizedLog, err error) {
 		}
 	}()
 
-	line = TrimNULAndSpace(line)
+	line = SanitizeLogLine(line)
 	if line == "" {
 		return nil, fmt.Errorf("empty log line")
 	}

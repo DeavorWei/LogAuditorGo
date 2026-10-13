@@ -17,6 +17,7 @@ import (
 	"gorm.io/gorm"
 
 	"logauditorgo/internal/config"
+	"logauditorgo/internal/logparser"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
@@ -2272,26 +2273,46 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 			break
 		}
 
+		validRecords := make([]model.LogRecord, 0, len(records))
+		var garbageIDs []uint
+
 		for i := range records {
 			rec := &records[i]
 			lastID = rec.ID
-			parsed := s.parseLogLine(rec.RawLog, rec.SourceFile, rec.DeviceID, taskInfo.DeviceType, deviceVersion)
 
+			cleanRaw := logparser.SanitizeLogLine(rec.RawLog)
+			if cleanRaw == "" {
+				// 存量坏块/纯 NUL 垃圾行：清洗后为空，收集并在下方物理删除，避免行数虚高
+				garbageIDs = append(garbageIDs, rec.ID)
+				continue
+			}
+
+			parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, taskInfo.DeviceType, deviceVersion)
 			if parsed.KnowledgeID > 0 {
 				matchedCount++
 			}
-			// 保留主键与归属信息，只覆盖解析产出的字段
+			// 保留主键与归属信息，覆盖解析产出的字段及已清洗的 RawLog
 			parsed.ID = rec.ID
 			parsed.DeviceID = rec.DeviceID
 			parsed.SourceFile = rec.SourceFile
-			records[i] = parsed
+			parsed.RawLog = cleanRaw
+			validRecords = append(validRecords, parsed)
 		}
 
-		alignChunkTimestamps(records, &reanalyzeLastFile, &reanalyzeLastTS)
+		// 物理删除存量坏块行（若有）
+		if len(garbageIDs) > 0 {
+			if err := taskDB.Where("id IN ?", garbageIDs).Delete(&model.LogRecord{}).Error; err != nil {
+				logger.Log.Warnf("[Task Service] Failed to delete %d garbage records during reanalyze: %v", len(garbageIDs), err)
+			}
+		}
 
-		if err := batchUpdateLogRecords(taskDB, records); err != nil {
-			return s.failTask(taskDB, &taskInfo, tr,
-				fmt.Errorf("batch update log records failed: %w", err), "批量更新重新解析数据失败")
+		if len(validRecords) > 0 {
+			alignChunkTimestamps(validRecords, &reanalyzeLastFile, &reanalyzeLastTS)
+
+			if err := batchUpdateLogRecords(taskDB, validRecords); err != nil {
+				return s.failTask(taskDB, &taskInfo, tr,
+					fmt.Errorf("batch update log records failed: %w", err), "批量更新重新解析数据失败")
+			}
 		}
 
 		processedCount += int64(len(records))
@@ -2317,6 +2338,38 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 		logger.Log.Errorf("[Task Service] Refresh device stats failed: %v", statsErr)
 	}
 	s.syncTaskDeviceCount(taskID, taskDB)
+
+	// 刷新每个文件实际行数，保证 task_files.line_count 与物理删除存量坏块后的 log_records 严格一致。
+	//
+	// 【语义变更说明】：
+	// 此处将 TaskFile.LineCount 的语义由"首次导入时预扫的原始行数"演进为"当前任务数据库中实际生效的日志记录行数"。
+	// 重分析阶段物理删除纯坏块/全 NUL 行后，通过此处重新聚合回写：
+	// 1. 若某文件部分坏块行被物理删除，LineCount 自动降为实际有效行数，与前端文件列表页、明细及总数保持一致；
+	// 2. 若极端情况下某文件的所有行均被判为垃圾删除，该 TaskFile.LineCount 会被置为 0，但 TaskFile 实体记录予以保留以追溯文件来源。
+	var fileStats []struct {
+		SourceFile string `gorm:"column:source_file"`
+		Count      int    `gorm:"column:count"`
+	}
+	if err := taskDB.Model(&model.LogRecord{}).
+		Select("source_file, count(*) as count").
+		Group("source_file").
+		Scan(&fileStats).Error; err != nil {
+		logger.Log.Warnf("[Task Service] Aggregate file line counts during reanalyze failed: %v", err)
+	} else {
+		statMap := make(map[string]int, len(fileStats))
+		for _, fs := range fileStats {
+			statMap[fs.SourceFile] = fs.Count
+		}
+		var taskFiles []model.TaskFile
+		if err := taskDB.Find(&taskFiles).Error; err == nil {
+			for _, tf := range taskFiles {
+				actualCount := statMap[tf.FileName]
+				if tf.LineCount != actualCount {
+					_ = taskDB.Model(&model.TaskFile{}).Where("id = ?", tf.ID).Update("line_count", actualCount).Error
+				}
+			}
+		}
+	}
 
 	finalLogCount, finalMatched := recountTaskLogs(taskDB)
 
