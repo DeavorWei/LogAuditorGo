@@ -40,7 +40,7 @@ func SetupRouter(
 		gin.SetMode(gin.DebugMode)
 	case "test":
 		gin.SetMode(gin.TestMode)
-	case "release":
+	case "release", "info":
 		gin.SetMode(gin.ReleaseMode)
 	default:
 		gin.SetMode(gin.ReleaseMode)

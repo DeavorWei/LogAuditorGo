@@ -73,7 +73,7 @@ const defaultConfigFileTemplate = `# LogAuditorGo 配置文件
 
 server:
   port: 8080        # HTTP 服务监听端口
-  mode: debug       # 运行模式: debug 或 release
+  mode: release     # 运行模式: release 或 debug
 
 storage:
   data_dir: "LogAuditorGoData"                         # 默认数据根目录
@@ -108,7 +108,7 @@ func Load(configPath string) (*Config, error) {
 
 	// 默认值
 	v.SetDefault("server.port", 8080)
-	v.SetDefault("server.mode", "debug")
+	v.SetDefault("server.mode", "release")
 	v.SetDefault("storage.data_dir", DefaultDataDir)
 	v.SetDefault("storage.knowledge_db", filepath.Join(DefaultDataDir, "knowledge.db"))
 	v.SetDefault("storage.bleve_index", filepath.Join(DefaultDataDir, "bleve", "knowledge.bleve"))
@@ -222,6 +222,7 @@ var validServerModes = map[string]bool{
 	"debug":   true,
 	"release": true,
 	"test":    true,
+	"info":    true,
 }
 
 // validate 校验配置合法范围。
@@ -244,14 +245,17 @@ func validate(cfg *Config) error {
 		cfg.Server.Port = 8080
 	}
 	if cfg.Server.Mode == "" {
-		cfg.Server.Mode = "debug"
+		cfg.Server.Mode = "release"
 	}
-	if !validServerModes[strings.ToLower(strings.TrimSpace(cfg.Server.Mode))] {
+	modeLower := strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
+	if modeLower == "info" {
+		cfg.Server.Mode = "release"
+	} else if !validServerModes[modeLower] {
 		fmt.Fprintf(os.Stderr, "[Config][WARN] unknown server.mode=%q, falling back to release (config file: %s)\n",
 			cfg.Server.Mode, where)
 		cfg.Server.Mode = "release"
 	} else {
-		cfg.Server.Mode = strings.ToLower(strings.TrimSpace(cfg.Server.Mode))
+		cfg.Server.Mode = modeLower
 	}
 
 	if cfg.Log.MaxSizeMB < 0 {
