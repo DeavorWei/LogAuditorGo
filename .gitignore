@@ -1,5 +1,6 @@
 *.exe
 *.log
+!internal/logparser/testdata/**
 *.db
 /原始产品文档/
 /web/node_modules

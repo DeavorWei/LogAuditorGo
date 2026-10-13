@@ -1,0 +1,10 @@
+################################################################
+#     This logfile is generated at slot 0
+################################################################
+Oct 12 2026 07:38:47.170.1+08:00 AC6508 %%01AAA/6/USER_EVENT_RADIUS_PROC(l)[511722]:radius authentication procedure. (DeviceMac=f4-e5-f2-70-f4-bc, UserMac=70-a8-d3-ec-ef-c8)
+Oct 12 2026 07:38:47.170.2+08:00 AC6508 %%01CM/5/USER_ACCESSRESULT(s)[511724]:[WLAN_STA_INFO_AUTHENTICATION]ACMAC:f4-e5-f2-70-f4-bc;ACNAME:AC6508;APMAC:8c-e5-ef-80-a7-a0;APNAME:25F-AP3-zongwu;SSID:btet_it;RADIOID:1;USER:term_468127e3-63c1-46be-b64f-b293e9ec7495;MAC:70-a8-d3-ec-ef-c8;IPADDRESS:-;IPV6ADDRESS:-;TIME:1791761927;ZONE:UTC+0800;DAYLIGHT:false;ACCOUNTSTARTTIME:-;ERRCODE:130;RESULT:errcode=1302 NAC authentication proxy returned 401 Unauthorized name:term_468127e3-63c1-46be-b64f-b293e9ec7495 mac:70a8d3ecefc8 nac reject ;USERGROUP:NULL;AUTHENPLACE:RADIUS;CIB ID:17094;INTERFACE:Wlan-Dbss17694;ACCESS TYPE:None;SelectRDSIP:10.101.166.137;SelectERRCODE:205;RDSIP:-;Portal TYPE:-;AUTHID=1705421619;AuthFailType:802.1x;AUTHPROTOCOL:-;
+Oct 12 2026 07:38:46.90.1+08:00 AC6508 %%01AAA/6/USER_EVENT_RADIUS_PROC(l)[511720]:radius authentication procedure. (DeviceMac=f4-e5-f2-70-f4-bc)
+Jul 24 2026 13:04:07.0.1+08:00 AC6508 %%01CM/5/USER_OFFLINERESULT(s)[321799]:[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;ACNAME:AC6508
+Oct 11 2026 20:40:40.980.12+08:00 26F-AP3-xingnengjicheng %%01WSRV/6/STA_EVENT_DISASSOCIATED(l)[198644]:The station is disassociated(ApMac=8c-e5-ef-cf-f0-c0,UserMac=c8-58-c0-9b-71-6b)
+Oct 12 2026 03:10:08.670.7+08:00 26F-AP3-xingnengjicheng %%01PD/6/PD WORK MODE CHANGE(l)[198780]:PD WORK MODE CHANGE PD Work Mode Change Report to Controller return OK.
+Jul 25 2026 12:39:22+08:00 AC6508 %%01SHELL/5/USERCONFIRM(l)[2]:Record user confirmed information. (Info="Task=CFM, Ip=**, User=**")

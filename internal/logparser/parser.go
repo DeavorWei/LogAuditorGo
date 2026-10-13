@@ -52,6 +52,11 @@ func ParseLine(line string) (norm *model.NormalizedLog, err error) {
 		}
 	}()
 
+	line = TrimNULAndSpace(line)
+	if line == "" {
+		return nil, fmt.Errorf("empty log line")
+	}
+
 	parsers, _ := parserList.Load().([]LogParser)
 	for _, p := range parsers {
 		if p.Support(line) {

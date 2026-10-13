@@ -19,7 +19,9 @@ import (
 //     部分变体日志省略了 (l)/(s)/(p)/(d)/(c) 标识，旧正则同样会整行失配。
 // PARSE-09: 时间组复用 commonTimePattern，与 USG 解析器共享同一套时间格式认知，
 // 避免"某条解析链路只认部分时间格式"的历史问题再次出现。
-var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>` + commonTimePattern + `)\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+// PARSE-20: AP 设备的 PD (PoE 供电设备) 模块中 Brief 可能包含空格（如 PD WORK MODE CHANGE）。
+// 将 brief 由 `[A-Za-z0-9_\-]+` 放宽为 `[A-Za-z0-9_\-]+(?:\s+[A-Za-z0-9_\-]+)*`。
+var vrpRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>` + commonTimePattern + `)\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+(?:\s+[A-Za-z0-9_\-]+)*)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 var (
 	vrpPriIdx     = vrpRegex.SubexpIndex("pri")
@@ -37,7 +39,8 @@ var (
 
 // 简化的 VRP 格式正则 (某些 syslog 转发器可能丢弃了部分 header)
 // PARSE-10: 同主正则，severity 放宽为 [0-8]、类型组改为可选。
-var vrpSimpleRegex = regexp.MustCompile(`%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+// PARSE-20: brief 支持含空格短语。
+var vrpSimpleRegex = regexp.MustCompile(`%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+(?:\s+[A-Za-z0-9_\-]+)*)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 var (
 	vrpSimpleVersionIdx = vrpSimpleRegex.SubexpIndex("version")
@@ -69,7 +72,7 @@ func (p *VRPParser) Support(line string) bool {
 }
 
 func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
-	line = strings.TrimSpace(line)
+	line = TrimNULAndSpace(line)
 	if line == "" {
 		return nil, fmt.Errorf("empty log line")
 	}
@@ -122,6 +125,8 @@ func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
 			timeStr := strings.Join(prefixParts[:len(prefixParts)-1], " ")
 			if t, err := ParseHuaweiTimestamp(timeStr); err == nil {
 				norm.Timestamp = t
+			} else {
+				logger.Log.Warnf("[LogParser VRP Simple] Parse timestamp '%s' failed: %v", timeStr, err)
 			}
 		} else if len(prefixParts) == 1 {
 			norm.Hostname = prefixParts[0]

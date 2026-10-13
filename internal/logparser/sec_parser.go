@@ -19,8 +19,9 @@ import (
 //     旧正则直接失配，全部落进 VRP 兜底分支，DeviceType 被改写成 Huawei-VRP；
 //  2. 时间组扩展为可复用的通用时间子式，支持 BSD（`Apr 15 2026 ...`）与
 //     `UTC+08:00 2026-04-15 ...` 前缀这两种真实存在的变体；
-//  3. 补上 slot / seq 捕获组，Slot 与 Sequence 不再永久丢失。
-var usgSecRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>` + commonTimePattern + `)\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+)(?i:\((?P<type>[a-z])\))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
+//  3. 补上 slot / seq 捕获组，Slot 与 Sequence 不再永久丢失；
+//  4. brief 同步放宽为支持多词短语 `[A-Za-z0-9_\-]+(?:\s+[A-Za-z0-9_\-]+)*`，与 VRP 解析器保持完全一致认知。
+var usgSecRegex = regexp.MustCompile(`^(?:<(?P<pri>\d+)>)?\s*(?P<time>` + commonTimePattern + `)\s+(?P<host>\S+)\s+%%(?P<version>\d{2})?(?P<module>[A-Za-z0-9_\-]+)/(?P<severity>[0-8])/(?P<brief>[A-Za-z0-9_\-]+(?:\s+[A-Za-z0-9_\-]+)*)(?:(?i:\((?P<type>[a-z])\)))?(?:\[(?P<seq>\d+)\])?(?:\[(?P<slot>[^\]]+)\])?:\s*(?P<msg>.*)$`)
 
 // usgSecSupportRegex 认领 USG 安全日志：模块/级别/助记符 header + 安全类模块。
 // PARSE-09: 原实现用大小写敏感的 `strings.Contains(line, "(s)")`，
@@ -56,7 +57,7 @@ func (p *USGSecurityParser) Support(line string) bool {
 // PARSE-09: 降级分支原先是静默的——时间解析失败既不写日志也不置错误标记，
 // 运维看到"时间戳为空"的记录无从判断原因。现在降级时输出结构化告警。
 func (p *USGSecurityParser) Parse(line string) (*model.NormalizedLog, error) {
-	line = strings.TrimSpace(line)
+	line = TrimNULAndSpace(line)
 	if line == "" {
 		return nil, fmt.Errorf("empty log line")
 	}

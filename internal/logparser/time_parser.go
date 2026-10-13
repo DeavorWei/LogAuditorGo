@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 )
 
 var timePatterns = []struct {
@@ -98,9 +99,62 @@ var timePatterns = []struct {
 // PARSE-09: USG 解析器原先只认 `YYYY-MM-DD HH:MM:SS`，
 // 变体（BSD / UTC+08:00 前缀）全部落进 VRP 兜底，DeviceType 被错误改写。
 // 抽成公共子式后，各解析器共享同一套时间格式认知，不会再出现"某条链路不认某种时间"。
+//
+// PARSE-19: 支持华为 AC / AP 等设备在开启 precision-time millisecond 时输出的多段点分时间戳
+// （如 Oct 12 2026 07:38:47.170.2+08:00 或 07:38:46.90.1+08:00）。
+// 将毫秒部分由 `(?:\.\d+)?` 扩展为 `(?:\.\d+(?:\.\d+)*)?`，兼容带有生成序号的子秒格式。
 const commonTimePattern = `(?:UTC[+-]\d{1,2}(?::?\d{2})?\s+)?` +
-	`(?:[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?` +
-	`|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:[+-]\d{2}:?\d{2}|Z)?)`
+	`(?:[A-Za-z]{3}\s+\d{1,2}\s+(?:\d{4}\s+)?\d{2}:\d{2}:\d{2}(?:\.\d+(?:\.\d+)*)?(?:[+-]\d{2}:?\d{2}|Z)?` +
+	`|\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+(?:\.\d+)*)?(?:[+-]\d{2}:?\d{2}|Z)?)`
+
+// TrimNULAndSpace 清理字符串首尾的 NUL 字节（\x00，常见于嵌入式设备对齐填充）以及全部 Unicode 空白字符。
+func TrimNULAndSpace(s string) string {
+	return strings.TrimFunc(s, func(r rune) bool {
+		return r == 0 || unicode.IsSpace(r)
+	})
+}
+
+// subsecondSeqRegex 匹配华为设备带子秒序号的时间戳（如 AC/AP 设备输出的 07:38:47.170.2+08:00 或 07:38:46.90.1+08:00）。
+// 华为 VRP 设备在开启 precision-time millisecond 时，时间戳格式实测为 HH:MM:SS.<毫秒>.<子秒序号/亚毫秒位>。
+// 其中毫秒部分实测未补前导零（0~999），第二段数字为同毫秒内生成序号（或 0.1ms 亚毫秒小数）。
+var subsecondSeqRegex = regexp.MustCompile(`(\d{2}:\d{2}:\d{2})\.(\d+)\.(\d+)(?:\.\d+)*`)
+
+// normalizeSubsecondSeq 规范化华为 AC/AP 设备的多段子秒时间戳。
+//
+// 1. 消除毫秒值放大与同刻碰撞：Go 的时间解析器将单段变长小数视为十进制小数（.2 与 .20 均展开为 200ms）。
+//    若未补齐前导 0，真实的 2ms (.2) 与 20ms (.20) 会全部塌缩为 200ms，产生严重的别名冲突。
+//    因此必须将毫秒部分（第一段）用前导 0 补齐为 3 位数字（如 .90 补为 090 即 90ms，.0 补为 000 即 0ms）。
+//
+// 2. 亚毫秒精度映射与单调保序：将第二段序号 seq 格式化为 3 位微秒偏移（seq ≤ 999 时映射为 0~999µs），
+//    拼装为 6 位小数（.mmmsss），使同 (秒, 毫秒) 的日志组恢复确定性的单调递增顺序，
+//    同时既不跨越毫秒边界，又最大化保留亚毫秒时间信息。
+func normalizeSubsecondSeq(raw string) string {
+	return subsecondSeqRegex.ReplaceAllStringFunc(raw, func(s string) string {
+		m := subsecondSeqRegex.FindStringSubmatch(s)
+		if len(m) < 4 {
+			return s
+		}
+		timePart := m[1]
+		ms := m[2]
+		seq := m[3]
+
+		// 1. 毫秒补齐为 3 位
+		for len(ms) < 3 {
+			ms = "0" + ms
+		}
+
+		// 2. 序号映射为 3 位微秒
+		if len(seq) > 3 {
+			seq = seq[:3]
+		} else {
+			for len(seq) < 3 {
+				seq = "0" + seq
+			}
+		}
+
+		return timePart + "." + ms + seq
+	})
+}
 
 // ParseHuaweiTimestamp 解析华为日志中多态的时间戳
 //
@@ -109,7 +163,7 @@ const commonTimePattern = `(?:UTC[+-]\d{1,2}(?::?\d{2})?\s+)?` +
 // 两条日志可能相差整小时，时间线排序与 RCA 时序窗口随之错乱。
 // 这里统一：解析成功后一律归一到 time.Local，保证同一批日志的时区语义一致。
 func ParseHuaweiTimestamp(raw string) (time.Time, error) {
-	raw = strings.TrimSpace(raw)
+	raw = TrimNULAndSpace(raw)
 	if raw == "" {
 		return time.Time{}, fmt.Errorf("empty timestamp string")
 	}
@@ -139,6 +193,9 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 	// 而 Go 的布局要求 `-0700` 与 `-07:00` 是两种不同的占位符，
 	// 未标准化时会直接失配、让时间戳退化为零值。
 	raw = normalizeNumericOffset(raw)
+
+	// PARSE-19: 规范化华为 AC / AP 等设备的子秒点分序号格式（07:38:47.170.2 -> 07:38:47.170）
+	raw = normalizeSubsecondSeq(raw)
 
 	rawLen := len(raw)
 
