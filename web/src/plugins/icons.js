@@ -58,7 +58,10 @@ import {
   Tickets,
   PriceTag,
   Grid,
-  QuestionFilled
+  QuestionFilled,
+  Plus,
+  MagicStick,
+  RefreshLeft
 } from '@element-plus/icons-vue'
 
 // 字符串名 → 组件。键名必须与模板中使用的 icon 属性完全一致。
@@ -109,7 +112,10 @@ const globalIcons = {
   Tickets,
   PriceTag,
   Grid,
-  QuestionFilled
+  QuestionFilled,
+  Plus,
+  MagicStick,
+  RefreshLeft
 }
 
 export function registerGlobalIcons(app) {

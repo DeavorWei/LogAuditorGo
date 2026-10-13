@@ -101,7 +101,7 @@
           </template>
         </el-dropdown>
         <el-tooltip content="新建任务" placement="bottom" :show-after="300">
-          <el-button type="primary" plain icon="Plus" @click="openNewTaskDialog">
+          <el-button type="primary" plain :icon="Plus" @click="openNewTaskDialog">
             <span class="btn-text">新建任务</span>
           </el-button>
         </el-tooltip>
