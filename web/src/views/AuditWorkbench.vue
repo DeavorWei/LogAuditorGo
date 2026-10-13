@@ -73,7 +73,7 @@
           :has-active-filter="hasActiveFilter"
           @filter-change="onFilterChange"
           @filter-reset="handleResetFilters"
-          @open-advanced-filter="advFilterDrawerRef?.open"
+          @open-advanced-filter="advFilterModalRef?.open"
           @pivot="handleLogPivot"
           @select="handleLogCardClick"
           @hover-enter="handleLogHoverEnter"
@@ -142,8 +142,8 @@
       @import-settled="handleLogImportCompleted"
     />
 
-    <AdvancedFilterDrawer
-      ref="advFilterDrawerRef"
+    <AdvancedFilterModal
+      ref="advFilterModalRef"
       :task-devices="taskDevices"
       @apply="fetchLogs"
       @reset="fetchLogs"
@@ -188,7 +188,7 @@ import RcaCenter from '@/components/RcaCenter.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
 import QuickTagModal from '@/components/QuickTagModal.vue'
-import AdvancedFilterDrawer from '@/components/AdvancedFilterDrawer.vue'
+import AdvancedFilterModal from '@/components/AdvancedFilterModal.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const route = useRoute()
@@ -202,7 +202,7 @@ const { currentViewMode, subViewRefs, refreshActiveSubView } = useSubViewRouter(
 const headerRef = ref(null)
 const taskFilesDialogRef = ref(null)
 const importDialogRef = ref(null)
-const advFilterDrawerRef = ref(null)
+const advFilterModalRef = ref(null)
 const logStreamRef = ref(null)
 
 const showLogDetailModal = ref(false)
@@ -279,19 +279,19 @@ const handleLogPivot = ({ type, record }) => {
   if (!record) return
   switch (type) {
     case 'filter-in-module':
-      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'eq', value: record.module }, true)
+      advFilterModalRef.value?.openWithCondition({ field: 'module', op: 'eq', value: record.module }, true)
       ElMessage.success(`已设置模块筛选: ${record.module}`)
       break
     case 'filter-out-module':
-      advFilterDrawerRef.value?.openWithCondition({ field: 'module', op: 'not_in', value: record.module }, true)
+      advFilterModalRef.value?.openWithCondition({ field: 'module', op: 'not_in', value: record.module }, true)
       ElMessage.success(`已排除模块: ${record.module}`)
       break
     case 'filter-in-host':
-      advFilterDrawerRef.value?.openWithCondition({ field: 'hostname', op: 'eq', value: record.hostname }, true)
+      advFilterModalRef.value?.openWithCondition({ field: 'hostname', op: 'eq', value: record.hostname }, true)
       ElMessage.success(`已筛选主机: ${record.hostname}`)
       break
     case 'pivot-time':
-      advFilterDrawerRef.value?.openWithTimePivot(record.timestamp, 5, true)
+      advFilterModalRef.value?.openWithTimePivot(record.timestamp, 5, true)
       ElMessage.success('已锁定前后 5 分钟时间窗口')
       break
   }
@@ -311,7 +311,7 @@ useWorkbenchHotkeys({
   hasActiveOverlay: () => Boolean(
     showLogDetailModal.value ||
     showQuickTagModal.value ||
-    advFilterDrawerRef.value?.visible ||
+    advFilterModalRef.value?.visible ||
     importDialogRef.value?.visible ||
     showProgressModal.value ||
     taskFilesDialogRef.value?.visible ||
@@ -348,13 +348,13 @@ useWorkbenchHotkeys({
     workbenchUIStore.toggleBrowserFullscreen()
   },
   onOpenAdvancedFilter: () => {
-    advFilterDrawerRef.value?.open()
+    advFilterModalRef.value?.open()
   },
   onEscape: () => {
     if (showQuickTagModal.value) showQuickTagModal.value = false
     else if (showLogDetailModal.value) showLogDetailModal.value = false
-    else if (advFilterDrawerRef.value?.visible) {
-      advFilterDrawerRef.value?.close?.()
+    else if (advFilterModalRef.value?.visible) {
+      advFilterModalRef.value?.close?.()
     }
     else if (workbenchUIStore.isImmersive) {
       workbenchUIStore.exitImmersive()
