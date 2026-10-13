@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
 	"logauditorgo/internal/task"
+	"logauditorgo/internal/tray"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
 )
@@ -45,6 +47,9 @@ func main() {
 	configPath := flag.String("config", "", "指定配置文件路径 (默认 <data_dir>/config.yaml)")
 	portFlag := flag.Int("port", 0, "覆盖配置文件中的监听端口")
 	showVersion := flag.Bool("version", false, "打印版本信息并退出")
+	noTray := flag.Bool("no-tray", false, "禁用系统托盘图标 (适用于无头服务器环境)")
+	trayTheme := flag.String("tray-theme", "blue_shield", "托盘图标风格: blue_shield (默认蓝盾), emerald_terminal (翠绿终端), indigo_radar (星穹雷达)")
+	iconPath := flag.String("icon", "", "自定义托盘图标文件路径 (.ico 或 .png)")
 	flag.Parse()
 
 	if *showVersion {
@@ -152,9 +157,49 @@ func main() {
 		serverErrCh <- nil
 	}()
 
-	// 7. 等待终止信号（或 HTTP 启动失败）
+	// 7. 初始化并启动系统托盘图标 (Windows)
+	var systemTray tray.Tray
+	if !*noTray {
+		systemTray = tray.New(tray.Config{
+			Port:     cfg.Server.Port,
+			LogDir:   cfg.Log.Dir,
+			DataDir:  filepath.Dir(cfg.Storage.KnowledgeDB),
+			Version:  "v1.0.0",
+			Theme:    tray.IconTheme(*trayTheme),
+			IconPath: *iconPath,
+			OnExit: func() {
+				log.Info("Exit requested from system tray menu")
+				select {
+				case quit <- syscall.SIGTERM:
+				default:
+				}
+			},
+		})
+
+		go func() {
+			if err := systemTray.Start(); err != nil {
+				log.Warnf("System tray failed to start: %v", err)
+			}
+		}()
+
+		// 启动就绪后延迟弹出 Windows 原生气泡通知
+		go func() {
+			time.Sleep(600 * time.Millisecond)
+			systemTray.ShowNotification(
+				"LogAuditorGo 服务已就绪",
+				fmt.Sprintf("日志审计系统正在后台运行 (端口: %d)\n点击托盘图标可快速打开控制台", cfg.Server.Port),
+			)
+		}()
+	}
+
+	// 8. 等待终止信号（或 HTTP 启动失败）
 	sig := <-quit
 	log.Infof("Shutting down server gracefully (signal: %v)...", sig)
+
+	// 退出时安全卸载托盘图标
+	if systemTray != nil {
+		systemTray.Stop()
+	}
 
 	// 8. 设置 15 秒优雅关闭超时上下文
 	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
