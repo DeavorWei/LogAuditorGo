@@ -122,7 +122,12 @@ func (p *VRPParser) Parse(line string) (*model.NormalizedLog, error) {
 		prefixParts := strings.Fields(prefix)
 		if len(prefixParts) >= 2 {
 			norm.Hostname = prefixParts[len(prefixParts)-1]
-			timeStr := strings.Join(prefixParts[:len(prefixParts)-1], " ")
+			timeParts := prefixParts[:len(prefixParts)-1]
+			// 防御：若首个 token 属于 PRI（如 <134>），将其从时间戳中剔除
+			if len(timeParts) > 0 && strings.HasPrefix(timeParts[0], "<") && strings.HasSuffix(timeParts[0], ">") {
+				timeParts = timeParts[1:]
+			}
+			timeStr := strings.Join(timeParts, " ")
 			if t, err := ParseHuaweiTimestamp(timeStr); err == nil {
 				norm.Timestamp = t
 			} else {

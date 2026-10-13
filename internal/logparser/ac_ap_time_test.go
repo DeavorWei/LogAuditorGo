@@ -251,3 +251,51 @@ func TestExternalRealLogsIfPresent(t *testing.T) {
 			p, totalLines, vrpLines, vrpLines-zeroTimeCount, zeroTimeCount)
 	}
 }
+
+// TestPRIPrefixedTimestamp 覆盖 Syslog 网络转发场景（带 <PRI> 设施级别前缀），
+// 验证主正则 vrpRegex 能够正确剥离 PRI 并捕获多段点分时间戳（包含 BSD 与 ISO 两种形态）。
+// 该测试形成关键护栏：若 commonTimePattern 发生退化（例如误回退为不支持子秒序号），此用例能精准报警拦截。
+func TestPRIPrefixedTimestamp(t *testing.T) {
+	expectedNsec := 170002000
+
+	cases := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "Syslog BSD with PRI prefix (<134>)",
+			line: "<134> Oct 12 2026 07:38:47.170.2+08:00 AC6508 %%01CM/5/USER_ACCESSRESULT(s)[511724]:msg",
+		},
+		{
+			name: "Syslog ISO with PRI prefix (<189>)",
+			line: "<189> 2026-10-12 07:38:47.170.2+08:00 AC6508 %%01CM/5/USER_ACCESSRESULT(s)[511724]:msg",
+		},
+		{
+			name: "Syslog BSD with tight PRI (<134> without space)",
+			line: "<134>Oct 12 2026 07:38:47.170.2+08:00 AC6508 %%01CM/5/USER_ACCESSRESULT(s)[511724]:msg",
+		},
+		{
+			name: "Syslog ISO with tight PRI (<189> without space)",
+			line: "<189>2026-10-12 07:38:47.170.2+08:00 AC6508 %%01CM/5/USER_ACCESSRESULT(s)[511724]:msg",
+		},
+	}
+
+	for _, c := range cases {
+		norm, err := logparser.ParseLine(c.line)
+		if err != nil {
+			t.Fatalf("[%s] ParseLine failed: %v", c.name, err)
+		}
+		if norm.Timestamp.IsZero() {
+			t.Fatalf("[%s] timestamp must not be zero", c.name)
+		}
+		if norm.Timestamp.Nanosecond() != expectedNsec {
+			t.Fatalf("[%s] expected nanosecond %d, got %d", c.name, expectedNsec, norm.Timestamp.Nanosecond())
+		}
+		if norm.Hostname != "AC6508" {
+			t.Errorf("[%s] expected hostname 'AC6508', got %q", c.name, norm.Hostname)
+		}
+		if norm.Module != "CM" || norm.Severity != 5 || norm.Brief != "USER_ACCESSRESULT" {
+			t.Errorf("[%s] parsed mismatch: %+v", c.name, norm)
+		}
+	}
+}
