@@ -58,10 +58,13 @@
   - 设备维度建模与按 Hostname 自动归属（仅绑定未归属记录，不覆盖人工设置）。
   - 多设备联合时间线（按绝对时间升序归并）、跨设备影响面报告。
   - 单设备时间线与 CSV / HTML 报表导出。
-- 💼 **任务管理与多文件导入**：支持空任务创建、多文件批量追加导入、覆盖/跳过/重命名同名文件冲突策略、服务端本地目录直读导入。
+- 🏷️ **日志标签与专家筛选**：任务内日志打标/批量标签/按标签过滤；专家级组合筛选（白名单字段算子 + KV 参数过滤 + faceted 计数 + sparkline 时序预览）并可保存为筛选预设。
+- ⚙️ **RCA 异步调度**：根因分析不再阻塞导入响应，由独立调度器（可配置并发数）后台执行，具备 PENDING/QUEUED/RUNNING/COMPLETED/TIMEOUT/FAILED 状态机、计算超时部分结果保存与进程重启自愈。
+- 💼 **任务管理与多文件导入**：支持空任务创建、多文件批量追加导入、覆盖/跳过/重命名同名文件冲突策略、服务端本地目录直读导入、单文件删除与文档批量删除。
 - 📤 **分类流式导出**：CSV 按行游标流式写出、JSON 流式数组拼装、HTML 指标 SQL 聚合 + 明细采样，内存占用恒定，不再受导出条数上限掣肘。
 - 📊 **长任务全流程进度追踪**：SSE 实时推送 + HTTP 指数退避轮询双通道，支持一键终止长任务；弹窗关闭后转入后台继续追踪，顶栏常驻任务徽标可随时调回。
-- 🔐 **离线安全基线**：导入类接口路径白名单守卫（`storage.allowed_roots`）、文件系统浏览接口限定本机回环、5xx 响应脱敏并附 `X-Request-ID`、跨域来源白名单校验。
+- 🖼️ **Windows 桌面托盘**（`internal/tray`）：纯 Win32 API 直调（零第三方 GUI 库）实现托盘常驻、原生通知、一键打开控制台/数据目录/复制 URL/退出，图标程序化生成；`--no-tray` 可禁用，非 Windows 平台编译期自动降级为空实现。
+- 🔐 **离线安全基线**：导入类接口路径白名单守卫（`storage.allowed_roots`）、文件系统浏览接口限定本机回环、5xx 响应脱敏并附 `X-Request-ID`、跨域来源白名单校验、任务 ID 正则校验、SQLite 自定义 `REGEXP` 有界缓存。
 - 🖥️ **现代 Web 工作台**：基于 Vue 3 + Element Plus + ECharts 构建的三栏式日志审计工作台与动态 RCA 拓扑图，前端状态由 Pinia 统一管理。
 
 ---
@@ -104,6 +107,10 @@ flowchart TD
         E1 --> E2["离线 HTML 诊断报告"]
         E1 --> E3["Web 交互工作台 (Vue3 + ECharts)"]
     end
+
+    subgraph TrayLayer["6. 桌面托盘 (internal/tray, Windows)"]
+        T1["Win32 托盘 + 原生通知 + 菜单"] --> T2["一键控制台/目录/URL/退出"]
+    end
 ```
 
 ---
@@ -116,21 +123,22 @@ flowchart TD
 | **开发语言** | Go 1.26+ | 高性能、原生轻量并发、跨平台编译 |
 | **Web 框架** | Gin (`github.com/gin-gonic/gin`) | 高性能 RESTful 路由与中间件 |
 | **ORM** | GORM (`gorm.io/gorm`) | 对象关系映射与事务支持 |
-| **嵌入式数据库** | modernc.org/sqlite (`glebarez/sqlite`) | 纯 Go 原生 SQLite 驱动，无 CGO 依赖 |
+| **嵌入式数据库** | `github.com/glebarez/sqlite`（modernc.org/sqlite 纯 Go 驱动） | 无 CGO 依赖的 SQLite |
 | **全文搜索引擎** | Bleve v2 (`github.com/blevesearch/bleve/v2`) | 纯 Go 原生倒排索引，支持中文与多字段组合检索 |
 | **HTML/DOM 解析** | goquery (`github.com/PuerkitoBio/goquery`) | 类 jQuery 语法的 CSS 选择器解析 |
-| **编码转换** | `golang.org/x/text` | GBK / GB2312 转 UTF-8 转码支持 |
-| **配置管理** | Viper (`github.com/spf13/viper`) | YAML 配置文件解析与默认值回退 |
+| **编码转换** | `golang.org/x/text` | GBK / GB2312 / GB18030 转 UTF-8 转码支持 |
+| **配置管理** | Viper (`github.com/spf13/viper`) + `goccy/go-yaml` | YAML 配置文件解析与默认值回退 |
 | **日志记录** | Zap (`go.uber.org/zap`) | 高性能结构化分级日志 |
+| **Windows 托盘** | `golang.org/x/sys/windows` | 纯 Win32 API 直调，零第三方 GUI 库 |
 
 ### 前端技术栈
 | 组件 / 模块 | 技术选型 | 说明 |
 | :--- | :--- | :--- |
-| **前端框架** | Vue 3 (Composition API, `<script setup>`) | 响应式组件化开发 |
-| **构建工具** | Vite 6+ | 极速冷启动与热更新构建 |
-| **UI 组件库** | Element Plus (`element-plus`) | 企业级中后台 UI 库 |
-| **图表可视化** | ECharts 5+ (`echarts`) | 级别分布图、时序趋势图、RCA 拓扑图 |
-| **路由与状态** | Vue Router 4 + Pinia | 单页路由管理与全局状态响应 |
+| **前端框架** | Vue 3.5 (Composition API, `<script setup>`) | 响应式组件化开发 |
+| **构建工具** | Vite 6.4 | 极速冷启动与热更新构建，四拆分包 + 按需注册 |
+| **UI 组件库** | Element Plus 2.14 (`element-plus`) | 企业级中后台 UI 库 |
+| **图表可视化** | ECharts 5.6 (`echarts`) | 级别分布图、时序趋势图、RCA 拓扑图 |
+| **路由与状态** | Vue Router 4.6 + Pinia 2.3 | 单页路由管理与全局状态响应 |
 
 ---
 
@@ -138,7 +146,7 @@ flowchart TD
 
 ### 方式一：直接运行预编译版本 (Windows)
 1. 进入 `build/` 目录；
-2. 运行 `LogAuditorGo.exe`；
+2. 运行 `LogAuditorGo.exe`（默认启用系统托盘，右键菜单可打开控制台/数据目录；无头场景加 `--no-tray`）；
 3. 打开浏览器访问：`http://localhost:8080`。
 
 ### 方式二：从源码编译构建
@@ -204,10 +212,10 @@ http://localhost:8080
 5. 点击提交，系统自动启动多级知识匹配与 RCA 根因拓扑分析。
 
 ### 3. 三栏式审计与诊断排查
-- **左栏（日志流与多维过滤）**：支持按严重级别（Emergency ~ Informational）、模块（BGP, IFNET, AAA, OSPF...）、主机名、关键词、时间范围及匹配状态快速筛选；
-- **中栏（结构化报文详情）**：查看标准化时间戳、插槽卡号、事件简名及自动抽取的 `Key=Value` 动态参数字典；
+- **左栏（日志流与多维过滤）**：支持按严重级别（Emergency ~ Informational）、模块（BGP, IFNET, AAA, OSPF...）、主机名、关键词、时间范围及匹配状态快速筛选；**专家筛选**支持字段/算子白名单组合条件、KV 动态参数过滤、分面计数与 sparkline 时序预览，并可保存为**筛选预设**复用；
+- **中栏（结构化报文详情）**：查看标准化时间戳、插槽卡号、事件简名及自动抽取的 `Key=Value` 动态参数字典；支持**打标签**（单条/批量）与按标签过滤；
 - **右栏（官方知识库与诊断建议）**：展示匹配置信度、官方日志含义、可能原因、恢复步骤与推荐排查命令；
-- **RCA 根因拓扑视图**：可视化查看故障传播链（例如：物理链路中断 $\rightarrow$ BFD Down $\rightarrow$ BGP 邻居断开）。
+- **RCA 根因拓扑视图**：可视化查看故障传播链（例如：物理链路中断 $\rightarrow$ BFD Down $\rightarrow$ BGP 邻居断开）；RCA 由异步调度器后台执行，可随时重算。
 
 ### 4. 多设备协同关联分析
 1. 在工作台进入多设备视图，通过 **「设备管理」** 添加设备（名称 / Hostname / 型号 / 角色）；
@@ -216,17 +224,22 @@ http://localhost:8080
 4. **「协同报告」** 给出跨设备影响面汇总，支持导出 HTML 报表与时间线 CSV。
 
 ### 5. 长任务进度追踪与终止
-- 导入 / 重分析 / 文档导入 / 索引重建均会弹出全流程阶段进度窗口，优先走 SSE 实时推送，网络受限时自动降级为指数退避轮询；
+- 导入 / 重分析 / RCA 重算 / 文档导入 / 索引重建均会弹出全流程阶段进度窗口，优先走 SSE 实时推送，网络受限时自动降级为指数退避轮询；
 - 点击 **「后台运行」** 或直接关闭弹窗，任务会在后台继续执行，完成后推送系统通知；
 - 顶栏常驻 **「运行中任务」** 徽标（旋转图标 + 数量），点击即可随时调回进度窗口；
 - 需要中止时点击 **「终止任务」**，服务端会在下一个阶段检查点停止并清理临时状态。
 
-### 6. 导出诊断报告
+### 6. Windows 桌面托盘（可选）
+- Windows 平台默认启用系统托盘：右键菜单可**打开控制台**（浏览器访问 Web 工作台）、**打开数据目录**、**复制访问 URL**、**退出服务**；
+- 启动参数 `--no-tray` 可禁用托盘（无头服务器/容器场景）；`--tray-theme` 可切换盾牌/终端/雷达三种程序化生成的图标主题；
+- 非 Windows 平台编译期自动降级为空实现，行为与旧版一致。
+
+### 7. 导出诊断报告
 - 在审计工作台点击 **「导出报告」**，支持 `HTML`（指标聚合 + 明细采样）、`JSON`（流式拼装）与 `CSV`（游标逐行流式写出）三种形态；
 - 报告头部明确标注采样范围与时间跨度（由 SQL 聚合得出，而非前若干条截断推算）。
 
-### 7. 知识库索引维护
-- 进入 **「系统设置」** 可查看索引健康状态（索引文档数与数据库记录数是否一致）；
+### 8. 知识库索引维护
+- 进入 **「系统设置」** 可查看索引健康状态（索引文档数与数据库记录数是否一致），也可在此动态调整日志级别/格式/留存策略并手动清理日志；
 - 当索引出现漂移时点击 **「重建索引」**，系统在临时目录全量重建后原子替换，重建期间不影响现有检索。
 
 ---
@@ -258,9 +271,15 @@ log:
   dir: "LogAuditorGoData/log"  # 日志存放目录
   max_size_mb: 1024            # 日志最大保留总大小 (MB)
   max_days: 180                # 日志最大保留天数
+
+rca:
+  timeout: 300       # RCA 单次分析计算超时（秒），超时保存部分结果并标记 TIMEOUT
+  concurrency: 2     # RCA 异步调度并发数（同时执行根因分析的任务数）
 ```
 
 > 🛡️ **安全提示**：`storage.allowed_roots` 留空时行为与旧版本一致（不限制）。若在多用户环境或需要限制读取范围，请显式配置该白名单，服务启动时会校验并忽略无效的目录项。
+>
+> ⚙️ `rca` 节控制根因分析异步调度器（详见 docs/架构与模块说明书.md 5.15）：RCA 不再阻塞导入响应，超时后保存已推导的部分结果，进程重启后自动恢复中断的任务。
 
 ---
 
@@ -270,10 +289,15 @@ log:
 | 方法 | 路径 | 描述 |
 | :--- | :--- | :--- |
 | `GET` | `/api/v1/system/stats` | 获取全局统计数据（文档总数、知识总数、任务总数等） |
+| `GET` | `/api/v1/system/config` | 获取当前系统配置与日志状态 |
+| `PUT`/`POST` | `/api/v1/system/config/log` | 动态更新日志级别/格式/留存策略 |
+| `GET` | `/api/v1/system/logs` | 日志文件统计与清单 |
+| `POST` | `/api/v1/system/logs/clean` | 手动清理历史日志 |
 | `POST` | `/api/v1/documents/scan` | 递归智能扫描本地文件夹下的 `.hdx` 压缩包与 `profile.xml` 文档包并解析元数据 |
 | `POST` | `/api/v1/documents/import-dir` | 指定服务端本地目录或 `.hdx` / `.zip` 压缩包路径导入 HDX 产品文档（压缩包采用流式读取，不解压） |
 | `GET` | `/api/v1/documents` | 获取已导入文档列表及元数据 |
 | `DELETE` | `/api/v1/documents/:id` | 删除指定文档及其版本映射 |
+| `POST` | `/api/v1/documents/batch-delete` | 批量删除文档 |
 
 ### 2. 知识库检索
 | 方法 | 路径 | 描述 |
@@ -290,13 +314,27 @@ log:
 | `GET` | `/api/v1/tasks` | 获取所有任务列表及状态 |
 | `GET` | `/api/v1/tasks/:id` | 获取单个任务元信息 |
 | `GET` | `/api/v1/tasks/:id/files` | 获取指定任务已导入的文件列表 |
+| `DELETE` | `/api/v1/tasks/:id/files/:file_id` | 删除任务内单个已导入文件 |
 | `POST` | `/api/v1/tasks/:id/import` | 向已有任务导入/追加日志文件（支持 `conflict_mode=overwrite/skip/rename`） |
 | `GET` | `/api/v1/tasks/:id/logs` | 分页及多条件过滤查询任务日志与匹配结果 |
+| `POST` | `/api/v1/tasks/:id/logs/query` | 统一日志查询（高级筛选条件） |
+| `POST` | `/api/v1/tasks/:id/logs/sparkline` | 日志时序迷你图聚合 |
 | `GET` | `/api/v1/tasks/:id/modules` | 获取任务内出现的模块清单（用于筛选下拉） |
+| `GET` | `/api/v1/tasks/:id/facets` | 筛选分面计数（模块/级别/主机名等） |
+| `GET`/`POST`/`DELETE` | `/api/v1/tasks/:id/presets[/:preset_id]` | 专家筛选预设的列表/保存/删除 |
 | `POST` | `/api/v1/tasks/:id/reanalyze` | 重分析任务（批量回写匹配结果） |
 | `GET` | `/api/v1/tasks/:id/rca` | 获取指定任务的 RCA 根因事件与受影响链路 |
-| `GET` | `/api/v1/tasks/:id/export` | 导出任务报告（`format=html` / `json` / `csv`，流式生成） |
+| `POST` | `/api/v1/tasks/:id/rca/reanalyze` | 重算 RCA（异步调度，返回 `job_id`） |
+| `GET`/`POST` | `/api/v1/tasks/:id/export` | 导出任务报告（`format=html` / `json` / `csv`，流式生成） |
 | `DELETE` | `/api/v1/tasks/:id` | 删除任务及对应的物理 SQLite 数据库文件 |
+
+### 3.1 日志标签
+| 方法 | 路径 | 描述 |
+| :--- | :--- | :--- |
+| `GET`/`POST` | `/api/v1/tasks/:id/tags` | 任务标签列表 / 创建标签 |
+| `PUT`/`DELETE` | `/api/v1/tasks/:id/tags/:tag_id` | 更新 / 删除标签 |
+| `POST`/`DELETE` | `/api/v1/tasks/:id/tags/:tag_id/logs` | 批量打标 / 批量取消标签 |
+| `POST`/`DELETE` | `/api/v1/tasks/:id/logs/:log_id/tags[/:tag_id]` | 单条日志打标 / 取消标签 |
 
 ### 4. 设备与多设备协同分析
 | 方法 | 路径 | 描述 |
@@ -331,94 +369,127 @@ log:
 
 ```text
 LogAuditorGo/
+├── assets/                        # 托盘图标候选资产（程序化生成为主，见 internal/tray）
 ├── cmd/
 │   └── LogAuditorGo/
-│       ├── main.go                     # 程序主入口（初始化配置、DB、索引、业务引擎并启动 Web）
+│       ├── main.go                     # 程序主入口（初始化配置、DB、索引、业务引擎、托盘并启动 Web）
 │       └── server_test.go              # 服务集成与路由测试
 ├── internal/
-│   ├── api/                            # HTTP API 路由与控制器
-│   │   ├── document_handler.go         # 文档导入与上传处理
+│   ├── api/                            # HTTP API 路由与控制器（60 条路由）
+│   │   ├── document_handler.go         # 文档导入、扫描、列表、删除与批量删除处理
 │   │   ├── knowledge_handler.go        # 知识库检索、详情与索引重建处理
-│   │   ├── task_handler.go             # 任务生命周期、设备与多设备查询处理
-│   │   ├── stats_handler.go            # 仪表盘统计处理（带缓存与主动失效）
+│   │   ├── task_handler.go             # 任务生命周期、设备、多设备、RCA、标签、预设处理
+│   │   ├── tag_handler.go              # 日志标签系统处理
+│   │   ├── system_handler.go           # 系统配置与日志管理处理
+│   │   ├── stats_handler.go            # 仪表盘统计处理（15s TTL 缓存）
 │   │   ├── fs_handler.go               # 服务端本地文件系统只读浏览
 │   │   ├── progress_handler.go         # 长任务进度查询/SSE/终止
-│   │   ├── enrichment.go               # 日志富化与知识装配
-│   │   ├── middleware.go               # RequestID、错误脱敏、回环校验中间件
+│   │   ├── enrichment.go               # 富化类型别名与转发（业务在 internal/enrich）
+│   │   ├── middleware.go               # RequestID、错误脱敏、回环校验、CORS 中间件
 │   │   ├── response.go                 # 统一 API 返回结构封装
 │   │   └── router.go                   # Gin 路由与中间件装配
-│   ├── config/                         # 系统配置解析 (Viper)
-│   ├── fsx/                            # 路径安全守卫
-│   │   └── guard.go                    # 白名单根目录校验 (SecurePathGuard)
+│   ├── config/                         # 系统配置解析 (Viper + goccy/go-yaml)
+│   ├── fsx/                            # 路径安全守卫与文件系统浏览
+│   │   ├── guard.go                    # 白名单根目录校验 (SecurePathGuard)
+│   │   ├── fsx.go                      # 浏览数据结构与 Roots/Browse/Stat 实现
+│   │   ├── roots_windows.go            # Windows 逻辑盘符枚举
+│   │   └── roots_other.go              # 非 Windows 根目录枚举
 │   ├── enrich/                         # 日志富化流水线
+│   │   ├── service.go                  # 富化业务编排（ARCH-12 自 api 层下沉）
+│   │   └── enrich.go                   # 参数融合、模板实例化与上下文注入
 │   ├── hdx/                            # HDX 文档解构引擎
+│   │   ├── scanner.go                  # 递归扫描 .hdx/.zip 与解压目录元数据
+│   │   ├── source.go                   # 目录/压缩包双源抽象 + 压缩包内存索引
+│   │   ├── archive.go                  # 并发解压（Zip Slip/解压炸弹防护）
 │   │   ├── extractor.go                # 文档目录扫描与 profile.xml 解析
 │   │   ├── navigator.go                # navi.xml 导航树递归与叶子过滤
 │   │   ├── html_parser.go              # goquery HTML 日志/告警字段抽取
-│   │   └── charset.go                  # GBK/GB2312 自动转码支持
+│   │   └── charset.go                  # GBK/GB2312/GB18030 自动转码支持
 │   ├── knowledge/                      # 知识库服务与去重逻辑
-│   │   ├── deduplicator.go             # SHA256 指纹计算与版本映射
+│   │   ├── deduplicator.go             # 两级哈希（标识键 + SHA256 内容指纹）与版本映射
 │   │   ├── reindex.go                  # Bleve 索引物理重建与原子热替换
-│   │   └── service.go                  # 知识库 CRUD、多版本回退与删除纳管
+│   │   └── service.go                  # 知识库 CRUD、导入流水线、多版本回退与删除纳管
 │   ├── logparser/                      # 华为日志解析引擎
 │   │   ├── parser.go                   # 解析器统一接口与注册表
 │   │   ├── vrp_parser.go               # 华为 VRP Syslog 正则解析器
 │   │   ├── sec_parser.go               # USG 安全日志解析器
+│   │   ├── comment_parser.go           # # 注释/元数据行解析
+│   │   ├── sanitizer.go                # 行前置清洗（BOM/ANSI/控制符/非法 UTF-8）
 │   │   ├── param_extractor.go          # Key=Value 动态参数抽取
 │   │   └── time_parser.go              # 多格式时间戳标准化
 │   ├── matcher/                        # 四级知识匹配流水线
-│   │   ├── engine.go                   # 精确/助记符/模板/Bleve 匹配调度器
-│   │   └── scoring.go                  # 置信度评分模型
+│   │   ├── engine.go                   # 内存索引 + 三级 LRU + 精确/助记符/模板/Bleve 匹配调度
+│   │   └── scoring.go                  # 置信度评分与版本分档模型
 │   ├── model/                          # 全局领域数据模型
 │   │   ├── document.go                 # 文档实体
 │   │   ├── knowledge.go                # 知识库与版本映射实体
 │   │   ├── log.go                      # 标准化日志实体与任务存储记录
 │   │   ├── rca.go                      # 根因事件与影响链路模型
-│   │   └── task.go                     # 任务元信息与文件模型
+│   │   ├── task.go                     # 任务元信息、文件模型与 RCAStatus 状态机
+│   │   ├── device.go                   # 设备实体
+│   │   ├── tag.go                      # 日志标签多对多模型
+│   │   ├── advanced_filter.go          # 专家筛选条件与预设实体
+│   │   └── custom_time.go              # 多格式时间解析辅助
 │   ├── rootcause/                      # 根因分析 (RCA) 引擎
-│   │   ├── engine.go                   # 重叠窗口聚类 + 倒排 BFS 推导与置信度评分
-│   │   ├── topology_dag.go             # 网络协议故障传播 DAG 规则库（含环检测）
+│   │   ├── engine.go                   # 重叠窗口聚类 + 倒排 BFS 推导 + 多因子置信度
+│   │   ├── topology_dag.go             # 网络协议故障传播 DAG 规则库（5 条规则 + 检环）
 │   │   └── cluster.go                  # 重叠滑动窗口时序聚类
 │   ├── search/                         # Bleve 全文搜索引擎
 │   │   ├── bleve_indexer.go            # 倒排索引构建、分词与组合检索
 │   │   └── rebuild.go                  # 索引重建底座（临时目录构建 + 原子替换）
 │   ├── storage/                        # SQLite 存储管理 (GORM)
 │   │   ├── knowledge_db.go             # 全局知识库连接与迁移
-│   │   └── task_db.go                  # 任务库引用计数连接池、驱逐与删除
+│   │   ├── task_db.go                  # 任务库引用计数连接池、驱逐与删除
+│   │   └── sqlite_funcs.go             # SQLite REGEXP 自定义函数（有界编译缓存）
 │   ├── summary/                        # 日志语义摘要引擎
 │   │   ├── engine.go                   # 摘要编排与调度
 │   │   ├── kb_summarizer.go            # 基于知识库的事件摘要生成
-│   │   └── alias_groups.go             # 模块/助记符别名分档
-│   └── task/                           # 任务业务层
-│       ├── service.go                  # 任务编排、设备与多设备业务
-│       ├── import_pipeline.go          # 导入流水线：并发解析与分批落库
-│       ├── import_prepare.go           # 导入前置：流式扫描、解码与设备嗅探
-│       ├── reanalyze_update.go         # 重分析批量回写（CASE WHEN 批量 UPDATE）
-│       ├── report_aggregate.go         # 报告指标 SQL 预聚合
-│       ├── conclusion.go               # 结论文案数据驱动生成
-│       ├── exporter.go                 # HTML / JSON / CSV 流式导出
-│       └── templates/                  # 外置 HTML 报告模板 (go:embed)
+│   │   ├── alias_groups.go             # 18 组语义角色别名分档
+│   │   ├── comment_summary.go          # 注释行中文友好文案
+│   │   └── template_capture.go         # 知识库模板反向抽取现场参数
+│   ├── task/                           # 任务业务层
+│   │   ├── service.go                  # 任务编排、设备与多设备业务
+│   │   ├── import_pipeline.go          # 导入流水线：并发解析与分批落库
+│   │   ├── import_prepare.go           # 导入前置：流式扫描、解码与设备嗅探
+│   │   ├── reanalyze_update.go         # 重分析批量回写（CASE WHEN 批量 UPDATE）
+│   │   ├── rca_scheduler.go            # RCA 异步调度器（信号量 + 重启自愈）
+│   │   ├── advanced_filter.go          # 专家级组合筛选（白名单 field/op + KV 过滤）
+│   │   ├── tag_service.go              # 标签领域服务
+│   │   ├── report_aggregate.go         # 报告指标 SQL 预聚合
+│   │   ├── conclusion.go               # 结论文案数据驱动生成
+│   │   ├── exporter.go                 # HTML / JSON / CSV 流式导出
+│   │   └── templates/                  # 外置 HTML 报告模板 (go:embed)
+│   └── tray/                           # Windows 系统托盘（Win32 直调，零第三方 GUI 库）
+│       ├── tray.go                     # Tray 接口与公共骨架
+│       ├── tray_windows.go             # Win32 实现（消息循环 + Shell_NotifyIconW）
+│       ├── tray_other.go               # 非 Windows 空实现（编译期降级）
+│       └── icon.go                     # 程序化图标生成（PNG/ICO 自绘 + 主题）
 ├── pkg/
-│   ├── logger/                         # Zap 日志工具库（含按大小/天数轮转）
-│   ├── progress/                       # 长任务进度追踪器（支持 context 级联取消）
-│   └── cache/                          # 轻量带 TTL 的内存缓存
+│   ├── logger/                         # Zap 日志工具库（含自实现按大小/天数轮转）
+│   ├── progress/                       # 长任务进度追踪器（JobTracker + Hub，context 级联取消）
+│   └── cache/                          # 泛型 LRU 内存缓存（TTL 由调用方实现）
 ├── web/                                # Vue 3 前端工程
 │   ├── src/
 │   │   ├── api/                        # Axios HTTP 请求封装（差异化超时 + 取消支持）
 │   │   ├── views/                      # 页面视图 (Dashboard, Tasks, AuditWorkbench, KnowledgeCenter, Documents, Settings, NotFound)
-│   │   ├── components/                 # 业务组件 (RcaGraph / RcaCenter / ImportProgressModal / ServerPathPicker / MultiDevice* / DeviceManager)
-│   │   ├── stores/                     # Pinia 状态层 (task / filter / progress)
-│   │   ├── composables/                # 复用逻辑 (useRequest 请求竞态守卫)
-│   │   ├── plugins/                    # 按需引入 (echarts 按需注册 / 图标按需注册)
+│   │   ├── components/                 # 业务组件 (RcaGraph / RcaCenter / ImportProgressModal / ServerPathPicker / MultiDevice* / DeviceManager / AdvancedFilter* / TagManager*)
+│   │   │   └── workbench/              # 工作台子组件 (Header / NavBar / LogStream / LogDetailPanel / LogKnowledgePanel / 对话框)
+│   │   ├── stores/                     # Pinia 状态层 (task / filter / tag / progress / workbenchUI)
+│   │   ├── composables/                # 复用逻辑 (useWorkbenchTaskContext / useRequest / useRcaPolling / useReanalyze 等)
+│   │   ├── plugins/                    # 按需引入 (echarts 仅 Bar+Graph / 46 个图标按需注册)
+│   │   ├── constants/                  # 视图模式 / 设备类型 / 筛选预设 / 标签颜色
+│   │   ├── utils/                      # format / logFormatter (结构化报文解析)
+│   │   ├── styles/                     # 令牌化 CSS (tokens / severity / panels / dialog 等 7 个)
 │   │   ├── router/                     # 路由配置（含 404 兜底）
 │   │   ├── App.vue                     # 布局与顶栏"运行中任务"徽标
 │   │   └── main.js
 │   ├── package.json
-│   └── vite.config.js                  # 分包策略、相对路径 base、体积告警阈值
-├── docs/                               # 架构与审计文档
+│   └── vite.config.js                  # 四拆分包策略、相对路径 base、体积告警阈值
+├── docs/                               # 架构与专题文档
 │   ├── 架构与模块说明书.md              # 全量模块与数据流说明书（权威参考）
-│   ├── 代码审计报告.md
-│   └── 审计问题修复方案.md
+│   ├── 前端样式规范.md
+│   ├── RCA演进计划.md
+│   └── WLAN与无线AC设备日志解析与知识匹配适配方案.md
 ├── build/                              # 编译输出目录
 ├── go.mod
 └── go.sum
@@ -460,6 +531,8 @@ cd web && npm run build
 | `internal/matcher/export_test.go` | Tier1 软短路降级与版本分档打分 |
 | `internal/rootcause/rca_regression_test.go` | 重叠窗口聚类、跨窗口链路完整性与排他认领 |
 | `internal/task/task_test.go` | 导入流水线、冲突策略与任务删除生命周期 |
+| `internal/task/rca_scheduler_test.go` / `rca_end_to_end_test.go` | RCA 异步调度、并发与重启自愈 |
+| `internal/task/tag_service_test.go` / `advanced_filter_test.go` | 标签领域服务与专家筛选编译 |
 | `internal/api/api_test.go` | 路由装配、中间件与统一响应契约 |
 
 ---
@@ -487,7 +560,13 @@ cd web && npm run build
   - [x] 长任务进度追踪、后台运行与一键终止
   - [x] 分类流式导出（CSV / JSON / HTML）
   - [x] 路径白名单守卫、5xx 脱敏与 RequestID 链路追踪
-  - [x] 前端 Pinia 状态层、请求竞态守卫与虚拟滚动
+  - [x] 前端 Pinia 状态层、请求竞态守卫与令牌化样式体系
+- [x] **Phase 2.6: 桌面化与协作分析（已完成）**
+  - [x] Windows 系统托盘（Win32 直调 + 程序化图标 + 原生通知）
+  - [x] 日志标签系统（打标/批量/过滤）与专家级组合筛选预设
+  - [x] RCA 异步调度器（状态机 + 并发控制 + 重启自愈）
+  - [x] 文档批量删除、任务文件删除、日志 sparkline / faceted 查询
+  - [x] 系统配置与日志策略运行时热更新
 - [ ] **Phase 3: 智能化与大模型扩展（规划中）**
   - [ ] 预留标准 LLM / RAG 诊断 Prompt 上下文组装器
   - [ ] 支持对接私有化/本地大模型（DeepSeek、Qwen、Ollama 等）进行流式故障处置建议生成
