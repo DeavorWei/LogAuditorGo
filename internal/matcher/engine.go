@@ -31,14 +31,15 @@ type matchCacheItem struct {
 // 物理阻断有线与无线报文的缓存污染。
 // 各字段用 strconv.Quote 编码，避免产品名/版本号中出现的 ':' 造成跨字段碰撞 (PARSE-17)。
 
-func buildBaseKey(module, upperBrief, product, version string, isWireless bool) string {
+func buildBaseKey(module, upperBrief, product, version string, isWireless bool, severity int) string {
 	wFlag := "0"
 	if isWireless {
 		wFlag = "1"
 	}
 	return strconv.Quote(module) + ":" + strconv.Quote(upperBrief) + ":" +
 		strconv.Quote(strings.ToUpper(strings.TrimSpace(product))) + ":" +
-		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag
+		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag +
+		":S=" + strconv.Itoa(severity)
 }
 
 func buildBodyKey(baseKey, messageBody string) string {
@@ -239,9 +240,13 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		return nil, TierUnmatch, 0.0
 	}
 
-	// PARSE-01 / P0-A: 缓存 Key 分层（详见 buildBaseKey / buildBodyKey 注释）
+	// PARSE-01 / P0-A / D7: 缓存 Key 分层（详见 buildBaseKey / buildBodyKey 注释）
 	isWireless := (norm != nil && IsWirelessLog(norm.MessageBody))
-	baseKey := buildBaseKey(module, upperBrief, product, version, isWireless)
+	severity := 0
+	if norm != nil {
+		severity = norm.Severity
+	}
+	baseKey := buildBaseKey(module, upperBrief, product, version, isWireless, severity)
 	bodyKey := buildBodyKey(baseKey, norm.MessageBody)
 
 	// 1. 先查与正文无关的结果缓存（Tier1/Tier2 的命中可被同 module:brief 的所有日志复用）
@@ -284,10 +289,11 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		if best != nil {
 			consistency := Tier1Consistency(norm, best, m.matchTemplate)
 			if consistency >= MinTier1Confidence {
+				conf := ConfidenceExact * consistency
 				if m.cache != nil {
-					m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierExact, conf: ConfidenceExact})
+					m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierExact, conf: conf})
 				}
-				return best, TierExact, ConfidenceExact
+				return best, TierExact, conf
 			}
 			fallbackK = best
 			fallbackConf = ConfidenceExact * consistency

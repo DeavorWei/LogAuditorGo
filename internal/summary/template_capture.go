@@ -488,3 +488,56 @@ func levenshteinDistance(a, b string) int {
 
 	return prev[lb]
 }
+
+// placeholderPseudoKeyRegex 预编译占位符伪键正则（小写口径，匹配 NormalizeKey 之后的键名）
+var placeholderPseudoKeyRegex = regexp.MustCompile(`^(char|string|integer|octet)\d*$`)
+
+// IsPlaceholderPseudoKey 判断键名是否为泛化占位符伪键（如 CHAR/STRING/INTEGER/OCTET）
+func IsPlaceholderPseudoKey(normKey string) bool {
+	return placeholderPseudoKeyRegex.MatchString(normKey)
+}
+
+// MergeCapturedParameters 将模板反向捕获的参数安全合并到原生解析参数中。
+// 严守三道防线：
+// 1. 无线日志下阻断 userinfo* 有线前导伪键；
+// 2. 泛化占位符黑名单抑制（CHAR/STRING/INTEGER/OCTET）；
+// 3. 原生已有同名参数绝对优先保护（大小写不敏感匹配同名参数），同时允许官方规范字典变量名并存。
+func MergeCapturedParameters(rawParams map[string]string, captured map[string]string, isWireless bool) map[string]string {
+	if len(captured) == 0 {
+		return rawParams
+	}
+	if rawParams == nil {
+		rawParams = make(map[string]string, len(captured))
+	}
+
+	for ck, cv := range captured {
+		normCK := NormalizeKey(ck)
+
+		// 1. 无线日志下阻断 USER_INFO_* 有线前导伪键
+		if isWireless && strings.HasPrefix(normCK, "userinfo") {
+			continue
+		}
+
+		// 2. 占位符黑名单抑制：仅过滤模板泛化占位符，不误伤真实字段
+		if IsPlaceholderPseudoKey(normCK) {
+			continue
+		}
+
+		// 3. 原生已有同名参数保护：如果原生已存在该参数（仅大小写差异）且非空，保护现场原生解析值
+		hasExact := false
+		for k, v := range rawParams {
+			if strings.EqualFold(k, ck) && v != "" {
+				hasExact = true
+				break
+			}
+		}
+		if hasExact {
+			continue
+		}
+
+		rawParams[ck] = cv
+	}
+
+	return rawParams
+}
+

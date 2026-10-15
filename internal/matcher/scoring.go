@@ -361,6 +361,17 @@ func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
 		}
 	}
 
+	// 闭环 D6: 当条目无版本映射时，基于 Parameters / Message / Brief 进行内容特征兜底产品族判定
+	if candFamily == FamilyUnknown {
+		contentUpper := strings.ToUpper(cand.Message + " " + cand.Parameters + " " + cand.Brief)
+		if strings.Contains(contentUpper, "WLAN") || strings.Contains(contentUpper, "ACMAC") ||
+			strings.Contains(contentUpper, "APMAC") || strings.Contains(contentUpper, "SSID") {
+			candFamily = FamilyWLAN
+		} else if strings.Contains(contentUpper, "USER_INFO_") || strings.Contains(contentUpper, "DEVICEMAC") {
+			candFamily = FamilyCampus
+		}
+	}
+
 	// 1. 无线报文场景判定
 	if IsWirelessLog(norm.MessageBody) {
 		if candFamily == FamilyWLAN {

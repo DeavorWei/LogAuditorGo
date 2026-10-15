@@ -276,3 +276,42 @@ func TestCaptureTemplateParams_AuditN2_TrailingPlaceholderParenGuard(t *testing.
 		t.Fatalf("expected {reason:link down}, got %v", res2)
 	}
 }
+
+func TestMergeCapturedParameters_Guards(t *testing.T) {
+	// 原生解析参数
+	raw := map[string]string{
+		"ACMAC": "f4-e5-f2-70-f4-bc",
+		"SSID":  "office",
+	}
+
+	captured := map[string]string{
+		"ACMAC":             "11-22-33-44-55-66", // 冲突：原生优先，不可覆盖
+		"APMAC":             "8c-e5-ef-80-b3-20", // 补充合法字段
+		"USER_INFO_OFFLINE": "offline",           // 无线报文下必须阻断
+		"STRING":            "some_string",       // 泛化占位符必须过滤
+		"INTEGER1":          "123",               // 泛化占位符必须过滤
+		"IPADDRESS":         "192.168.1.1",       // 官方真实字段，绝不误杀
+	}
+
+	// 1. 无线日志场景
+	mergedWireless := MergeCapturedParameters(raw, captured, true)
+	if mergedWireless["ACMAC"] != "f4-e5-f2-70-f4-bc" {
+		t.Errorf("expected raw ACMAC preserved, got %s", mergedWireless["ACMAC"])
+	}
+	if mergedWireless["APMAC"] != "8c-e5-ef-80-b3-20" {
+		t.Errorf("expected APMAC merged, got %s", mergedWireless["APMAC"])
+	}
+	if _, ok := mergedWireless["USER_INFO_OFFLINE"]; ok {
+		t.Errorf("expected USER_INFO_OFFLINE blocked in wireless log")
+	}
+	if _, ok := mergedWireless["STRING"]; ok {
+		t.Errorf("expected placeholder STRING suppressed")
+	}
+	if _, ok := mergedWireless["INTEGER1"]; ok {
+		t.Errorf("expected placeholder INTEGER1 suppressed")
+	}
+	if mergedWireless["IPADDRESS"] != "192.168.1.1" {
+		t.Errorf("expected real field IPADDRESS preserved, got %s", mergedWireless["IPADDRESS"])
+	}
+}
+

@@ -2,7 +2,6 @@ package enrich
 
 import (
 	"encoding/json"
-	"regexp"
 	"sort"
 	"strings"
 
@@ -74,37 +73,8 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 		if kb != nil && kb.Message != "" {
 			captured := summary.CaptureTemplateParams(kb.Message, rec.MessageBody)
 			if len(captured) > 0 {
-				if rawParams == nil {
-					rawParams = make(map[string]string, len(captured))
-				}
-
 				isWireless := matcher.IsWirelessLog(rec.MessageBody)
-				existingNormKeys := make(map[string]struct{}, len(rawParams))
-				for k := range rawParams {
-					existingNormKeys[summary.NormalizeKey(k)] = struct{}{}
-				}
-
-				for ck, cv := range captured {
-					// NormalizeKey 已做小写 + 去下划线/短横线/空格处理，后续前缀/正则均按小写口径
-					normCK := summary.NormalizeKey(ck)
-
-					// 1. 无线日志下阻断 USER_INFO_* 有线前导伪键（归一化后前缀为小写 userinfo）
-					if isWireless && strings.HasPrefix(normCK, "userinfo") {
-						continue
-					}
-
-					// 2. 占位符黑名单抑制：仅过滤模板泛化占位符（CHAR/STRING/INTEGER/OCTET），
-					//    绝不覆盖官方字典真实字段（如 IPADDRESS / IPV6ADDRESS）
-					if isPlaceholderPseudoKey(normCK) {
-						continue
-					}
-
-					// 3. 保护现场原生解析结果不被模板捕获覆盖；同时借助规范化索引杜绝大小写重入
-					if _, hasRaw := existingNormKeys[normCK]; !hasRaw {
-						rawParams[ck] = cv
-						existingNormKeys[normCK] = struct{}{}
-					}
-				}
+				rawParams = summary.MergeCapturedParameters(rawParams, captured, isWireless)
 				if sJSON, err := marshalSortedParamsJSON(rawParams); err == nil {
 					mergedParamsJSON = sJSON
 				}
@@ -157,11 +127,4 @@ func marshalSortedParamsJSON(params map[string]string) (string, error) {
 
 func summaryFor(rec model.LogRecord, rawParams map[string]string, kb *model.Knowledge) string {
 	return summary.GenerateSummary(rec.Module, rec.Brief, rec.Severity, rec.MessageBody, rawParams, kb)
-}
-
-// placeholderPseudoKeyRegex 预编译占位符伪键正则（小写口径，匹配 NormalizeKey 之后的键名）
-var placeholderPseudoKeyRegex = regexp.MustCompile(`^(char|string|integer|octet)\d*$`)
-
-func isPlaceholderPseudoKey(normKey string) bool {
-	return placeholderPseudoKeyRegex.MatchString(normKey)
 }

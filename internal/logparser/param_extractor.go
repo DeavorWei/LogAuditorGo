@@ -189,11 +189,6 @@ func scanSemicolonPairs(s string, emit func(key, value string)) {
 	}
 }
 
-// braceBalancedBlockRegex 仅为保持语义可读性而保留的构造器，返回上述正则
-func braceBalancedBlockRegex() *regexp.Regexp {
-	return paramBlockRegex
-}
-
 // ExtractParameters 从日志正文中提取动态键值对参数
 func ExtractParameters(msg string) map[string]string {
 	if strings.IndexByte(msg, '=') == -1 && strings.IndexByte(msg, ':') == -1 {

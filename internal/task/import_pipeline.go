@@ -295,28 +295,8 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 		if k.Message != "" {
 			captured := summary.CaptureTemplateParams(k.Message, norm.MessageBody)
 			if len(captured) > 0 {
-				if norm.Parameters == nil {
-					norm.Parameters = make(map[string]string, len(captured))
-				}
-				for ck, cv := range captured {
-					if existing, ok := norm.Parameters[ck]; ok && existing != cv && existing != "" {
-						var arr []string
-						if err := json.Unmarshal([]byte(existing), &arr); err == nil {
-							arr = append(arr, cv)
-							if b, err := json.Marshal(arr); err == nil {
-								norm.Parameters[ck] = string(b)
-								continue
-							}
-						} else {
-							arr = []string{existing, cv}
-							if b, err := json.Marshal(arr); err == nil {
-								norm.Parameters[ck] = string(b)
-								continue
-							}
-						}
-					}
-					norm.Parameters[ck] = cv
-				}
+				isWireless := matcher.IsWirelessLog(norm.MessageBody)
+				norm.Parameters = summary.MergeCapturedParameters(norm.Parameters, captured, isWireless)
 			}
 		}
 	} else {

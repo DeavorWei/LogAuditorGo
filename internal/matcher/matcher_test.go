@@ -721,4 +721,48 @@ func TestMatchEngine_DeterministicScoringMatrix(t *testing.T) {
 	if k5 == nil || k5.ID != 8438 {
 		t.Fatalf("S12700 + Campus-Switch expected #8438, got %v", k5)
 	}
+
+	// 6. 同分确定性断言：构造同分同版本候选，严格断言返回 ID 较小者 (闭环 D10)
+	cands := []*model.Knowledge{
+		{ID: 200, Brief: "TEST", Versions: []model.KnowledgeVersionMapping{{ProductType: "CloudEngine", ProductVersion: "V100"}}},
+		{ID: 100, Brief: "TEST", Versions: []model.KnowledgeVersionMapping{{ProductType: "CloudEngine", ProductVersion: "V100"}}},
+		{ID: 300, Brief: "TEST", Versions: []model.KnowledgeVersionMapping{{ProductType: "CloudEngine", ProductVersion: "V100"}}},
+	}
+	best := matcher.FindBestKnowledgeMatchPtr(cands, "CloudEngine", "V100")
+	if best == nil || best.ID != 100 {
+		t.Fatalf("tie-breaking expected ID=100 (lowest ID), got %v", best)
+	}
 }
+
+func TestCalcFeatureScore_NoVersionFallback(t *testing.T) {
+	acLog := &model.NormalizedLog{
+		MessageBody: "[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;SSID:office;",
+	}
+
+	// 1. 无版本映射的 WLAN 候选
+	kNoVerWLAN := &model.Knowledge{
+		ID:         1,
+		Brief:      "WLAN_OFFLINE",
+		Message:    "ACMAC [ACMAC] SSID [SSID]",
+		Parameters: "ACMAC,SSID",
+		Versions:   nil,
+	}
+	sWLAN := matcher.CalcFeatureScoreForTest(acLog, kNoVerWLAN)
+	if sWLAN != 30 {
+		t.Errorf("expected +30 for unversioned WLAN knowledge, got %d", sWLAN)
+	}
+
+	// 2. 无版本映射的有线候选
+	kNoVerWired := &model.Knowledge{
+		ID:         2,
+		Brief:      "USER_INFO_OFFLINE",
+		Message:    "user offline",
+		Parameters: "USER_INFO_OFFLINE",
+		Versions:   nil,
+	}
+	sWired := matcher.CalcFeatureScoreForTest(acLog, kNoVerWired)
+	if sWired != -20 {
+		t.Errorf("expected -20 for unversioned wired knowledge, got %d", sWired)
+	}
+}
+
