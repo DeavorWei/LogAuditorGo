@@ -668,11 +668,18 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 		return nil, fmt.Errorf("task not found: %s", taskID)
 	}
 
-	// 双写同步至任务库
-	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
-	if err == nil {
-		_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error
-		storage.ReleaseTaskDB(taskID)
+	// 双写同步至任务库 (闭环 D5: 先探测任务库物理文件是否存在，避免对无库任务凭空建库；同时捕获并记录错误)
+	taskDBFile := storage.TaskDBPath(s.taskDir, taskID)
+	if _, statErr := os.Stat(taskDBFile); statErr == nil {
+		taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+		if err != nil {
+			logger.Log.Warnf("[Task Service] Failed to open task db for UpdateTask: %v", err)
+		} else {
+			if updateErr := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; updateErr != nil {
+				logger.Log.Errorf("[Task Service] Failed to sync updates to task db: %v", updateErr)
+			}
+			storage.ReleaseTaskDB(taskID)
+		}
 	}
 
 	var taskInfo model.TaskInfo
@@ -2290,14 +2297,18 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			effectiveDeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
 		}
 
-		// 显式覆盖：立即双写持久化新的设备配置，不依赖后续 persistTaskInfo
+		// 显式覆盖：立即双写持久化新的设备配置，不依赖后续 persistTaskInfo (闭环 D4)
 		overrideUpdates := map[string]interface{}{
 			"device_type":    effectiveDeviceType,
 			"device_version": effectiveDeviceVersion,
 		}
-		_ = s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error
+		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error; err != nil {
+			return nil, fmt.Errorf("failed to persist override device settings to global db: %w", err)
+		}
 		if taskDB != nil {
-			_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error
+			if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error; err != nil {
+				logger.Log.Warnf("[Task Service] Failed to persist override device settings to task db: %v", err)
+			}
 		}
 		taskInfo.DeviceType = effectiveDeviceType
 		taskInfo.DeviceVersion = effectiveDeviceVersion

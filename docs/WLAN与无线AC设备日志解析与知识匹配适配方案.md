@@ -1224,7 +1224,7 @@ func setupTestRouterWithTask(t *testing.T) (*gin.Engine, string, *gorm.DB) {
         TaskID:     taskID,
         TaskName:   "AuditTask",
         DeviceType: "Huawei-VRP",
-        Status:     model.TaskStatusSuccess,
+        Status:     model.TaskStatusCompleted,
     }
     if err := db.Create(&initialTask).Error; err != nil {
         t.Fatalf("create initial task failed: %v", err)

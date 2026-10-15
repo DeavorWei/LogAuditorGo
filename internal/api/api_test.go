@@ -1880,5 +1880,19 @@ func TestTaskAPI_UpdateTask_And_Reanalyze(t *testing.T) {
 	if taskAfter.DeviceType != "CloudEngine" {
 		t.Errorf("reanalyze override device_type not updated, got %q", taskAfter.DeviceType)
 	}
+
+	// 3. PATCH 修改为具体型号 AC6508 (闭环 D9: 放行具体真实型号)
+	updateSpecificJSON := `{"device_type":"AC6508"}`
+	reqSp, _ := http.NewRequest(http.MethodPatch, "/api/v1/tasks/"+taskID, strings.NewReader(updateSpecificJSON))
+	reqSp.Header.Set("Content-Type", "application/json")
+	wSp := httptest.NewRecorder()
+	router.ServeHTTP(wSp, reqSp)
+	if wSp.Code != http.StatusOK {
+		t.Fatalf("PATCH specific model expected 200, got %d: %s", wSp.Code, wSp.Body.String())
+	}
+	taskSpecific := getTaskFromGlobalDB(t, db, taskID)
+	if taskSpecific.DeviceType != "AC6508" {
+		t.Errorf("device_type not updated to AC6508, got %q", taskSpecific.DeviceType)
+	}
 }
 

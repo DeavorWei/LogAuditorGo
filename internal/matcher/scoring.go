@@ -94,6 +94,11 @@ func resolveProductFamily(product string) ProductFamily {
 	return FamilyUnknown
 }
 
+// ResolveProductFamily 解析产品所属的大族（公开供 API 校验等场景复用）
+func ResolveProductFamily(product string) ProductFamily {
+	return resolveProductFamily(product)
+}
+
 // MatchTier 匹配层级常量
 const (
 	TierExact    = "EXACT"     // 1.0: 模块与简名精确匹配

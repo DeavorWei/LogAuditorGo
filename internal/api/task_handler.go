@@ -15,6 +15,7 @@ import (
 	"logauditorgo/internal/enrich"
 	"logauditorgo/internal/fsx"
 	"logauditorgo/internal/knowledge"
+	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
@@ -34,6 +35,19 @@ var validDeviceTypes = map[string]struct{}{
 	"Campus-Switch":   {},
 	"HiSecEngine-USG": {},
 	"NetEngine":       {},
+}
+
+// isValidDeviceType 判断设备类型是否合法：
+// 既支持标准任务设备族枚举，又通过 matcher.ResolveProductFamily 放行具体型号（如 AC6508、USG6550E 等）(闭环 D9)
+func isValidDeviceType(dt string) bool {
+	trimmed := strings.TrimSpace(dt)
+	if trimmed == "" {
+		return false
+	}
+	if _, ok := validDeviceTypes[trimmed]; ok {
+		return true
+	}
+	return matcher.ResolveProductFamily(trimmed) != matcher.FamilyUnknown
 }
 
 
@@ -1268,7 +1282,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	}
 
 	if req.DeviceType != "" {
-		if _, ok := validDeviceTypes[req.DeviceType]; !ok {
+		if !isValidDeviceType(req.DeviceType) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported device_type: " + req.DeviceType})
 			return
 		}
@@ -1310,7 +1324,7 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 		DeviceVersion: strings.TrimSpace(req.DeviceVersion),
 	}
 	if opt.DeviceType != "" {
-		if _, ok := validDeviceTypes[opt.DeviceType]; !ok {
+		if !isValidDeviceType(opt.DeviceType) {
 			ErrorResponse(c, http.StatusBadRequest, -1, "unsupported device_type: "+opt.DeviceType)
 			return
 		}

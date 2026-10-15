@@ -40,13 +40,12 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 
 // persistTaskInfo 把任务基础运行状态双写回全局库与任务库。
 // 采用字段白名单 Updates，严禁使用整行 Save。
-// 闭环 P2-1: 彻底移除 device_type / device_version，任务设备配置属性写权收归 UpdateTask 与显式覆盖重分析，杜绝竞态覆写。
+// 闭环 P2-1 & D3: 彻底移除 task_name / device_type / device_version，任务静态元数据写权收归 UpdateTask，杜绝竞态覆写。
 func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
 	if taskInfo == nil {
 		return
 	}
 	updates := map[string]interface{}{
-		"task_name":     taskInfo.TaskName,
 		"file_count":    taskInfo.FileCount,
 		"device_count":  taskInfo.DeviceCount,
 		"log_count":     taskInfo.LogCount,
