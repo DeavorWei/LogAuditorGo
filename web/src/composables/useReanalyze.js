@@ -16,11 +16,15 @@ import api from '@/api'
  * @param {(data: any) => void} [handlers.onSettled] 同步完成时（无 job_id）的收尾
  */
 export function useReanalyze({ onJobStarted, onSettled } = {}) {
-  const reanalyze = (task) => {
+  const reanalyze = (task, options = {}) => {
     if (!task || !task.task_id) return
 
+    const overrideNotice = options.device_type
+      ? `\n（将覆盖设备类型为: ${options.device_type}${options.device_version ? `，版本: ${options.device_version}` : ''}）`
+      : ''
+
     ElMessageBox.confirm(
-      `确认对任务【${task.task_name}】的全部 ${task.log_count || 0} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？`,
+      `确认对任务【${task.task_name}】的全部 ${task.log_count || 0} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？${overrideNotice}`,
       '重新分析确认',
       {
         confirmButtonText: '开始重新分析',
@@ -30,7 +34,12 @@ export function useReanalyze({ onJobStarted, onSettled } = {}) {
     )
       .then(async () => {
         try {
-          const res = await api.reanalyzeTask(task.task_id, true)
+          const reanalyzePayload = {
+            async: options.async !== false,
+            ...(options.device_type ? { device_type: options.device_type } : {}),
+            ...(options.device_version ? { device_version: options.device_version } : {})
+          }
+          const res = await api.reanalyzeTask(task.task_id, reanalyzePayload)
           if (res.code === 0 && res.data?.job_id) {
             // 异步模式：交给进度弹窗跟踪，完成时由其 completed 事件驱动刷新
             onJobStarted?.(res.data.job_id)

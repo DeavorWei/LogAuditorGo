@@ -154,6 +154,13 @@
       :job-id="currentJobId"
       @completed="handleLogImportCompleted"
     />
+
+    <ReanalyzeDialog
+      v-model="showReanalyzeDialog"
+      :task="currentTask"
+      @confirm="handleReanalyzeConfirm"
+      @updated="handleTaskUpdated"
+    />
   </div>
 </template>
 
@@ -190,6 +197,7 @@ import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
 import QuickTagModal from '@/components/QuickTagModal.vue'
 import AdvancedFilterModal from '@/components/AdvancedFilterModal.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import ReanalyzeDialog from '@/components/ReanalyzeDialog.vue'
 
 const route = useRoute()
 const taskStore = useTaskStore()
@@ -207,6 +215,7 @@ const logStreamRef = ref(null)
 
 const showLogDetailModal = ref(false)
 const showQuickTagModal = ref(false)
+const showReanalyzeDialog = ref(false)
 const quickTagTargetLog = ref(null)
 const showProgressModal = ref(false)
 const currentJobId = ref('')
@@ -378,7 +387,16 @@ const openProgressModalWithId = (jobId) => {
 
 const handleReanalyzeTask = () => {
   if (!currentTaskId.value || !currentTask.value) return
-  reanalyze(currentTask.value)
+  showReanalyzeDialog.value = true
+}
+
+const handleReanalyzeConfirm = (options) => {
+  if (!currentTask.value) return
+  reanalyze(currentTask.value, options)
+}
+
+const handleTaskUpdated = async () => {
+  await fetchTasks()
 }
 
 // 8. 视图模式与路由联动

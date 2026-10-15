@@ -51,11 +51,12 @@
             {{ formatTime(row.start_time) }}
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="320" align="center">
+        <el-table-column label="操作" width="360" align="center">
           <template #default="{ row }">
             <el-button v-if="row.status === 'PENDING'" type="primary" size="small" @click="openTask(row.task_id)">导入日志</el-button>
             <el-button v-else type="primary" link size="small" @click="openTask(row.task_id)">查看审计</el-button>
-            <el-button v-if="row.status !== 'PENDING'" type="warning" link size="small" :disabled="row.log_count === 0" @click="handleReanalyze(row)">重新分析</el-button>
+            <el-button v-if="row.status !== 'PENDING'" type="warning" link size="small" :disabled="row.log_count === 0" @click="handleOpenReanalyzeDialog(row)">重新分析</el-button>
+            <el-button type="info" link size="small" @click="handleOpenReanalyzeDialog(row)">编辑属性</el-button>
             <el-button type="success" link size="small" :disabled="row.status === 'PENDING'" @click="exportHTML(row.task_id)">导出报告</el-button>
             <el-button v-if="row.device_count > 1" type="warning" link size="small" :disabled="row.status === 'PENDING'" @click="exportMultiHTML(row.task_id)">多设备报告</el-button>
             <el-popconfirm title="确定彻底删除该任务数据库吗？" @confirm="handleDelete(row.task_id)">
@@ -75,6 +76,14 @@
       @completed="handleProgressComplete"
       @failed="handleProgressFailed"
     />
+
+    <!-- 重新分析与属性配置弹窗 (闭环 D2) -->
+    <ReanalyzeDialog
+      v-model="showReanalyzeDialog"
+      :task="targetTask"
+      @confirm="handleReanalyzeConfirm"
+      @updated="fetchTasks"
+    />
   </div>
 </template>
 
@@ -83,6 +92,7 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
+import ReanalyzeDialog from '@/components/ReanalyzeDialog.vue'
 import api from '@/api'
 import { formatTime as sharedFormatTime } from '@/utils/format'
 import { useReanalyze } from '@/composables/useReanalyze'
@@ -91,6 +101,8 @@ const router = useRouter()
 const loading = ref(false)
 const taskList = ref([])
 const showProgressModal = ref(false)
+const showReanalyzeDialog = ref(false)
+const targetTask = ref(null)
 const currentJobId = ref('')
 
 const fetchTasks = async () => {
@@ -133,6 +145,16 @@ const { reanalyze: handleReanalyze } = useReanalyze({
     await fetchTasks()
   }
 })
+
+const handleOpenReanalyzeDialog = (task) => {
+  targetTask.value = task
+  showReanalyzeDialog.value = true
+}
+
+const handleReanalyzeConfirm = (options) => {
+  if (!targetTask.value) return
+  handleReanalyze(targetTask.value, options)
+}
 
 // 注意：事件名必须与 ImportProgressModal 的 defineEmits 保持一致（completed / failed）。
 // 此前误写为 @complete，导致重新分析完成后回调永不触发、列表长期停留在旧状态。
