@@ -653,12 +653,17 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 	if req.DeviceVersion != "" {
 		updates["device_version"] = strings.TrimSpace(req.DeviceVersion)
 	}
-	if len(updates) == 0 {
-		var taskInfo model.TaskInfo
-		if err := s.globalDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
-			return nil, err
+	// 闭环 P3-3: 先行预检任务是否存在，杜绝更新相同值时由于 RowsAffected == 0 被误判为 404 (适应跨数据库引擎移植)
+	var existingTask model.TaskInfo
+	if err := s.globalDB.Where("task_id = ?", taskID).First(&existingTask).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, fmt.Errorf("task not found: %s", taskID)
 		}
-		return &taskInfo, nil
+		return nil, err
+	}
+
+	if len(updates) == 0 {
+		return &existingTask, nil
 	}
 
 	// 闭环 S3: 任务库先行原则——若任务库物理文件存在，先更新任务库；
@@ -677,12 +682,8 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 		}
 	}
 
-	result := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return nil, fmt.Errorf("task not found: %s", taskID)
+	if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; err != nil {
+		return nil, err
 	}
 
 	var taskInfo model.TaskInfo
@@ -2289,16 +2290,16 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
-	// 覆盖判定：调用方显式提供了非空字段时生效 (闭环 D4 & R2)
+	// 覆盖判定：调用方显式提供了非空字段时生效 (闭环 D4 & R2 & P2-3)
 	overrideUpdates := make(map[string]interface{})
 	if len(opt) > 0 {
 		if opt[0].DeviceType != "" {
 			taskInfo.DeviceType = strings.TrimSpace(opt[0].DeviceType)
 			overrideUpdates["device_type"] = taskInfo.DeviceType
-			if opt[0].DeviceVersion != "" {
-				taskInfo.DeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
-				overrideUpdates["device_version"] = taskInfo.DeviceVersion
-			}
+		}
+		if opt[0].DeviceVersion != "" {
+			taskInfo.DeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
+			overrideUpdates["device_version"] = taskInfo.DeviceVersion
 		}
 		if opt[0].TaskName != "" {
 			taskInfo.TaskName = strings.TrimSpace(opt[0].TaskName)
@@ -2492,6 +2493,12 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 
 	// ---------- 异步派发 RCA Worker (强制重新分析) ----------
 	s.TriggerTaskRCA(taskID, true)
+
+	// 闭环 P3-1: 重新从 globalDB 查询最新的 taskInfo，确保返回给调用方的任务属性（如并发更新的设备类型、版本等）为最新权威状态
+	var latestTaskInfo model.TaskInfo
+	if err := s.globalDB.Where("task_id = ?", taskID).First(&latestTaskInfo).Error; err == nil {
+		return &latestTaskInfo, nil
+	}
 
 	return &taskInfo, nil
 }

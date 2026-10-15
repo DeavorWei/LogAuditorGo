@@ -1274,3 +1274,103 @@ func TestImport_TemplateParamsCapturePersistence(t *testing.T) {
 		t.Errorf("ParametersJSON does not contain expected captured parameters, got: %s", record.ParametersJSON)
 	}
 }
+
+// TestUpdateTask_ExistenceAndSameValue 验证闭环 P3-3:
+// 1. 不存在的任务返回 task not found 错误；
+// 2. 提交与原值相同的内容时，First 预检通过，正常返回，绝不误判为 404。
+func TestUpdateTask_ExistenceAndSameValue(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "task_update_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	// 1. 尝试更新不存在的任务
+	_, err = svc.UpdateTask("non_existent_task", task.TaskUpdateRequest{TaskName: "NewName"})
+	if err == nil || !strings.Contains(err.Error(), "not found") {
+		t.Fatalf("expected task not found error, got: %v", err)
+	}
+
+	// 2. 创建真实任务
+	tInfo, err := svc.CreateEmptyTask("InitialName", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	// 3. 更新相同的值 (模拟 MySQL/PG 下 RowsAffected == 0 场景)
+	updated, err := svc.UpdateTask(tInfo.TaskID, task.TaskUpdateRequest{
+		TaskName:   "InitialName",
+		DeviceType: "CloudEngine",
+	})
+	if err != nil {
+		t.Fatalf("P3-3 regression: updating same values should succeed, got error: %v", err)
+	}
+	if updated.TaskName != "InitialName" || updated.DeviceType != "CloudEngine" {
+		t.Fatalf("unexpected updated task info: %+v", updated)
+	}
+}
+
+// TestReanalyzeTask_DecoupledDeviceVersion 验证闭环 P2-3 与 P3-1:
+// 1. 单独提供 DeviceVersion 时被独立识别并持久化，不被 DeviceType 嵌套忽略；
+// 2. ReanalyzeTask 响应回显的是最新权威的属性。
+func TestReanalyzeTask_DecoupledDeviceVersion(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "task_reanalyze_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	tInfo, err := svc.CreateEmptyTask("ReanalyzeTask", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	// 导入 1 行日志
+	item := task.FileUploadItem{
+		FileName: "sample.log",
+		Content:  "Oct 9 2026 11:52:11+08:00 Longan-1 %%01IFNET/4/IF_DOWN(l): Interface down.",
+	}
+	if _, err := svc.ImportLogs(tInfo.TaskID, []task.FileUploadItem{item}, "overwrite"); err != nil {
+		t.Fatalf("import logs failed: %v", err)
+	}
+
+	// 仅传 device_version 执行重新分析
+	reanalyzed, err := svc.ReanalyzeTask(tInfo.TaskID, nil, task.ReanalyzeOptions{
+		DeviceVersion: "V200R024C00",
+	})
+	if err != nil {
+		t.Fatalf("reanalyze task failed: %v", err)
+	}
+
+	if reanalyzed.DeviceVersion != "V200R024C00" {
+		t.Fatalf("P2-3 regression: DeviceVersion override was silently ignored, got %q", reanalyzed.DeviceVersion)
+	}
+
+	// 验证全局库确已持久化
+	var stored model.TaskInfo
+	if err := globalDB.Where("task_id = ?", tInfo.TaskID).First(&stored).Error; err != nil {
+		t.Fatalf("query globalDB failed: %v", err)
+	}
+	if stored.DeviceVersion != "V200R024C00" {
+		t.Fatalf("P2-3 regression: globalDB did not persist DeviceVersion, got %q", stored.DeviceVersion)
+	}
+}
+

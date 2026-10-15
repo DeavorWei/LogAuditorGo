@@ -930,5 +930,106 @@ func TestMatchEngine_ExactBestCachePerformance(t *testing.T) {
 	}
 }
 
+// TestTier2Mnemonic_ExactBestKeyCrossBodyReuse 验证闭环 P1-1:
+// Tier2 助记符别名匹配的命中所依赖的属性与具体正文解耦，因此同 brief 的不同正文日志应能跨正文复用 exactBestKey 缓存。
+func TestTier2Mnemonic_ExactBestKeyCrossBodyReuse(t *testing.T) {
+	engine, db := newIsolatedMatchEngine(t)
+
+	// 库中仅存在助记符词干条目 IF_DOWN (不包含具体后缀 _FAIL 等同名条目)
+	kStem := &model.Knowledge{
+		ID:          9100,
+		Module:      "IFNET",
+		Brief:       "IF_DOWN",
+		Severity:    4,
+		Message:     "Interface down event",
+		Description: "接口断开",
+		ContentHash: "hash_if_down_stem",
+	}
+	if err := db.Create(kStem).Error; err != nil {
+		t.Fatalf("failed to create knowledge: %v", err)
+	}
+	engine.Reload()
+
+	// 首条日志 brief 为 IF_FAIL (通过 stem 归一化在 Tier2 命中 IF_DOWN)
+	log1 := &model.NormalizedLog{
+		Module:      "IFNET",
+		Brief:       "IF_FAIL",
+		Severity:    4,
+		MessageBody: "Interface GE1/0/1 state changed to FAIL (session 1)",
+	}
+	k1, tier1, conf1 := engine.Match(log1, "", "")
+	if k1 == nil || tier1 != matcher.TierMnemonic || k1.ID != kStem.ID {
+		t.Fatalf("log1 expected TierMnemonic hit, got tier=%s, k=%v", tier1, k1)
+	}
+
+	// 第 2 条日志具有完全不同的正文，但同一 brief
+	log2 := &model.NormalizedLog{
+		Module:      "IFNET",
+		Brief:       "IF_FAIL",
+		Severity:    4,
+		MessageBody: "Interface GE1/0/2 state changed to FAIL (completely different message body hash)",
+	}
+	k2, tier2, conf2 := engine.Match(log2, "", "")
+	if k2 == nil || tier2 != matcher.TierMnemonic || k2.ID != kStem.ID || conf2 != conf1 {
+		t.Fatalf("log2 expected TierMnemonic hit via exactBestKey cache, got tier=%s, k=%v", tier2, k2)
+	}
+}
+
+// TestCalcFeatureScore_DualFeature_WiredPriority 验证闭环 P2-1:
+// 报文同时包含无线特征 [WLAN_ 与有线特征 DEVICEMAC: 时，有线排斥规则优先执行，WLAN 知识必须获得 -20 排斥分。
+func TestCalcFeatureScore_DualFeature_WiredPriority(t *testing.T) {
+	// 双特征混合报文
+	dualLog := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: "[WLAN_STA_INFO_OFFLINE]DEVICEMAC:00-e0-fc-12-34-56;ACMAC:f4-e5-f2-70-f4-bc;",
+	}
+
+	wlanCand := &model.Knowledge{
+		ID:     11534,
+		Module: "CM",
+		Brief:  "USER_OFFLINERESULT",
+		Versions: []model.KnowledgeVersionMapping{
+			{ProductType: "WLAN", ProductVersion: "V200R024C00"},
+		},
+	}
+
+	score := matcher.CalcFeatureScoreForTest(dualLog, wlanCand)
+	if score != -20 {
+		t.Fatalf("P2-1 regression: dual feature log should yield -20 for WLAN candidate, got %d", score)
+	}
+}
+
+// TestResolveProductFamily_SpecificModels 验证闭环 P2-2:
+// 支持前端 ReanalyzeDialog 承诺的具体型号直接输入（CE8850, S6730, NE9000, AC7005, AP3050, CE12808 等），正确归类到目标产品族。
+func TestResolveProductFamily_SpecificModels(t *testing.T) {
+	matcher.ClearProductFamilyCache()
+
+	cases := []struct {
+		model          string
+		expectedFamily matcher.ProductFamily
+	}{
+		{"CE8850", matcher.FamilyCloudEngine},
+		{"CE12808", matcher.FamilyCloudEngine},
+		{"S6730", matcher.FamilyCampus},
+		{"S5735", matcher.FamilyCampus},
+		{"NE9000", matcher.FamilyNetEngine},
+		{"NE40E", matcher.FamilyNetEngine},
+		{"AC7005", matcher.FamilyWLAN},
+		{"AP3050", matcher.FamilyWLAN},
+		{"AirEngine 5760", matcher.FamilyWLAN},
+		{"USG6550E", matcher.FamilyHiSecEngine},
+	}
+
+	for _, c := range cases {
+		got := matcher.ResolveProductFamily(c.model)
+		if got != c.expectedFamily {
+			t.Errorf("model %q: expected family %s, got %s", c.model, c.expectedFamily, got)
+		}
+	}
+}
+
+
 
 

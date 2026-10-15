@@ -342,3 +342,20 @@ func TestMergeCapturedParameters_Guards(t *testing.T) {
 	}
 }
 
+// TestMergeCapturedParameters_EmptyValuePreserved 验证闭环 P3-2:
+// 原生参数中的空值字段是现场解析的第一事实，模板捕获的参数不得覆盖原生已有字段（即使原生值为空）。
+func TestMergeCapturedParameters_EmptyValuePreserved(t *testing.T) {
+	raw := map[string]string{
+		"Slot": "",
+	}
+	captured := map[string]string{
+		"Slot": "3",
+	}
+
+	merged := MergeCapturedParameters(raw, captured, false)
+	if val, ok := merged["Slot"]; !ok || val != "" {
+		t.Fatalf("P3-2 regression: expected Slot to remain empty string, got %q (ok=%v)", val, ok)
+	}
+}
+
+

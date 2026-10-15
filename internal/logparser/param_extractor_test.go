@@ -266,3 +266,31 @@ func TestExtractParameters_RegressionGuards(t *testing.T) {
 		t.Fatalf("prose bracket parameters dropped: got %v", pGot)
 	}
 }
+
+// TestExtractParameters_LeadingTagTightening 回归闭环 P1-2：
+// 非全大写+下划线协议形态的方括号前缀（如 [SysAlarm]、[Vlanif10]）不得产出空值伪参数。
+func TestExtractParameters_LeadingTagTightening(t *testing.T) {
+	// 样例 1: 非协议前缀方括号 + 分号键值对
+	alarmLog := "[SysAlarm] Alarm raised; Level=major"
+	alarmParams := logparser.ExtractParameters(alarmLog)
+	if _, exists := alarmParams["SysAlarm"]; exists {
+		t.Fatalf("P1-2 regression: non-protocol bracket [SysAlarm] produced pseudo key: %v", alarmParams)
+	}
+	if alarmParams["Level"] != "major" {
+		t.Fatalf("expected Level=major, got: %v", alarmParams)
+	}
+
+	// 样例 2: 接口方括号前缀
+	vlanLog := "[Vlanif10] interface state changed; Status=up"
+	vlanParams := logparser.ExtractParameters(vlanLog)
+	if _, exists := vlanParams["Vlanif10"]; exists {
+		t.Fatalf("P1-2 regression: [Vlanif10] produced pseudo key: %v", vlanParams)
+	}
+
+	// 样例 3: 合法协议前导标签仍必须正常保留并产出 (官方规范 1/23)
+	protoLog := "[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;USER:sta01;"
+	protoParams := logparser.ExtractParameters(protoLog)
+	if _, exists := protoParams["WLAN_STA_INFO_OFFLINE"]; !exists {
+		t.Fatalf("official protocol tag [WLAN_STA_INFO_OFFLINE] should be preserved: %v", protoParams)
+	}
+}

@@ -326,6 +326,15 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	}
 
 	// ---------------- Tier 2: MNEMONIC 助记符别名/前后缀匹配 ----------------
+	// 闭环 P1-1: Tier2 的候选召回与选优仅依赖 (module, brief词干, product, version, isWireless, isWired)，
+	// 与具体日志正文和严重级别解耦，置信度恒为 ConfidenceMnemonic。
+	// 若 Tier1 未短路拦截，进入 Tier2 前先查 exactBestKey 跨正文复用，杜绝海量不同正文重复遍历全模块候选集与选优打分！
+	if m.cache != nil {
+		if item, exists := m.cache.Get(exactBestKey); exists && item != nil && item.tier == TierMnemonic {
+			return item.k, item.tier, item.conf
+		}
+	}
+
 	// PARSE-13: 统一转大写后剥离状态后缀，并对互斥极性后缀建立黑名单
 	logStem, logPol := mnemonicStem(brief)
 	if logStem != "" {
@@ -337,7 +346,9 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 					_, candPol := mnemonicStem(best.Brief)
 					if polarityAllowed(logPol, candPol) {
 						if m.cache != nil {
-							m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+							item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
+							m.cache.Put(exactBestKey, item)
+							m.cache.Put(bodyKey, item)
 						}
 						return best, TierMnemonic, ConfidenceMnemonic
 					}
@@ -363,7 +374,9 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
 				if best != nil {
 					if m.cache != nil {
-						m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+						item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
+						m.cache.Put(exactBestKey, item)
+						m.cache.Put(bodyKey, item)
 					}
 					return best, TierMnemonic, ConfidenceMnemonic
 				}

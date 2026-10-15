@@ -28,39 +28,42 @@ type familyMappingRule struct {
 	ExtraPatterns []string // 原始正则别名（不转义），用于"型号前缀 + 数字 + 可选字母后缀"形态，如 USG\d{4}[A-Z]?
 }
 
-// 别名表长前缀优先，所有别名采用单词边界匹配，杜绝子串误判 (闭环 C6 与 P2-2)
+// 别名表长前缀优先，所有别名采用单词边界匹配，杜绝子串误判 (闭环 C6、P2-2 与实测放行具体型号)
 var familyRules = []familyMappingRule{
 	{
 		Family: FamilyWLAN,
 		Aliases: []string{
 			"AIR-ENGINE", "AIRENGINE", "AC6805", "AC6800", "AC6605", "AC6508", "AC6005", "FIT-AP", "FAT-AP", "WLAN",
 		},
-		ExtraPatterns: []string{`AC\d{4}[A-Z]?`},
+		ExtraPatterns: []string{`AC\d{4,5}[A-Z]?`, `AP\d{4,5}[A-Z]?`, `AIRENGINE\s*\d{4,5}[A-Z]?`},
 	},
 	{
 		Family: FamilyCampus,
 		Aliases: []string{
 			"S12700E", "S12700", "S9700", "S7700", "S6700", "S5700", "CAMPUS",
 		},
+		ExtraPatterns: []string{`S\d{4,5}[A-Z]?`},
 	},
 	{
 		Family: FamilyCloudEngine,
 		Aliases: []string{
 			"CLOUDENGINE", "CE16800", "CE12800", "CE9860", "CE8800", "CE6800", "CE5800",
 		},
+		ExtraPatterns: []string{`CE\d{4,5}[A-Z]?`},
 	},
 	{
 		Family: FamilyHiSecEngine,
 		Aliases: []string{
 			"HISECENGINE", "USG6000", "USG9000",
 		},
-		ExtraPatterns: []string{`USG\d{4}[A-Z]?`},
+		ExtraPatterns: []string{`USG\d{4,5}[A-Z]?`},
 	},
 	{
 		Family: FamilyNetEngine,
 		Aliases: []string{
 			"NETENGINE", "NE8000", "NE5000E", "NE40E", "NE20E", "CX600",
 		},
+		ExtraPatterns: []string{`NE\d{2,5}[A-Z]?`, `CX\d{3,4}[A-Z]?`},
 	},
 }
 
@@ -444,7 +447,13 @@ func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
 
 	candFamily := resolveCandidateFamily(cand)
 
-	// 1. 无线报文场景判定
+	// 1. 有线报文场景对称保护：典型有线日志绝不挂 WLAN 知识 (闭环 P2-1 / P2-3)
+	// 即使报文同时含有无线特征（如 [WLAN_ 与 DEVICEMAC: 并存），有线排斥规则优先执行，杜绝误获 +30
+	if isWired && candFamily == FamilyWLAN {
+		return -20
+	}
+
+	// 2. 无线报文场景判定
 	if isWireless {
 		if candFamily == FamilyWLAN {
 			return 30
@@ -461,13 +470,6 @@ func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
 			}
 			// 即使参数中无明确有线标识，非 WLAN 族候选也施加轻度排斥分
 			return -10
-		}
-	}
-
-	// 2. 有线报文场景对称保护：典型有线日志绝不挂 WLAN 知识 (闭环 P2-3)
-	if isWired {
-		if candFamily == FamilyWLAN {
-			return -20
 		}
 	}
 

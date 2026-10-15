@@ -18,8 +18,9 @@ const maxParamKeyRunes = 64
 // 从而避免旧实现把 `(1,2)` 里的逗号误当作键值对分隔符。
 var paramBlockRegex = regexp.MustCompile(`\(([^()]*(?:\([^()]*\)[^()]*)*)\)`)
 
-// leadingTagRegex 匹配报文正文首部的协议前导标签（如 [WLAN_STA_INFO_OFFLINE] 或 [WLAN_AP_INFO_ONLINE]）
-var leadingTagRegex = regexp.MustCompile(`^\[([A-Za-z0-9_\-]+)\]`)
+// leadingTagRegex 匹配报文正文首部的协议前导标签（如 [WLAN_STA_INFO_OFFLINE]、[WLAN_AP_INFO_ONLINE]、[USER_INFO_OFFLINE] 等）。
+// 严格限定为全大写字母与数字、且必须包含下划线的协议标签形态，杜绝 [SysAlarm]、[Vlanif10] 类非协议前缀产出空值伪参数 (闭环 P1-2)。
+var leadingTagRegex = regexp.MustCompile(`^\[([A-Z0-9]+_[A-Z0-9_]+)\]`)
 
 // isValidCompositeKey 判定键名合法性：
 // 1. 长度在 1~64 个字符之间（使用 utf8.RuneCountInString，严格对齐 maxParamKeyRunes 常量）；
