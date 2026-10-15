@@ -249,18 +249,14 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	baseKey := buildBaseKey(module, upperBrief, product, version, isWireless, severity)
 	bodyKey := buildBodyKey(baseKey, norm.MessageBody)
 
-	// 1. 先查与正文无关的结果缓存（Tier1/Tier2 的命中可被同 module:brief 的所有日志复用）
+	// 1. 查询结果缓存（统一按包含正文指纹与属性维度的 bodyKey 粒度查询，闭环 R1 跨正文模板一致性干扰）
 	if m.cache != nil {
-		if item, exists := m.cache.Get(baseKey); exists && item != nil {
-			return item.k, item.tier, item.conf
-		}
-		// 2. 再查依赖正文的结果缓存（Tier3/Tier4）
 		if item, exists := m.cache.Get(bodyKey); exists && item != nil {
 			return item.k, item.tier, item.conf
 		}
 	}
 
-	// 3. 检查负缓存：按正文粒度记账，避免"首条未命中即永久毒化同类日志"
+	// 2. 检查负缓存：按正文粒度记账，避免"首条未命中即永久毒化同类日志"
 	if m.negativeCache != nil {
 		if _, exists := m.negativeCache.Get(bodyKey); exists {
 			return nil, TierUnmatch, 0.0
@@ -291,7 +287,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			if consistency >= MinTier1Confidence {
 				conf := ConfidenceExact * consistency
 				if m.cache != nil {
-					m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierExact, conf: conf})
+					m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierExact, conf: conf})
 				}
 				return best, TierExact, conf
 			}
@@ -306,25 +302,31 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	// PARSE-13: 统一转大写后剥离状态后缀，并对互斥极性后缀建立黑名单
 	logStem, logPol := mnemonicStem(brief)
 	if logStem != "" {
-		// 优先查去掉后缀后的 exactMap
-		if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
-			best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
-			if best != nil {
-				_, candPol := mnemonicStem(best.Brief)
-				if polarityAllowed(logPol, candPol) {
-					if m.cache != nil {
-						m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+		// 优先查去掉后缀后的 exactMap (仅当 logStem != upperBrief 时才真正剥离了状态后缀)
+		if logStem != upperBrief {
+			if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
+				best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
+				if best != nil {
+					_, candPol := mnemonicStem(best.Brief)
+					if polarityAllowed(logPol, candPol) {
+						if m.cache != nil {
+							m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+						}
+						return best, TierMnemonic, ConfidenceMnemonic
 					}
-					return best, TierMnemonic, ConfidenceMnemonic
 				}
 			}
 		}
 
 		// 其次扫描该模块下的候选：仅当候选条目剥离对称后缀后与日志词干严格一致时才判定为别名命中，
-		// 严禁随意前缀包含，且极性相反时禁止互配，以杜绝反义词条误召回
+		// 严禁随意前缀包含，且极性相反时禁止互配，以杜绝反义词条误召回；
+		// 严格排除与日志 brief 完全相同的同名候选，杜绝绕过 Tier1 软短路一致性保护降级。
 		if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
 			var mnemonicCandidates []*model.Knowledge
 			for _, cand := range moduleCandidates {
+				if strings.ToUpper(cand.Brief) == upperBrief {
+					continue // 排除 Tier1 已处理的同名候选，避免破坏软短路降级
+				}
 				candStem, candPol := mnemonicStem(cand.Brief)
 				if candStem == logStem && polarityAllowed(logPol, candPol) {
 					mnemonicCandidates = append(mnemonicCandidates, cand)
@@ -334,7 +336,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
 				if best != nil {
 					if m.cache != nil {
-						m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
+						m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
 					}
 					return best, TierMnemonic, ConfidenceMnemonic
 				}

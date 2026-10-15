@@ -33,6 +33,7 @@ var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
 type ReanalyzeOptions struct {
 	DeviceType    string `json:"device_type" form:"device_type"`
 	DeviceVersion string `json:"device_version" form:"device_version"`
+	TaskName      string `json:"task_name" form:"task_name"`
 }
 
 // TaskUpdateRequest 任务基础信息更新请求体
@@ -668,17 +669,18 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 		return nil, fmt.Errorf("task not found: %s", taskID)
 	}
 
-	// 双写同步至任务库 (闭环 D5: 先探测任务库物理文件是否存在，避免对无库任务凭空建库；同时捕获并记录错误)
+	// 双写同步至任务库 (闭环 D5 & R6: 先探测任务库物理文件是否存在，避免凭空建库；若任务库存在且更新失败，严格返回错误保障双写一致)
 	taskDBFile := storage.TaskDBPath(s.taskDir, taskID)
 	if _, statErr := os.Stat(taskDBFile); statErr == nil {
 		taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 		if err != nil {
-			logger.Log.Warnf("[Task Service] Failed to open task db for UpdateTask: %v", err)
-		} else {
-			if updateErr := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; updateErr != nil {
-				logger.Log.Errorf("[Task Service] Failed to sync updates to task db: %v", updateErr)
-			}
-			storage.ReleaseTaskDB(taskID)
+			logger.Log.Errorf("[Task Service] Failed to open task db for UpdateTask: %v", err)
+			return nil, fmt.Errorf("failed to open task database: %w", err)
+		}
+		defer storage.ReleaseTaskDB(taskID)
+		if updateErr := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error; updateErr != nil {
+			logger.Log.Errorf("[Task Service] Failed to sync updates to task db: %v", updateErr)
+			return nil, fmt.Errorf("failed to sync updates to task database: %w", updateErr)
 		}
 	}
 
@@ -2286,32 +2288,36 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
-	// 覆盖判定：仅当调用方显式提供了非空 DeviceType 时才生效
-	hasDeviceOverride := len(opt) > 0 && opt[0].DeviceType != ""
+	// 覆盖判定：调用方显式提供了非空字段时生效 (闭环 D4 & R2)
+	overrideUpdates := make(map[string]interface{})
+	if len(opt) > 0 {
+		if opt[0].DeviceType != "" {
+			taskInfo.DeviceType = strings.TrimSpace(opt[0].DeviceType)
+			overrideUpdates["device_type"] = taskInfo.DeviceType
+			if opt[0].DeviceVersion != "" {
+				taskInfo.DeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
+				overrideUpdates["device_version"] = taskInfo.DeviceVersion
+			}
+		}
+		if opt[0].TaskName != "" {
+			taskInfo.TaskName = strings.TrimSpace(opt[0].TaskName)
+			overrideUpdates["task_name"] = taskInfo.TaskName
+		}
+	}
+
 	effectiveDeviceType := taskInfo.DeviceType
 	effectiveDeviceVersion := taskInfo.DeviceVersion
 
-	if hasDeviceOverride {
-		effectiveDeviceType = strings.TrimSpace(opt[0].DeviceType)
-		if opt[0].DeviceVersion != "" {
-			effectiveDeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
-		}
-
-		// 显式覆盖：立即双写持久化新的设备配置，不依赖后续 persistTaskInfo (闭环 D4)
-		overrideUpdates := map[string]interface{}{
-			"device_type":    effectiveDeviceType,
-			"device_version": effectiveDeviceVersion,
-		}
+	if len(overrideUpdates) > 0 {
+		// 显式覆盖：立即双写持久化新的任务配置，不依赖后续 persistTaskInfo
 		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error; err != nil {
-			return nil, fmt.Errorf("failed to persist override device settings to global db: %w", err)
+			return nil, fmt.Errorf("failed to persist override settings to global db: %w", err)
 		}
 		if taskDB != nil {
 			if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error; err != nil {
-				logger.Log.Warnf("[Task Service] Failed to persist override device settings to task db: %v", err)
+				logger.Log.Warnf("[Task Service] Failed to persist override settings to task db: %v", err)
 			}
 		}
-		taskInfo.DeviceType = effectiveDeviceType
-		taskInfo.DeviceVersion = effectiveDeviceVersion
 	}
 
 	taskInfo.Status = model.TaskStatusProcessing

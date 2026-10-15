@@ -951,6 +951,10 @@ export const TASK_DEVICE_TYPE_OPTIONS = Object.freeze([
 ])
 ```
 
+> [!NOTE] 关于具体物理型号与产品族加权打分机制 (R7 说明)
+> 1. 系统支持在 `device_type` 中传入标准产品族枚举（如 `WLAN`、`CloudEngine`），也放行合法具体物理型号（如 `AC6508`、`USG6550E`、`CE6800` 等）；
+> 2. 当填写具体物理型号时，若知识库未显式维护该具体型号的精准映射记录，系统将通过 `ResolveProductFamily` 自动归入所属产品族并获得同族匹配分（50分）；若需获得同型号同版本最高置信度命中（150/120分），推荐用户优先选择推荐标准产品族（如 `WLAN`）。前端组件已支持下拉选择与手动输入具体型号双模式。
+
 #### 2. 双模 API 兼容支持 (`web/src/api/index.js`)
 ```javascript
 // 双模兼容布尔值与配置对象传参

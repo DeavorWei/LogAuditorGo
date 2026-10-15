@@ -313,5 +313,32 @@ func TestMergeCapturedParameters_Guards(t *testing.T) {
 	if mergedWireless["IPADDRESS"] != "192.168.1.1" {
 		t.Errorf("expected real field IPADDRESS preserved, got %s", mergedWireless["IPADDRESS"])
 	}
+
+	// 2. 闭环 R5: 规范化索引杜绝重入与原生空值保护
+	raw2 := map[string]string{
+		"IP_ADDRESS": "10.0.0.1",
+		"CIB ID":     "", // 原生解析出空值，也是现场第一事实
+	}
+	captured2 := map[string]string{
+		"IPADDRESS": "192.168.1.1", // 与 IP_ADDRESS 规范化等价，杜绝重入
+		"CIBID":     "999",         // 与 CIB ID 规范化等价，杜绝覆盖空值
+		"NEW_PARAM": "value1",
+	}
+	merged2 := MergeCapturedParameters(raw2, captured2, false)
+	if _, ok := merged2["IPADDRESS"]; ok {
+		t.Errorf("expected IPADDRESS suppressed by normalized equivalent IP_ADDRESS")
+	}
+	if merged2["IP_ADDRESS"] != "10.0.0.1" {
+		t.Errorf("expected IP_ADDRESS preserved, got %s", merged2["IP_ADDRESS"])
+	}
+	if _, ok := merged2["CIBID"]; ok {
+		t.Errorf("expected CIBID suppressed by normalized equivalent CIB ID with empty value")
+	}
+	if merged2["CIB ID"] != "" {
+		t.Errorf("expected empty CIB ID preserved, got %s", merged2["CIB ID"])
+	}
+	if merged2["NEW_PARAM"] != "value1" {
+		t.Errorf("expected NEW_PARAM merged, got %s", merged2["NEW_PARAM"])
+	}
 }
 

@@ -752,7 +752,7 @@ func TestCalcFeatureScore_NoVersionFallback(t *testing.T) {
 		t.Errorf("expected +30 for unversioned WLAN knowledge, got %d", sWLAN)
 	}
 
-	// 2. 无版本映射的有线候选
+	// 2. 无版本映射的有线候选 (USER_INFO_OFFLINE)
 	kNoVerWired := &model.Knowledge{
 		ID:         2,
 		Brief:      "USER_INFO_OFFLINE",
@@ -764,5 +764,82 @@ func TestCalcFeatureScore_NoVersionFallback(t *testing.T) {
 	if sWired != -20 {
 		t.Errorf("expected -20 for unversioned wired knowledge, got %d", sWired)
 	}
+
+	// 3. 无版本映射的有线候选 (WIREDUSERINFO 闭环 R4)
+	kNoVerCE := &model.Knowledge{
+		ID:         3,
+		Brief:      "WIRED_USER_OFFLINE",
+		Message:    "wired user offline",
+		Parameters: "WIREDUSERINFO",
+		Versions:   nil,
+	}
+	sCE := matcher.CalcFeatureScoreForTest(acLog, kNoVerCE)
+	if sCE != -20 {
+		t.Errorf("expected -20 for unversioned WIREDUSERINFO knowledge, got %d", sCE)
+	}
+
+	// 4. 普通报文短路 (闭环 R3)
+	plainLog := &model.NormalizedLog{
+		MessageBody: "GigabitEthernet0/0/1 change state to down",
+	}
+	sPlain := matcher.CalcFeatureScoreForTest(plainLog, kNoVerWLAN)
+	if sPlain != 0 {
+		t.Errorf("expected 0 for plain log hot-path short circuit, got %d", sPlain)
+	}
 }
+
+// TestTier1Consistency_BodyKeyCacheIsolation 验证 R1:
+// 同 module:brief 下，正文匹配模板的日志A (一致性0.70) 不会将 Tier1 结果毒化给正文不匹配模板的日志B (真实一致性0.45 < 0.60)
+func TestTier1Consistency_BodyKeyCacheIsolation(t *testing.T) {
+	engine, db := newIsolatedMatchEngine(t)
+
+	// 构造严重级为 6、含模板的知识条目
+	k := &model.Knowledge{
+		ID:         9001,
+		Module:     "TEMPMON",
+		Brief:      "HIGH_TEMP",
+		Severity:   6,
+		Message:    "Device temperature high threshold [TEMP]",
+		Parameters: "TEMP",
+	}
+	if err := db.Create(k).Error; err != nil {
+		t.Fatalf("failed to create knowledge: %v", err)
+	}
+	engine.Reload()
+
+	// 日志 A: 严重级 3 (差 3，惩罚 0.30)，正文匹配模板 (无惩罚)
+	// 一致性 = 1.0 - 0.30 = 0.70 >= 0.60 -> 命中 Tier1 (EXACT)
+	logA := &model.NormalizedLog{
+		Module:      "TEMPMON",
+		Brief:       "HIGH_TEMP",
+		Severity:    3,
+		MessageBody: "Device temperature high threshold 85",
+	}
+	kA, tierA, confA := engine.Match(logA, "", "")
+	if kA == nil || kA.ID != 9001 || tierA != matcher.TierExact {
+		t.Fatalf("logA expected TierExact with k.ID=9001, got tier=%v k=%v", tierA, kA)
+	}
+	if confA < 0.69 || confA > 0.71 {
+		t.Fatalf("logA expected conf ~0.70, got %f", confA)
+	}
+
+	// 日志 B: 严重级 3 (差 3，惩罚 0.30)，但正文不匹配模板 (惩罚 0.25)
+	// 真实一致性 = 1.0 - 0.30 - 0.25 = 0.45 < 0.60
+	// 必须退出 Tier1 软短路！(因无其他 Tier 候选，最终退回 fallback 降级置信度 0.45)
+	logB := &model.NormalizedLog{
+		Module:      "TEMPMON",
+		Brief:       "HIGH_TEMP",
+		Severity:    3,
+		MessageBody: "Mismatched message body completely unrelated",
+	}
+	kB, _, confB := engine.Match(logB, "", "")
+	if kB == nil || kB.ID != 9001 {
+		t.Fatalf("logB expected fallback k.ID=9001, got %v", kB)
+	}
+	// 关键断言: confB 必须是真实的降级置信度 0.45，绝不能拿到 logA 的 0.70 缓存！
+	if confB > 0.50 {
+		t.Fatalf("R1 regression: logB wrongly received cached conf=%f from logA, expected <= 0.45", confB)
+	}
+}
+
 

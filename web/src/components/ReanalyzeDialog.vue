@@ -19,7 +19,15 @@
         <el-input v-model="form.taskName" placeholder="任务名称" />
       </el-form-item>
       <el-form-item label="设备类型（产品族）">
-        <el-select v-model="form.deviceType" class="full-width-select" style="width: 100%;">
+        <el-select
+          v-model="form.deviceType"
+          class="full-width-select"
+          style="width: 100%;"
+          filterable
+          allow-create
+          default-first-option
+          placeholder="请选择产品族或输入具体型号"
+        >
           <el-option
             v-for="opt in TASK_DEVICE_TYPE_OPTIONS"
             :key="opt.value"
@@ -27,6 +35,9 @@
             :value="opt.value"
           />
         </el-select>
+        <div class="form-tip">
+          支持选择标准产品族（如 WLAN、CloudEngine），也支持直接输入具体型号（如 AC6508，将按所属产品族规则匹配）。
+        </div>
       </el-form-item>
       <el-form-item label="设备软件版本（可选，例如 V200R024C00）">
         <el-input
@@ -112,18 +123,43 @@ const handleSaveOnly = async () => {
   }
 }
 
-const handleSaveAndReanalyze = () => {
-  emit('confirm', {
-    task_name: form.value.taskName,
-    device_type: form.value.deviceType,
-    device_version: form.value.deviceVersion
-  })
-  emit('update:modelValue', false)
+const handleSaveAndReanalyze = async () => {
+  if (!props.task?.task_id) return
+  saving.value = true
+  try {
+    // 闭环 R2: 先持久化更新（含 task_name），通知列表即时刷新
+    const res = await api.updateTask(props.task.task_id, {
+      task_name: form.value.taskName,
+      device_type: form.value.deviceType,
+      device_version: form.value.deviceVersion
+    })
+    if (res.code === 0) {
+      emit('updated', res.data)
+      emit('confirm', {
+        task_name: form.value.taskName,
+        device_type: form.value.deviceType,
+        device_version: form.value.deviceVersion
+      })
+      emit('update:modelValue', false)
+    } else {
+      ElMessage.error(res.message || '更新任务属性失败')
+    }
+  } catch (err) {
+    ElMessage.error('更新任务属性失败: ' + (err?.message || '网络异常'))
+  } finally {
+    saving.value = false
+  }
 }
 </script>
 
 <style scoped>
 .mb-3 {
   margin-bottom: 16px;
+}
+.form-tip {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+  line-height: 1.5;
+  margin-top: 6px;
 }
 </style>

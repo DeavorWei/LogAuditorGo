@@ -1314,6 +1314,7 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 		Async         bool   `json:"async"`
 		DeviceType    string `json:"device_type"`
 		DeviceVersion string `json:"device_version"`
+		TaskName      string `json:"task_name"`
 	}
 	if err := c.ShouldBindJSON(&req); err == nil && req.Async {
 		isAsync = true
@@ -1322,6 +1323,7 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 	opt := task.ReanalyzeOptions{
 		DeviceType:    strings.TrimSpace(req.DeviceType),
 		DeviceVersion: strings.TrimSpace(req.DeviceVersion),
+		TaskName:      strings.TrimSpace(req.TaskName),
 	}
 	if opt.DeviceType != "" {
 		if !isValidDeviceType(opt.DeviceType) {

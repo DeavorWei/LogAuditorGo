@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"logauditorgo/internal/model"
 )
@@ -353,32 +354,74 @@ func IsWiredLog(body string) bool {
 	return strings.Contains(trimmed, "[USER_INFO_") || strings.Contains(trimmed, "DEVICEMAC:")
 }
 
+// candFallbackFamilyCache 缓存无版本映射条目的兜底产品族判定，避免每行日志重复执行字符串提取与匹配 (闭环 R3)
+var candFallbackFamilyCache sync.Map // map[uint]ProductFamily
+
+func resolveCandidateFamily(cand *model.Knowledge) ProductFamily {
+	if cand == nil {
+		return FamilyUnknown
+	}
+
+	// 1. 优先查版本映射
+	for _, v := range cand.Versions {
+		if fam := resolveProductFamily(v.ProductType); fam != FamilyUnknown {
+			return fam
+		}
+	}
+
+	// 2. 无版本映射时的内容特征兜底（条目级内存缓存）
+	if cand.ID > 0 {
+		if cached, ok := candFallbackFamilyCache.Load(cand.ID); ok {
+			return cached.(ProductFamily)
+		}
+	}
+
+	fam := FamilyUnknown
+	checkContains := func(patterns ...string) bool {
+		testStr := func(s string) bool {
+			if s == "" {
+				return false
+			}
+			upper := strings.ToUpper(s)
+			for _, p := range patterns {
+				if strings.Contains(upper, p) {
+					return true
+				}
+			}
+			return false
+		}
+		return testStr(cand.Brief) || testStr(cand.Parameters) || testStr(cand.Message)
+	}
+
+	if checkContains("WLAN", "ACMAC", "APMAC", "SSID") {
+		fam = FamilyWLAN
+	} else if checkContains("WIREDUSERINFO", "WIRED_USER_INFO", "USER_INFO", "USERINFO", "DEVICEMAC") {
+		// 闭环 R4: 覆盖 CE/NE 交换机常见的 wiredUserInfo，统一兜底为已知有线族
+		fam = FamilyCloudEngine
+	}
+
+	if cand.ID > 0 {
+		candFallbackFamilyCache.Store(cand.ID, fam)
+	}
+	return fam
+}
+
 func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
 	if norm == nil || cand == nil {
 		return 0
 	}
 
-	candFamily := FamilyUnknown
-	for _, v := range cand.Versions {
-		if fam := resolveProductFamily(v.ProductType); fam != FamilyUnknown {
-			candFamily = fam
-			break
-		}
+	isWireless := IsWirelessLog(norm.MessageBody)
+	isWired := IsWiredLog(norm.MessageBody)
+	// 闭环 R3: 热路径短路，仅对无线或有线报文执行特征加减分，普通报文零分配快速返回
+	if !isWireless && !isWired {
+		return 0
 	}
 
-	// 闭环 D6: 当条目无版本映射时，基于 Parameters / Message / Brief 进行内容特征兜底产品族判定
-	if candFamily == FamilyUnknown {
-		contentUpper := strings.ToUpper(cand.Message + " " + cand.Parameters + " " + cand.Brief)
-		if strings.Contains(contentUpper, "WLAN") || strings.Contains(contentUpper, "ACMAC") ||
-			strings.Contains(contentUpper, "APMAC") || strings.Contains(contentUpper, "SSID") {
-			candFamily = FamilyWLAN
-		} else if strings.Contains(contentUpper, "USER_INFO_") || strings.Contains(contentUpper, "DEVICEMAC") {
-			candFamily = FamilyCampus
-		}
-	}
+	candFamily := resolveCandidateFamily(cand)
 
 	// 1. 无线报文场景判定
-	if IsWirelessLog(norm.MessageBody) {
+	if isWireless {
 		if candFamily == FamilyWLAN {
 			return 30
 		}
@@ -398,7 +441,7 @@ func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
 	}
 
 	// 2. 有线报文场景对称保护：典型有线日志绝不挂 WLAN 知识 (闭环 P2-3)
-	if IsWiredLog(norm.MessageBody) {
+	if isWired {
 		if candFamily == FamilyWLAN {
 			return -20
 		}

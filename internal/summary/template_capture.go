@@ -497,11 +497,32 @@ func IsPlaceholderPseudoKey(normKey string) bool {
 	return placeholderPseudoKeyRegex.MatchString(normKey)
 }
 
+// isOfficialCamelKey 判断是否为官方字典规范驼峰键（如 dropReason, slotId, cpuId）
+// 特征：首字符为小写字母，且后续字符中包含至少一个大写字母
+func isOfficialCamelKey(key string) bool {
+	if len(key) < 2 {
+		return false
+	}
+	r := []rune(key)
+	if !unicode.IsLower(r[0]) {
+		return false
+	}
+	for i := 1; i < len(r); i++ {
+		if unicode.IsUpper(r[i]) {
+			return true
+		}
+	}
+	return false
+}
+
 // MergeCapturedParameters 将模板反向捕获的参数安全合并到原生解析参数中。
 // 严守三道防线：
 // 1. 无线日志下阻断 userinfo* 有线前导伪键；
 // 2. 泛化占位符黑名单抑制（CHAR/STRING/INTEGER/OCTET）；
-// 3. 原生已有同名参数绝对优先保护（大小写不敏感匹配同名参数），同时允许官方规范字典变量名并存。
+// 3. 原生已有同名/同义参数绝对优先保护：
+//    - 大小写同名（如 SSID vs ssid）绝对保护原生现场解析值（即使为空）；
+//    - 规范化等价键（如 IPADDRESS 与 IP_ADDRESS、CIBID 与 CIB ID）严格杜绝非驼峰重入；
+//    - 官方驼峰字典参数（如 dropReason、dropCount）允许与现场空格复合键并存，供规范字典与模板渲染消费。
 func MergeCapturedParameters(rawParams map[string]string, captured map[string]string, isWireless bool) map[string]string {
 	if len(captured) == 0 {
 		return rawParams
@@ -523,15 +544,23 @@ func MergeCapturedParameters(rawParams map[string]string, captured map[string]st
 			continue
 		}
 
-		// 3. 原生已有同名参数保护：如果原生已存在该参数（仅大小写差异）且非空，保护现场原生解析值
+		// 3. 原生已有同名/同义参数保护 (闭环 R5)
 		hasExact := false
-		for k, v := range rawParams {
-			if strings.EqualFold(k, ck) && v != "" {
+		hasNormSynonym := false
+		for k := range rawParams {
+			if strings.EqualFold(k, ck) {
 				hasExact = true
 				break
 			}
+			if NormalizeKey(k) == normCK {
+				hasNormSynonym = true
+			}
 		}
+
 		if hasExact {
+			continue
+		}
+		if hasNormSynonym && !isOfficialCamelKey(ck) {
 			continue
 		}
 
