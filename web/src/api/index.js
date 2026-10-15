@@ -213,11 +213,31 @@ export default {
   getTaskModules(taskId) {
     return request.get(`/tasks/${taskId}/modules`)
   },
-  reanalyzeTask(taskId, isAsync = true) {
-    return request.post(`/tasks/${taskId}/reanalyze`, { async: isAsync }, {
+  // 双模兼容布尔值与配置对象传参
+  reanalyzeTask(taskId, isAsyncOrOptions = true) {
+    let isAsync = true
+    let overrides = {}
+
+    if (typeof isAsyncOrOptions === 'boolean') {
+      isAsync = isAsyncOrOptions
+    } else if (typeof isAsyncOrOptions === 'object' && isAsyncOrOptions !== null) {
+      isAsync = isAsyncOrOptions.async !== false
+      overrides = isAsyncOrOptions
+    }
+
+    const body = {
+      async: isAsync,
+      ...(overrides.device_type ? { device_type: overrides.device_type } : {}),
+      ...(overrides.device_version ? { device_version: overrides.device_version } : {})
+    }
+
+    return request.post(`/tasks/${taskId}/reanalyze`, body, {
       params: isAsync ? { async: 'true' } : {},
       timeout: LONG_TIMEOUT
     })
+  },
+  updateTask(taskId, data) {
+    return request.patch(`/tasks/${taskId}`, data)
   },
   // WEB-08: 补齐 options 透传，供 useRequest 注入 AbortSignal 实现请求取消
   getTaskRCA(taskId, options = {}) {

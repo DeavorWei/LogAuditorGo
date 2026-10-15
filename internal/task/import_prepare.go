@@ -38,23 +38,22 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 	return nil, cause
 }
 
-// persistTaskInfo 把任务基础元信息双写回全局库与任务库。
-// 采用字段白名单 Updates，严禁使用整行 Save，杜绝覆盖后台 RCA 异步写入的状态、计数与时序字段 (Lost Update 防范)。
+// persistTaskInfo 把任务基础运行状态双写回全局库与任务库。
+// 采用字段白名单 Updates，严禁使用整行 Save。
+// 闭环 P2-1: 彻底移除 device_type / device_version，任务设备配置属性写权收归 UpdateTask 与显式覆盖重分析，杜绝竞态覆写。
 func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
 	if taskInfo == nil {
 		return
 	}
 	updates := map[string]interface{}{
-		"task_name":      taskInfo.TaskName,
-		"device_type":    taskInfo.DeviceType,
-		"device_version": taskInfo.DeviceVersion,
-		"file_count":     taskInfo.FileCount,
-		"device_count":   taskInfo.DeviceCount,
-		"log_count":      taskInfo.LogCount,
-		"matched_count":  taskInfo.MatchedCount,
-		"status":         taskInfo.Status,
-		"error_message":  taskInfo.ErrorMessage,
-		"db_path":        taskInfo.DBPath,
+		"task_name":     taskInfo.TaskName,
+		"file_count":    taskInfo.FileCount,
+		"device_count":  taskInfo.DeviceCount,
+		"log_count":     taskInfo.LogCount,
+		"matched_count": taskInfo.MatchedCount,
+		"status":        taskInfo.Status,
+		"error_message": taskInfo.ErrorMessage,
+		"db_path":       taskInfo.DBPath,
 	}
 	if taskInfo.FinishTime != nil {
 		updates["finish_time"] = taskInfo.FinishTime

@@ -19,6 +19,7 @@ export const TASK_DEVICE_TYPE = Object.freeze({
   HISEC_ENGINE_USG: 'HiSecEngine-USG',
   CAMPUS_SWITCH: 'Campus-Switch',
   NET_ENGINE: 'NetEngine',
+  WLAN_AC: 'WLAN',
   HUAWEI_VRP: 'Huawei-VRP'
 })
 
@@ -32,6 +33,7 @@ export const DEFAULT_DEVICE_TYPE = DEFAULT_TASK_DEVICE_TYPE
  */
 export const TASK_DEVICE_TYPE_OPTIONS = Object.freeze([
   { label: 'CloudEngine 数据中心交换机', value: TASK_DEVICE_TYPE.CLOUD_ENGINE },
+  { label: 'WLAN / AirEngine 无线控制器 (AC/AP)', value: TASK_DEVICE_TYPE.WLAN_AC },
   { label: 'HiSecEngine 防火墙 (USG)', value: TASK_DEVICE_TYPE.HISEC_ENGINE_USG },
   { label: 'Campus 园区交换机 (S系列)', value: TASK_DEVICE_TYPE.CAMPUS_SWITCH },
   { label: 'NetEngine 核心路由器 (NE系列)', value: TASK_DEVICE_TYPE.NET_ENGINE },
@@ -47,6 +49,7 @@ export const DEVICE_FORM_TYPE = Object.freeze({
   CLOUD_ENGINE: 'CloudEngine',
   NET_ENGINE: 'NetEngine',
   HISEC_ENGINE_USG: 'HiSecEngine-USG',
+  WLAN: 'WLAN',
   OTHER: 'Other'
 })
 
@@ -58,6 +61,7 @@ export const DEVICE_FORM_TYPE_OPTIONS = Object.freeze([
   { label: 'Firewall (防火墙)', value: DEVICE_FORM_TYPE.FIREWALL },
   { label: 'CloudEngine (数据中心交换机)', value: DEVICE_FORM_TYPE.CLOUD_ENGINE },
   { label: 'NetEngine (核心路由器)', value: DEVICE_FORM_TYPE.NET_ENGINE },
+  { label: 'WLAN (无线控制器/AP)', value: DEVICE_FORM_TYPE.WLAN },
   { label: 'USG (安全网关)', value: DEVICE_FORM_TYPE.HISEC_ENGINE_USG },
   { label: 'Other (其他网络设备)', value: DEVICE_FORM_TYPE.OTHER }
 ])

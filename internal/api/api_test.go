@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 
 	"logauditorgo/internal/api"
 	"logauditorgo/internal/config"
@@ -1773,3 +1776,109 @@ func TestTaskLogs_TimeRangeFilterStrict(t *testing.T) {
 		t.Errorf("critical counter-example expected total=0, got %d (len=%d)", resExclude.Data.Total, len(resExclude.Data.Records))
 	}
 }
+
+func setupTestRouterWithTask(t *testing.T) (*gin.Engine, string, *gorm.DB) {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	tmpDir := t.TempDir()
+
+	cfg := &config.Config{
+		Server: config.ServerConfig{Port: 8080, Mode: "test"},
+		Storage: config.StorageConfig{
+			DataDir:     tmpDir,
+			KnowledgeDB: filepath.Join(tmpDir, "knowledge.db"),
+			BleveIndex:  filepath.Join(tmpDir, "bleve.index"),
+			TaskDir:     filepath.Join(tmpDir, "tasks"),
+			UploadDir:   filepath.Join(tmpDir, "uploads"),
+		},
+	}
+	config.GlobalConfig = cfg
+
+	db, err := gorm.Open(sqlite.Open(cfg.Storage.KnowledgeDB), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite failed: %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err == nil {
+		t.Cleanup(func() {
+			_ = sqlDB.Close()
+		})
+	}
+
+	_ = db.AutoMigrate(&model.TaskInfo{}, &model.LogRecord{}, &model.TaskFile{})
+
+	indexer, err := search.InitIndexer(cfg.Storage.BleveIndex)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = indexer.Close()
+	})
+
+	taskSvc := task.NewService(db, cfg.Storage.TaskDir, matcher.NewMatchEngine(db, indexer), nil)
+	router := api.SetupRouter(cfg, db, knowledge.NewService(db), indexer, taskSvc)
+
+	taskID := "task_wlan_audit_test"
+	initialTask := model.TaskInfo{
+		TaskID:     taskID,
+		TaskName:   "AuditTask",
+		DeviceType: "Huawei-VRP",
+		Status:     model.TaskStatusCompleted,
+	}
+	if err := db.Create(&initialTask).Error; err != nil {
+		t.Fatalf("create initial task failed: %v", err)
+	}
+
+	t.Cleanup(func() {
+		taskSvc.CancelTaskRCA(taskID)
+		storage.CloseAllTaskDBs()
+	})
+
+	return router, taskID, db
+}
+
+func getTaskFromGlobalDB(t *testing.T, db *gorm.DB, taskID string) *model.TaskInfo {
+	t.Helper()
+	var info model.TaskInfo
+	if err := db.Where("task_id = ?", taskID).First(&info).Error; err != nil {
+		t.Fatalf("get task failed: %v", err)
+	}
+	return &info
+}
+
+func TestTaskAPI_UpdateTask_And_Reanalyze(t *testing.T) {
+	router, taskID, db := setupTestRouterWithTask(t)
+
+	// 1. PATCH 修改设备类型
+	updateJSON := `{"device_type":"WLAN"}`
+	req, _ := http.NewRequest(http.MethodPatch, "/api/v1/tasks/"+taskID, strings.NewReader(updateJSON))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PATCH expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	task := getTaskFromGlobalDB(t, db, taskID)
+	if task.DeviceType != "WLAN" {
+		t.Errorf("device_type not updated, got %q", task.DeviceType)
+	}
+
+	// 2. 覆盖参数发起重分析落库验证
+	reanalyzeJSON := `{"async":false,"device_type":"CloudEngine"}`
+	reqRe, _ := http.NewRequest(http.MethodPost, "/api/v1/tasks/"+taskID+"/reanalyze", strings.NewReader(reanalyzeJSON))
+	reqRe.Header.Set("Content-Type", "application/json")
+	wRe := httptest.NewRecorder()
+	router.ServeHTTP(wRe, reqRe)
+	if wRe.Code != http.StatusOK {
+		t.Fatalf("Reanalyze expected 200, got %d: %s", wRe.Code, wRe.Body.String())
+	}
+
+	taskAfter := getTaskFromGlobalDB(t, db, taskID)
+	if taskAfter.DeviceType != "CloudEngine" {
+		t.Errorf("reanalyze override device_type not updated, got %q", taskAfter.DeviceType)
+	}
+}
+

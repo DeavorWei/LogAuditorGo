@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -25,6 +26,16 @@ var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
 func isValidTaskID(taskID string) bool {
 	return taskIDRegex.MatchString(taskID)
 }
+
+var validDeviceTypes = map[string]struct{}{
+	"Huawei-VRP":      {},
+	"WLAN":            {},
+	"CloudEngine":     {},
+	"Campus-Switch":   {},
+	"HiSecEngine-USG": {},
+	"NetEngine":       {},
+}
+
 
 type TaskHandler struct {
 	taskSvc      *task.Service
@@ -1237,6 +1248,45 @@ func (h *TaskHandler) GetTaskModules(c *gin.Context) {
 	SuccessResponse(c, modules)
 }
 
+// UpdateTask 更新任务元数据（设备类型、设备版本、任务名称等）
+func (h *TaskHandler) UpdateTask(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+
+	var req task.TaskUpdateRequest
+	ct := c.GetHeader("Content-Type")
+	if strings.Contains(strings.ToLower(ct), "application/json") {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
+			return
+		}
+	} else {
+		_ = c.ShouldBindQuery(&req)
+	}
+
+	if req.DeviceType != "" {
+		if _, ok := validDeviceTypes[req.DeviceType]; !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported device_type: " + req.DeviceType})
+			return
+		}
+	}
+
+	taskInfo, err := h.taskSvc.UpdateTask(taskID, req)
+	if err != nil {
+		if strings.Contains(err.Error(), "record not found") || strings.Contains(err.Error(), "not found") {
+			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": taskInfo})
+}
+
 // ReanalyzeTask 基于任务已持久化的日志记录重新执行知识库匹配与 RCA 根因拓扑分析
 func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 	taskID := c.Param("id")
@@ -1247,10 +1297,23 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 
 	isAsync := c.Query("async") == "true" || c.GetHeader("X-Async") == "true" || c.PostForm("async") == "true"
 	var req struct {
-		Async bool `json:"async"`
+		Async         bool   `json:"async"`
+		DeviceType    string `json:"device_type"`
+		DeviceVersion string `json:"device_version"`
 	}
 	if err := c.ShouldBindJSON(&req); err == nil && req.Async {
 		isAsync = true
+	}
+
+	opt := task.ReanalyzeOptions{
+		DeviceType:    strings.TrimSpace(req.DeviceType),
+		DeviceVersion: strings.TrimSpace(req.DeviceVersion),
+	}
+	if opt.DeviceType != "" {
+		if _, ok := validDeviceTypes[opt.DeviceType]; !ok {
+			ErrorResponse(c, http.StatusBadRequest, -1, "unsupported device_type: "+opt.DeviceType)
+			return
+		}
 	}
 
 	tracker := progress.GetHub().NewJob("log", taskID, task.LogAuditStages)
@@ -1263,7 +1326,7 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 					tracker.Fail(fmt.Errorf("panic in reanalyze task: %v", r))
 				}
 			}()
-			_, _ = h.taskSvc.ReanalyzeTask(taskID, tracker)
+			_, _ = h.taskSvc.ReanalyzeTask(taskID, tracker, opt)
 		}()
 
 		SuccessResponse(c, gin.H{
@@ -1274,7 +1337,7 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 		return
 	}
 
-	taskInfo, err := h.taskSvc.ReanalyzeTask(taskID, tracker)
+	taskInfo, err := h.taskSvc.ReanalyzeTask(taskID, tracker, opt)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, "Reanalyze task failed: "+err.Error())
 		return

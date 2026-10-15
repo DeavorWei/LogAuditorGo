@@ -85,7 +85,7 @@ func SetupRouter(
 			c.Writer.Header().Add("Vary", "Origin")
 		}
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
+		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, PATCH, DELETE")
 
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
@@ -149,6 +149,8 @@ func SetupRouter(
 		v1.POST("/tasks", taskHandler.CreateTask)
 		v1.GET("/tasks", taskHandler.ListTasks)
 		v1.GET("/tasks/:id", taskHandler.GetTask)
+		v1.PATCH("/tasks/:id", taskHandler.UpdateTask)
+		v1.PUT("/tasks/:id", taskHandler.UpdateTask)
 		v1.GET("/tasks/:id/files", taskHandler.GetTaskFiles)
 		v1.DELETE("/tasks/:id/files/:file_id", taskHandler.DeleteTaskFile)
 		v1.POST("/tasks/:id/import", taskHandler.ImportLogs)

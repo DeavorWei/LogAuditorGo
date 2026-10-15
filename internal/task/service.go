@@ -29,6 +29,19 @@ import (
 
 var taskIDRegex = regexp.MustCompile(`^[a-zA-Z0-9_-]{8,64}$`)
 
+// ReanalyzeOptions 重分析覆盖配置项 (下沉至 Service 层，仅包含业务覆盖字段)
+type ReanalyzeOptions struct {
+	DeviceType    string `json:"device_type" form:"device_type"`
+	DeviceVersion string `json:"device_version" form:"device_version"`
+}
+
+// TaskUpdateRequest 任务基础信息更新请求体
+type TaskUpdateRequest struct {
+	TaskName      string `json:"task_name" form:"task_name"`
+	DeviceType    string `json:"device_type" form:"device_type"`
+	DeviceVersion string `json:"device_version" form:"device_version"`
+}
+
 // maxRCALogs RCA 单次分析样本硬上限 (TASK-03)。
 // 保持为 var（而非 const）仅供单元测试注入较小值验证截断探测路径，
 // 生产语义恒为 100000，除测试外不得改写。
@@ -621,6 +634,54 @@ func (s *Service) GetTaskByID(taskID string) (*model.TaskInfo, error) {
 	err := s.globalDB.First(&task, "task_id = ?", taskID).Error
 	return &task, err
 }
+
+// UpdateTask 更新任务元数据，仅更新 task_info 单行，不抢全局长作业锁 (闭环 C2)
+// 使用 Updates(map) 只写入非空字段，避免并发 PATCH 的 Last-Write-Wins 问题
+func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskInfo, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+
+	updates := make(map[string]interface{})
+	if req.TaskName != "" {
+		updates["task_name"] = strings.TrimSpace(req.TaskName)
+	}
+	if req.DeviceType != "" {
+		updates["device_type"] = strings.TrimSpace(req.DeviceType)
+	}
+	if req.DeviceVersion != "" {
+		updates["device_version"] = strings.TrimSpace(req.DeviceVersion)
+	}
+	if len(updates) == 0 {
+		var taskInfo model.TaskInfo
+		if err := s.globalDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
+			return nil, err
+		}
+		return &taskInfo, nil
+	}
+
+	result := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("task not found: %s", taskID)
+	}
+
+	// 双写同步至任务库
+	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	if err == nil {
+		_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates).Error
+		storage.ReleaseTaskDB(taskID)
+	}
+
+	var taskInfo model.TaskInfo
+	if err := s.globalDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
+		return nil, err
+	}
+	return &taskInfo, nil
+}
+
 
 // SetTaskDeviceVersion 更新任务的设备软件版本 (PARSE-04)。
 // 补充导入时若用户在请求里携带了版本，需要先回写到任务元信息，
@@ -2192,7 +2253,7 @@ func (s *Service) ExportMultiDeviceHTML(taskID string, deviceIDs []uint) (string
 // REANA-02: 补上与导入路径一致的 panic 恢复，避免任务永久卡在 PROCESSING。
 //
 // 返回值同样改为命名返回值，确保 panic / 失败路径不会向调用方返回 (nil, nil)。
-func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *model.TaskInfo, err error) {
+func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...ReanalyzeOptions) (ret *model.TaskInfo, err error) {
 	if !isValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
 	}
@@ -2218,6 +2279,30 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
+	// 覆盖判定：仅当调用方显式提供了非空 DeviceType 时才生效
+	hasDeviceOverride := len(opt) > 0 && opt[0].DeviceType != ""
+	effectiveDeviceType := taskInfo.DeviceType
+	effectiveDeviceVersion := taskInfo.DeviceVersion
+
+	if hasDeviceOverride {
+		effectiveDeviceType = strings.TrimSpace(opt[0].DeviceType)
+		if opt[0].DeviceVersion != "" {
+			effectiveDeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
+		}
+
+		// 显式覆盖：立即双写持久化新的设备配置，不依赖后续 persistTaskInfo
+		overrideUpdates := map[string]interface{}{
+			"device_type":    effectiveDeviceType,
+			"device_version": effectiveDeviceVersion,
+		}
+		_ = s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error
+		if taskDB != nil {
+			_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(overrideUpdates).Error
+		}
+		taskInfo.DeviceType = effectiveDeviceType
+		taskInfo.DeviceVersion = effectiveDeviceVersion
+	}
+
 	taskInfo.Status = model.TaskStatusProcessing
 	taskInfo.ErrorMessage = ""
 	s.persistTaskInfo(taskDB, &taskInfo)
@@ -2238,7 +2323,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 		}
 	}()
 
-	deviceVersion := strings.TrimSpace(taskInfo.DeviceVersion)
+	deviceVersion := strings.TrimSpace(effectiveDeviceVersion)
 
 	var totalLogCount int64
 	if err := taskDB.Model(&model.LogRecord{}).Count(&totalLogCount).Error; err != nil {
@@ -2287,7 +2372,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker) (ret *mo
 				continue
 			}
 
-			parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, taskInfo.DeviceType, deviceVersion)
+			parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
 			if parsed.KnowledgeID > 0 {
 				matchedCount++
 			}
