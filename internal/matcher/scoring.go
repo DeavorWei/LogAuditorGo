@@ -3,11 +3,96 @@ package matcher
 import (
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
 	"logauditorgo/internal/model"
 )
+
+type ProductFamily string
+
+const (
+	FamilyUnknown     ProductFamily = "UNKNOWN"
+	FamilyWLAN        ProductFamily = "WLAN"
+	FamilyCampus      ProductFamily = "CAMPUS"
+	FamilyCloudEngine ProductFamily = "CLOUDENGINE"
+	FamilyHiSecEngine ProductFamily = "HISECENGINE"
+	FamilyNetEngine   ProductFamily = "NETENGINE"
+)
+
+type familyMappingRule struct {
+	Family        ProductFamily
+	Aliases       []string
+	ExtraPatterns []string // 原始正则别名（不转义），用于"型号前缀 + 数字 + 可选字母后缀"形态，如 USG\d{4}[A-Z]?
+}
+
+// 别名表长前缀优先，所有别名采用单词边界匹配，杜绝子串误判 (闭环 C6 与 P2-2)
+var familyRules = []familyMappingRule{
+	{
+		Family: FamilyWLAN,
+		Aliases: []string{
+			"AIR-ENGINE", "AIRENGINE", "AC6805", "AC6800", "AC6605", "AC6508", "AC6005", "FIT-AP", "FAT-AP", "WLAN",
+		},
+		ExtraPatterns: []string{`AC\d{4}[A-Z]?`},
+	},
+	{
+		Family: FamilyCampus,
+		Aliases: []string{
+			"S12700E", "S12700", "S9700", "S7700", "S6700", "S5700", "CAMPUS",
+		},
+	},
+	{
+		Family: FamilyCloudEngine,
+		Aliases: []string{
+			"CLOUDENGINE", "CE16800", "CE12800", "CE9860", "CE8800", "CE6800", "CE5800",
+		},
+	},
+	{
+		Family: FamilyHiSecEngine,
+		Aliases: []string{
+			"HISECENGINE", "USG6000", "USG9000",
+		},
+		ExtraPatterns: []string{`USG\d{4}[A-Z]?`},
+	},
+	{
+		Family: FamilyNetEngine,
+		Aliases: []string{
+			"NETENGINE", "NE8000", "NE5000E", "NE40E", "NE20E", "CX600",
+		},
+	},
+}
+
+var familyBoundaryRegex map[ProductFamily]*regexp.Regexp
+
+func init() {
+	familyBoundaryRegex = make(map[ProductFamily]*regexp.Regexp, len(familyRules))
+	for _, rule := range familyRules {
+		sorted := make([]string, len(rule.Aliases))
+		copy(sorted, rule.Aliases)
+		sort.Slice(sorted, func(i, j int) bool { return len(sorted[i]) > len(sorted[j]) })
+		parts := make([]string, 0, len(sorted)+len(rule.ExtraPatterns))
+		for _, a := range sorted {
+			parts = append(parts, regexp.QuoteMeta(a))
+		}
+		parts = append(parts, rule.ExtraPatterns...)
+		pattern := `(?:^|\b|[\s,;/])(?:` + strings.Join(parts, "|") + `)(?:\b|[\s,;/]|$)`
+		familyBoundaryRegex[rule.Family] = regexp.MustCompile(pattern)
+	}
+}
+
+func resolveProductFamily(product string) ProductFamily {
+	upper := strings.ToUpper(strings.TrimSpace(product))
+	if upper == "" {
+		return FamilyUnknown
+	}
+	for _, rule := range familyRules {
+		if re, ok := familyBoundaryRegex[rule.Family]; ok && re.MatchString(upper) {
+			return rule.Family
+		}
+	}
+	return FamilyUnknown
+}
 
 // MatchTier 匹配层级常量
 const (
@@ -158,7 +243,7 @@ func NormalizeBleveScore(rawScore, maxScore float64) float64 {
 }
 
 // FindBestKnowledgeMatch 实现了基于产品型号与版本的智能回退（Fallback）策略
-func FindBestKnowledgeMatch(candidates []model.Knowledge, targetProduct, targetVersion string) *model.Knowledge {
+func FindBestKnowledgeMatch(candidates []model.Knowledge, targetProduct, targetVersion string, norm ...*model.NormalizedLog) *model.Knowledge {
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -166,7 +251,7 @@ func FindBestKnowledgeMatch(candidates []model.Knowledge, targetProduct, targetV
 	for i := range candidates {
 		ptrs[i] = &candidates[i]
 	}
-	return FindBestKnowledgeMatchPtr(ptrs, targetProduct, targetVersion)
+	return FindBestKnowledgeMatchPtr(ptrs, targetProduct, targetVersion, norm...)
 }
 
 // versionNumRegex 提取版本串中的数字段，用于华为版本号语义比较
@@ -236,20 +321,74 @@ func scoreVersion(vProduct, vVersion, targetProduct, targetVersion string) int {
 		}
 		return ScoreExactProductNewerVersion // 同型号不同版本: 120
 	}
+
+	// 2. 同产品族相近系列匹配 (基于确定性枚举与边界正则)
 	if targetProductTrim != "" && vProductTrim != "" {
-		// 2. 同产品族相近系列匹配 (如 CloudEngine 系列或 USG 系列)
-		targetUpper := strings.ToUpper(targetProductTrim)
-		vUpper := strings.ToUpper(vProductTrim)
-		if (strings.Contains(targetUpper, "CLOUDENGINE") && strings.Contains(vUpper, "CLOUDENGINE")) ||
-			(strings.Contains(targetUpper, "USG") && strings.Contains(vUpper, "USG")) ||
-			(strings.Contains(targetUpper, "HISECENGINE") && strings.Contains(vUpper, "HISECENGINE")) ||
-			(strings.Contains(targetUpper, "NETENGINE") && strings.Contains(vUpper, "NETENGINE")) ||
-			(strings.Contains(targetUpper, "CAMPUS") && strings.Contains(vUpper, "CAMPUS")) {
+		tf := resolveProductFamily(targetProductTrim)
+		vf := resolveProductFamily(vProductTrim)
+		if tf != FamilyUnknown && tf == vf {
 			return ScoreSameFamily // 50
 		}
 	}
+
 	// 3. 跨产品全局通用知识 / 无产品信息兜底
 	return ScoreCrossProductGeneral // 10
+}
+
+// IsWirelessLog 统一判定报文是否包含 WLAN 无线接入协议特征
+func IsWirelessLog(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	return strings.Contains(trimmed, "[WLAN_") ||
+		(strings.Contains(trimmed, "ACMAC:") && (strings.Contains(trimmed, "SSID:") || strings.Contains(trimmed, "APMAC:")))
+}
+
+// IsWiredLog 判定报文是否包含典型有线协议标志 (闭环 P2-3 对称性保护)
+func IsWiredLog(body string) bool {
+	trimmed := strings.TrimSpace(body)
+	return strings.Contains(trimmed, "[USER_INFO_") || strings.Contains(trimmed, "DEVICEMAC:")
+}
+
+func calcFeatureScore(norm *model.NormalizedLog, cand *model.Knowledge) int {
+	if norm == nil || cand == nil {
+		return 0
+	}
+
+	candFamily := FamilyUnknown
+	for _, v := range cand.Versions {
+		if fam := resolveProductFamily(v.ProductType); fam != FamilyUnknown {
+			candFamily = fam
+			break
+		}
+	}
+
+	// 1. 无线报文场景判定
+	if IsWirelessLog(norm.MessageBody) {
+		if candFamily == FamilyWLAN {
+			return 30
+		}
+
+		// 对所有非 WLAN 族的已知有线族候选条目扣除排斥分，拉大与 WLAN 候选的分差
+		if candFamily == FamilyCloudEngine || candFamily == FamilyNetEngine ||
+			candFamily == FamilyCampus || candFamily == FamilyHiSecEngine {
+			// 归一化参数字符串：大写并移除 '_' 与 '-'，确保连写或下划线分隔（如 USER_INFO_OFFLINE 与 USERINFO）均精准命中 (闭环 P1-2)
+			paramNorm := strings.ReplaceAll(strings.ReplaceAll(strings.ToUpper(cand.Parameters), "_", ""), "-", "")
+			if strings.Contains(paramNorm, "WIREDUSERINFO") ||
+				(strings.Contains(paramNorm, "USERINFO") && !strings.Contains(paramNorm, "ACMAC")) {
+				return -20
+			}
+			// 即使参数中无明确有线标识，非 WLAN 族候选也施加轻度排斥分
+			return -10
+		}
+	}
+
+	// 2. 有线报文场景对称保护：典型有线日志绝不挂 WLAN 知识 (闭环 P2-3)
+	if IsWiredLog(norm.MessageBody) {
+		if candFamily == FamilyWLAN {
+			return -20
+		}
+	}
+
+	return 0
 }
 
 // ScoreKnowledgeVersion 计算单条知识相对目标产品/版本的整体贴合度（取所有版本映射中的最高分）。
@@ -306,38 +445,34 @@ func betterCandidate(cand, cur *model.Knowledge, targetVersion string) bool {
 	return cand.ID < cur.ID
 }
 
-// FindBestKnowledgeMatchPtr 针对指针切片执行高效零拷贝版本匹配打分
-func FindBestKnowledgeMatchPtr(candidates []*model.Knowledge, targetProduct, targetVersion string) *model.Knowledge {
+// FindBestKnowledgeMatchPtr 针对指针切片执行高效零拷贝版本与特征加权匹配打分
+func FindBestKnowledgeMatchPtr(candidates []*model.Knowledge, targetProduct, targetVersion string, norm ...*model.NormalizedLog) *model.Knowledge {
 	if len(candidates) == 0 {
 		return nil
+	}
+
+	var activeNorm *model.NormalizedLog
+	if len(norm) > 0 && norm[0] != nil {
+		activeNorm = norm[0]
 	}
 
 	targetVersionTrim := strings.TrimSpace(targetVersion)
 
 	var bestMatch *model.Knowledge
-	var highestScore int = -1
+	var highestTotalScore = -999
 
 	for _, k := range candidates {
 		if k == nil {
 			continue
 		}
+		vScore := ScoreKnowledgeVersion(k, targetProduct, targetVersion)
+		fScore := calcFeatureScore(activeNorm, k)
+		totalScore := vScore + fScore
 
-		if len(k.Versions) == 0 {
-			if highestScore < ScoreNoVersionFallback ||
-				(highestScore == ScoreNoVersionFallback && betterCandidate(k, bestMatch, targetVersionTrim)) {
-				highestScore = ScoreNoVersionFallback
-				bestMatch = k
-			}
-			continue
-		}
-
-		for _, v := range k.Versions {
-			currentScore := scoreVersion(v.ProductType, v.ProductVersion, targetProduct, targetVersion)
-			if currentScore > highestScore ||
-				(currentScore == highestScore && betterCandidate(k, bestMatch, targetVersionTrim)) {
-				highestScore = currentScore
-				bestMatch = k
-			}
+		if totalScore > highestTotalScore ||
+			(totalScore == highestTotalScore && betterCandidate(k, bestMatch, targetVersionTrim)) {
+			highestTotalScore = totalScore
+			bestMatch = k
 		}
 	}
 

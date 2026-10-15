@@ -22,23 +22,23 @@ type matchCacheItem struct {
 	conf float64
 }
 
-// ---------------- 缓存 Key 构造 (PARSE-01 / PARSE-17) ----------------
+// ---------------- 缓存 Key 构造 (PARSE-01 / PARSE-17 / P0-A) ----------------
 //
-// 关键背景：匹配流水线中 Tier1(EXACT) 与 Tier2(MNEMONIC) 只依赖 (Module, Brief, Product, Version)，
-// 而 Tier3(TEMPLATE 反向正则) 与 Tier4(BLEVE 全文检索) 强依赖日志正文 MessageBody。
-// 若四层共用一个不含正文的 Key，则同一 Module:Brief 的首条日志会决定后续所有日志的结果，
-// 造成"审计结论张冠李戴"且结果依赖日志在文件中的物理行序（不可复现）。
-// 因此这里把 Key 分为两级：
-//
-//	baseKey —— 与正文无关，供 Tier1/Tier2 复用，命中率高；
-//	bodyKey —— baseKey + 正文指纹，供 Tier3/Tier4 使用，保证同 brief 不同正文各自独立判定。
-//
+// 关键背景：匹配流水线中 Tier1(EXACT) 与 Tier2(MNEMONIC) 主要依赖 (Module, Brief, Product, Version)。
+// 但若同 Module:Brief 下共存有线与无线两种互斥报文（如 USER_OFFLINERESULT），原 baseKey 会导致
+// 先到者的匹配结果被后到者盲目复用（缓存串档）。
+// 因此我们在 baseKey 中追加粗粒度无线协议特征位 (:W=0 或 :W=1)，在保留跨行高复用率的同时，
+// 物理阻断有线与无线报文的缓存污染。
 // 各字段用 strconv.Quote 编码，避免产品名/版本号中出现的 ':' 造成跨字段碰撞 (PARSE-17)。
 
-func buildBaseKey(module, upperBrief, product, version string) string {
+func buildBaseKey(module, upperBrief, product, version string, isWireless bool) string {
+	wFlag := "0"
+	if isWireless {
+		wFlag = "1"
+	}
 	return strconv.Quote(module) + ":" + strconv.Quote(upperBrief) + ":" +
 		strconv.Quote(strings.ToUpper(strings.TrimSpace(product))) + ":" +
-		strconv.Quote(strings.ToUpper(strings.TrimSpace(version)))
+		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag
 }
 
 func buildBodyKey(baseKey, messageBody string) string {
@@ -239,8 +239,9 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		return nil, TierUnmatch, 0.0
 	}
 
-	// PARSE-01: 缓存 Key 分层（详见 buildBaseKey / buildBodyKey 注释）
-	baseKey := buildBaseKey(module, upperBrief, product, version)
+	// PARSE-01 / P0-A: 缓存 Key 分层（详见 buildBaseKey / buildBodyKey 注释）
+	isWireless := (norm != nil && IsWirelessLog(norm.MessageBody))
+	baseKey := buildBaseKey(module, upperBrief, product, version, isWireless)
 	bodyKey := buildBodyKey(baseKey, norm.MessageBody)
 
 	// 1. 先查与正文无关的结果缓存（Tier1/Tier2 的命中可被同 module:brief 的所有日志复用）
@@ -279,7 +280,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	var fallbackConf float64
 
 	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
-		best := FindBestKnowledgeMatchPtr(exactCandidates, product, version)
+		best := FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
 		if best != nil {
 			consistency := Tier1Consistency(norm, best, m.matchTemplate)
 			if consistency >= MinTier1Confidence {
@@ -301,7 +302,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	if logStem != "" {
 		// 优先查去掉后缀后的 exactMap
 		if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
-			best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version)
+			best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
 			if best != nil {
 				_, candPol := mnemonicStem(best.Brief)
 				if polarityAllowed(logPol, candPol) {
@@ -324,7 +325,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				}
 			}
 			if len(mnemonicCandidates) > 0 {
-				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version)
+				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
 				if best != nil {
 					if m.cache != nil {
 						m.cache.Put(baseKey, &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic})
@@ -343,7 +344,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	// 以及"模板以占位符开头（首 token 不确定）"两类候选做正则匹配。
 	if norm.MessageBody != "" {
 		if matchedCandidates := m.matchTemplateCandidates(module, norm.MessageBody); len(matchedCandidates) > 0 {
-			best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version)
+			best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version, norm)
 			if best != nil {
 				// Tier3 依赖正文，必须写入带正文指纹的 bodyKey
 				if m.cache != nil {
@@ -552,4 +553,16 @@ func (m *MatchEngine) matchTemplate(template string, actualMsg string) bool {
 		m.regexCache.Put(trimmedTpl, re)
 	}
 	return re.MatchString(actualMsg)
+}
+
+// ClearCache 清空引擎运行期缓存供测试与配置热重载使用 (闭环 P0-A)
+func (m *MatchEngine) ClearCache() {
+	m.indexMu.Lock()
+	defer m.indexMu.Unlock()
+	if m.cache != nil {
+		m.cache.Purge()
+	}
+	if m.negativeCache != nil {
+		m.negativeCache.Purge()
+	}
 }

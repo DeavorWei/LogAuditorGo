@@ -5,13 +5,15 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
+
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
 	"logauditorgo/pkg/logger"
-
-	"gorm.io/gorm"
 )
 
 func TestMatcherTiers(t *testing.T) {
@@ -568,5 +570,155 @@ func TestMnemonicStemPolarityBlacklist(t *testing.T) {
 		if stem != c.stem || pol != c.pol {
 			t.Errorf("MnemonicStem(%q) = (%q, %d), want (%q, %d)", c.brief, stem, pol, c.stem, c.pol)
 		}
+	}
+}
+
+// newIsolatedMatchEngineWithFixtures 构建带固定三条知识的独立隔离测试引擎 (闭环 P1-1 与 B2)
+func newIsolatedMatchEngineWithFixtures(t *testing.T) *matcher.MatchEngine {
+	t.Helper()
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "fixture.db")
+
+	// 绕开 storage.InitKnowledgeDB 全局单例，直接通过 gorm.Open 构建独立测试库 (闭环 P1-1)
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
+	})
+	if err != nil {
+		t.Fatalf("open sqlite failed: %v", err)
+	}
+	if err := db.AutoMigrate(&model.Knowledge{}, &model.KnowledgeVersionMapping{}); err != nil {
+		t.Fatalf("auto migrate failed: %v", err)
+	}
+
+	// 注册关闭 hook 释放 Windows SQLite 文件句柄，避免 t.TempDir 清理报错
+	sqlDB, err := db.DB()
+	if err == nil {
+		t.Cleanup(func() {
+			_ = sqlDB.Close()
+		})
+	}
+
+	// 显式填写唯一的 ContentHash，杜绝 SQLite uniqueIndex 冲突 (闭环 B2)
+	knowledges := []model.Knowledge{
+		{ID: 3823, Module: "CM", Brief: "USER_OFFLINERESULT", Severity: 5, ContentHash: "hash_3823", Parameters: `[{"name":"wiredUserInfo"}]`},
+		{ID: 8438, Module: "CM", Brief: "USER_OFFLINERESULT", Severity: 5, ContentHash: "hash_8438", Parameters: `[{"name":"USER_INFO_OFFLINE"}]`},
+		{ID: 11534, Module: "CM", Brief: "USER_OFFLINERESULT", Severity: 5, ContentHash: "hash_11534", Parameters: `[{"name":"WLAN_STA_INFO_OFFLINE"}]`},
+	}
+	for _, k := range knowledges {
+		if err := db.Create(&k).Error; err != nil {
+			t.Fatalf("failed to insert fixture %d: %v", k.ID, err)
+		}
+	}
+
+	// 绑定版本映射：#11534 为 WLAN 族，#3823 为 CloudEngine 族，#8438 为 Campus 族
+	_ = db.Create(&model.KnowledgeVersionMapping{KnowledgeID: 11534, ProductType: "WLAN", ProductVersion: "V200R024C00"}).Error
+	_ = db.Create(&model.KnowledgeVersionMapping{KnowledgeID: 3823, ProductType: "CloudEngine 16800", ProductVersion: "V300R024C00"}).Error
+	_ = db.Create(&model.KnowledgeVersionMapping{KnowledgeID: 8438, ProductType: "S12700, S12700E", ProductVersion: "V200R024C00"}).Error
+
+	engine := matcher.NewMatchEngine(db, nil)
+	engine.Reload()
+	return engine
+}
+
+// TestMatchEngine_MixedWiredWireless_NoCacheLeak 验证混合场景缓存隔离：同任务有线无线交替防串档 (闭环 P0-A, §5.3)
+func TestMatchEngine_MixedWiredWireless_NoCacheLeak(t *testing.T) {
+	engine := newIsolatedMatchEngineWithFixtures(t)
+
+	wiredLog := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: `[USER_INFO_OFFLINE]DEVICEMAC:00-e0-fc-01-02-03;USER:admin;MAC:00-11-22-33-44-55;IPADDRESS:192.168.1.100;`,
+	}
+	wirelessLog := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: `[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;APMAC:8c-e5-ef-80-b3-20;SSID:office;USER:sta01;`,
+	}
+
+	taskProduct := "Huawei-VRP"
+	taskVersion := ""
+
+	// 1. 先有线后无线
+	k1, _, _ := engine.Match(wiredLog, taskProduct, taskVersion)
+	if k1 == nil || k1.ID == 11534 {
+		t.Fatalf("wired log should not hit #11534, got ID: %v", k1.ID)
+	}
+
+	k2, _, _ := engine.Match(wirelessLog, taskProduct, taskVersion)
+	if k2 == nil || k2.ID != 11534 {
+		t.Fatalf("wireless log must hit #11534 after wired log! got: %v", k2.ID)
+	}
+
+	// 2. 清理缓存，先无线后有线
+	engine.ClearCache()
+	k3, _, _ := engine.Match(wirelessLog, taskProduct, taskVersion)
+	if k3 == nil || k3.ID != 11534 {
+		t.Fatalf("wireless log must hit #11534, got: %v", k3.ID)
+	}
+
+	k4, _, _ := engine.Match(wiredLog, taskProduct, taskVersion)
+	if k4 == nil || k4.ID == 11534 {
+		t.Fatalf("wired log must NOT hit #11534 after wireless log! got: %v", k4.ID)
+	}
+}
+
+// TestMatchEngine_DeterministicScoringMatrix 验证严格确定性打分矩阵断言 (§5.4)
+func TestMatchEngine_DeterministicScoringMatrix(t *testing.T) {
+	engine := newIsolatedMatchEngineWithFixtures(t)
+
+	acLog := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: `[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;APMAC:8c-e5-ef-80-b3-20;SSID:office;USER:sta01;`,
+	}
+	ceLog := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: `wired user log on CE`,
+	}
+	s12700Log := &model.NormalizedLog{
+		Module:      "CM",
+		Brief:       "USER_OFFLINERESULT",
+		Severity:    5,
+		MessageBody: `wired user log on Campus switch`,
+	}
+
+	// 1. AC 报文 + Huawei-VRP 任务（一期算法自愈）：应击穿 #8438，命中 #11534 (得 40 分)
+	engine.ClearCache()
+	k1, _, _ := engine.Match(acLog, "Huawei-VRP", "")
+	if k1 == nil || k1.ID != 11534 {
+		t.Fatalf("AC + Huawei-VRP expected #11534, got %v", k1)
+	}
+
+	// 2. AC 报文 + WLAN 任务（同型号同版本）：应命中 #11534 (得 180 分)
+	engine.ClearCache()
+	k2, _, _ := engine.Match(acLog, "WLAN", "V200R024C00")
+	if k2 == nil || k2.ID != 11534 {
+		t.Fatalf("AC + WLAN exact expected #11534, got %v", k2)
+	}
+
+	// 3. AC 报文 + WLAN 任务（同型号无版本）：应命中 #11534 (得 150 分)
+	engine.ClearCache()
+	k3, _, _ := engine.Match(acLog, "WLAN", "")
+	if k3 == nil || k3.ID != 11534 {
+		t.Fatalf("AC + WLAN no version expected #11534, got %v", k3)
+	}
+
+	// 4. CE 报文 + CloudEngine 任务：应命中 #3823 (得 50 分)
+	engine.ClearCache()
+	k4, _, _ := engine.Match(ceLog, "CloudEngine", "V200R024C00")
+	if k4 == nil || k4.ID != 3823 {
+		t.Fatalf("CE + CloudEngine expected #3823, got %v", k4)
+	}
+
+	// 5. S12700 园区报文 + Campus-Switch 任务：应命中 #8438 (得 50 分)
+	engine.ClearCache()
+	k5, _, _ := engine.Match(s12700Log, "Campus-Switch", "V200R024C00")
+	if k5 == nil || k5.ID != 8438 {
+		t.Fatalf("S12700 + Campus-Switch expected #8438, got %v", k5)
 	}
 }

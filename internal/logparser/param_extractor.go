@@ -18,6 +18,177 @@ const maxParamKeyRunes = 64
 // 从而避免旧实现把 `(1,2)` 里的逗号误当作键值对分隔符。
 var paramBlockRegex = regexp.MustCompile(`\(([^()]*(?:\([^()]*\)[^()]*)*)\)`)
 
+// leadingTagRegex 匹配报文正文首部的协议前导标签（如 [WLAN_STA_INFO_OFFLINE] 或 [WLAN_AP_INFO_ONLINE]）
+var leadingTagRegex = regexp.MustCompile(`^\[([A-Za-z0-9_\-]+)\]`)
+
+// isValidCompositeKey 判定键名合法性：
+// 1. 长度在 1~64 个字符之间（使用 utf8.RuneCountInString，严格对齐 maxParamKeyRunes 常量）；
+// 2. 仅允许包含字母、数字、下划线及连接空格（1~3 个词，支持 "CIB ID", "ACCESS TYPE", "Drop count"）；
+// 3. 严格禁止包含 '='、':'、';'、'['、']'、'('、')'，杜绝 'RESULT:errcode' 或 'foo=bar:baz' 类伪键。
+func isValidCompositeKey(key string) bool {
+	k := strings.TrimSpace(key)
+	runeCount := utf8.RuneCountInString(k)
+	if runeCount == 0 || runeCount > maxParamKeyRunes {
+		return false
+	}
+	if strings.ContainsAny(k, "=;:[]()") {
+		return false
+	}
+	words := strings.Fields(k)
+	if len(words) == 0 || len(words) > 3 {
+		return false
+	}
+	for _, w := range words {
+		for _, r := range w {
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != '-' {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// splitSemicolonWithQuotes 引号保护切分：双引号内部的分号不作为切分符
+func splitSemicolonWithQuotes(s string) []string {
+	var segments []string
+	inQuotes := false
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '"' {
+			inQuotes = !inQuotes
+		} else if s[i] == ';' && !inQuotes {
+			segments = append(segments, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		segments = append(segments, s[start:])
+	}
+	return segments
+}
+
+func findFirstSeparator(s string) int {
+	cIdx := strings.IndexByte(s, ':')
+	eIdx := strings.IndexByte(s, '=')
+	if cIdx != -1 && eIdx != -1 {
+		if cIdx < eIdx {
+			return cIdx
+		}
+		return eIdx
+	}
+	if cIdx != -1 {
+		return cIdx
+	}
+	return eIdx
+}
+
+// isSemicolonStructuredBody 判定报文是否属于分号结构化键值对报文：
+// 1. 包含前导标签 [TAG] 且至少存在 1 个分号；或
+// 2. 切分段中，有效键值对数 >= 2 且占非空段比例 >= 60% (覆盖两段式纯冒号报文)。
+func isSemicolonStructuredBody(msg string) bool {
+	if strings.IndexByte(msg, ';') == -1 {
+		return false
+	}
+	hasTag := leadingTagRegex.MatchString(strings.TrimSpace(msg))
+	segments := splitSemicolonWithQuotes(msg)
+	validPairs := 0
+	nonEmptySegments := 0
+
+	for _, seg := range segments {
+		s := strings.TrimSpace(seg)
+		if s == "" {
+			continue
+		}
+		nonEmptySegments++
+		if hasTag && validPairs == 0 {
+			if loc := leadingTagRegex.FindStringIndex(s); loc != nil {
+				s = strings.TrimSpace(s[loc[1]:])
+			}
+		}
+		sep := findFirstSeparator(s)
+		if sep > 0 && isValidCompositeKey(s[:sep]) {
+			validPairs++
+		}
+	}
+
+	if hasTag && validPairs >= 1 {
+		return true
+	}
+	return nonEmptySegments >= 2 && validPairs >= 2 && (float64(validPairs)/float64(nonEmptySegments) >= 0.6)
+}
+
+func scanSemicolonPairs(s string, emit func(key, value string)) {
+	segments := splitSemicolonWithQuotes(s)
+	for idx, seg := range segments {
+		trimmed := strings.TrimSpace(seg)
+		if trimmed == "" {
+			continue
+		}
+
+		// 首段剥离前导标签，并将标签作为原生参数产出
+		if idx == 0 || strings.HasPrefix(trimmed, "[") {
+			if m := leadingTagRegex.FindStringSubmatch(trimmed); len(m) >= 2 {
+				tagKey := m[1]
+				emit(tagKey, "")
+				trimmed = strings.TrimSpace(trimmed[len(m[0]):])
+				if trimmed == "" {
+					continue
+				}
+			}
+		}
+
+		// Audit B14 守卫：若段内包含逗号且逗号分隔的子段包含键值对，进行段内二次切分提取 (支持 "Slot=0, CPU=0")
+		// 安全策略 1：先预检逗号切分后是否存在 >=2 个有效键值对子段，避免误切值内逗号
+		//   (如 EXTENDINFO:The signal strength is -51 dbm, channel 6)
+		// 安全策略 2 (闭环 P0 与 P3-1)：段内存在左括号 '(' 时（如 "Reason: Timeout (PeerIP=..., AS=...)"），
+		//   表明段内包含括号结构，内部逗号属于括号子参数，安全跳过段内逗号二次切分，交由下方的括号补漏扫描统一提取，杜绝值被截断成 "65000)"
+		if strings.Contains(trimmed, ",") && strings.IndexByte(trimmed, '(') == -1 {
+			subSegments := strings.Split(trimmed, ",")
+			kvSubCount := 0
+			for _, sub := range subSegments {
+				subTrimmed := strings.TrimSpace(sub)
+				if sep := findFirstSeparator(subTrimmed); sep > 0 && isValidCompositeKey(strings.TrimSpace(subTrimmed[:sep])) {
+					kvSubCount++
+				}
+			}
+			if kvSubCount >= 2 {
+				for _, sub := range subSegments {
+					subTrimmed := strings.TrimSpace(sub)
+					if subTrimmed == "" {
+						continue
+					}
+					sep := findFirstSeparator(subTrimmed)
+					if sep <= 0 {
+						continue
+					}
+					rawKey := strings.TrimSpace(subTrimmed[:sep])
+					if isValidCompositeKey(rawKey) {
+						emit(rawKey, strings.TrimSpace(subTrimmed[sep+1:]))
+					}
+				}
+				continue
+			}
+		}
+
+		sepIdx := findFirstSeparator(trimmed)
+		if sepIdx <= 0 {
+			continue
+		}
+
+		rawKey := strings.TrimSpace(trimmed[:sepIdx])
+		if !isValidCompositeKey(rawKey) {
+			continue
+		}
+
+		rawVal := strings.TrimSpace(trimmed[sepIdx+1:])
+		// 去除外层配对双引号
+		if strings.HasPrefix(rawVal, "\"") && strings.HasSuffix(rawVal, "\"") && len(rawVal) >= 2 {
+			rawVal = rawVal[1 : len(rawVal)-1]
+		}
+		emit(rawKey, rawVal)
+	}
+}
+
 // braceBalancedBlockRegex 仅为保持语义可读性而保留的构造器，返回上述正则
 func braceBalancedBlockRegex() *regexp.Regexp {
 	return paramBlockRegex
@@ -25,7 +196,7 @@ func braceBalancedBlockRegex() *regexp.Regexp {
 
 // ExtractParameters 从日志正文中提取动态键值对参数
 func ExtractParameters(msg string) map[string]string {
-	if strings.IndexByte(msg, '=') == -1 {
+	if strings.IndexByte(msg, '=') == -1 && strings.IndexByte(msg, ':') == -1 {
 		return make(map[string]string)
 	}
 
@@ -35,34 +206,45 @@ func ExtractParameters(msg string) map[string]string {
 }
 
 // ExtractParametersInto 从日志正文中提取动态键值对并填充到已有 map 中，减少内存分配
-//
-// 处理顺序（与旧实现一致，保证"括号内的结构化参数优先于正文中的散落参数"）：
-//  1. 逐个提取括号块内的 Key=Value（块内允许覆盖，后出现的同名键合并为数组）；
-//  2. 再对整句做一次全局扫描，已存在的键不再覆盖。
 func ExtractParametersInto(msg string, params map[string]string) {
-	if strings.IndexByte(msg, '=') == -1 {
+	if strings.IndexByte(msg, '=') == -1 && strings.IndexByte(msg, ':') == -1 {
 		return
 	}
 
-	// 1. 提取括号中的 Key=Value (支持逗号/分号分隔的带空格长字符串、嵌套括号)
-	// PARSE-08: 括号内结构化块保留空值（表达"该字段为空"的审计事实，如 Reason= Code=5）
+	isSemi := isSemicolonStructuredBody(msg)
+	if isSemi {
+		// 1. 分号结构化报文优先扫描 (overwrite=true)
+		scanSemicolonPairs(msg, func(k, v string) {
+			putParam(params, k, v, true)
+		})
+		// 2. 括号块补漏扫描 (overwrite=false)，保留散文括号内独有参数，杜绝覆盖分号高优先级键
+		if strings.IndexByte(msg, '(') != -1 {
+			for _, sub := range paramBlockRegex.FindAllStringSubmatch(msg, -1) {
+				if len(sub) >= 2 && strings.IndexByte(sub[1], '=') != -1 {
+					scanKVPairs(sub[1], true, func(k, v string) {
+						putParam(params, k, v, false)
+					})
+				}
+			}
+		}
+		return
+	}
+
+	// 非分号常规报文分支
 	if strings.IndexByte(msg, '(') != -1 {
 		for _, sub := range paramBlockRegex.FindAllStringSubmatch(msg, -1) {
-			if len(sub) < 2 {
-				continue
-			}
-			subContent := sub[1]
-			if strings.IndexByte(subContent, '=') != -1 {
-				scanKVPairs(subContent, true, func(k, v string) {
+			if len(sub) >= 2 && strings.IndexByte(sub[1], '=') != -1 {
+				scanKVPairs(sub[1], true, func(k, v string) {
 					putParam(params, k, v, true)
 				})
 			}
 		}
 	}
 
-	// 2. 提取整句中散落的 Key="Value" 或 Key=Value（不覆盖已解析出的块内参数；过滤散落孤立空值避免空白卡片）
 	scanKVPairs(msg, false, func(k, v string) {
-		putParam(params, k, v, false)
+		if strings.IndexByte(k, ':') == -1 {
+			putParam(params, k, v, false)
+		}
 	})
 }
 

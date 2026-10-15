@@ -1,6 +1,7 @@
 package logparser_test
 
 import (
+	"strings"
 	"testing"
 
 	"logauditorgo/internal/logparser"
@@ -206,5 +207,62 @@ func TestExtractParametersEdgeCases(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestExtractParameters_HuaweiAC_AP_Samples 验证华为 AC/AP 离线报文 27 字段全量提取与纯冒号无等号报文解析 (§5.1)
+func TestExtractParameters_HuaweiAC_AP_Samples(t *testing.T) {
+	input := `[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;ACNAME:AC6508;APMAC:8c-e5-ef-80-b3-20;APNAME:26F-AP2-cae;SSID:btet_lan;RADIOID:1;USER:c858c0b8b299;MAC:c8-58-c0-b8-b2-99;IPADDRESS:10.101.34.48;IPV6ADDRESS:-;TIME:1784858824;ZONE:UTC+0800;DAYLIGHT:false;SESSIONTIME:1118;ERRCODE:216;RESULT:STA disassociation;USERGROUP:NULL;AUTHENPLACE:None;EXTENDINFO:The signal strength of the STA is -51 dbm.;CIB ID:11533;INTERFACE:Wlan-Dbss17648;ACCESS TYPE:None;RDSIP:-;Portal TYPE:-;AUTHID=3480934416;AUTHPROTOCOL:-;`
+	params := logparser.ExtractParameters(input)
+
+	// 1. 验证字段总数精确为 27
+	if len(params) != 27 {
+		t.Fatalf("expected 27 parameters, got %d: %v", len(params), params)
+	}
+
+	// 2. 验证空格复合键与标签成功提取
+	if params["CIB ID"] != "11533" || params["ACCESS TYPE"] != "None" {
+		t.Errorf("composite key failed: %v", params)
+	}
+	if _, ok := params["WLAN_STA_INFO_OFFLINE"]; !ok {
+		t.Errorf("leading tag parameter missing")
+	}
+
+	// 3. 严格禁止冒号脏键
+	for k := range params {
+		if strings.Contains(k, ":") {
+			t.Errorf("illegal dirty key containing colon: %q", k)
+		}
+	}
+
+	// 4. 纯冒号无等号报文验证
+	pureColon := `[WLAN_STA_INFO_AUTHENTICATION]ACMAC:f4-e5-f2-70-f4-bc;USER:sta01;RESULT:success;`
+	pureParams := logparser.ExtractParameters(pureColon)
+	if pureParams["USER"] != "sta01" || pureParams["RESULT"] != "success" {
+		t.Fatalf("pure colon log failed: %v", pureParams)
+	}
+}
+
+// TestExtractParameters_RegressionGuards 验证存量回归守卫：段内逗号二次切分、引号保护与散文括号补漏 (§5.2)
+func TestExtractParameters_RegressionGuards(t *testing.T) {
+	// Audit B14 守卫：段内逗号二次切分，Slot=0 与 CPU=0 必须同时提取
+	b14Input := "Slot=0, CPU=0; Drop count=100; Extra=none"
+	b14Got := logparser.ExtractParameters(b14Input)
+	if b14Got["Slot"] != "0" || b14Got["CPU"] != "0" || b14Got["Drop count"] != "100" {
+		t.Fatalf("Audit B14 regression: got %v", b14Got)
+	}
+
+	// 引号保护守卫：引号内部的分号不被硬切断
+	quoteInput := `NAME:test;EXTENDINFO:"signal=-51;noise=-90";STATUS:ok;`
+	qGot := logparser.ExtractParameters(quoteInput)
+	if qGot["EXTENDINFO"] != "signal=-51;noise=-90" || qGot["STATUS"] != "ok" {
+		t.Fatalf("quote protection failed: got %v", qGot)
+	}
+
+	// 散文冒号日志补漏：括号参数绝不丢失
+	prose := "State: Down; Reason: Timeout (PeerIP=10.0.0.1, AS=65000)"
+	pGot := logparser.ExtractParameters(prose)
+	if pGot["PeerIP"] != "10.0.0.1" || pGot["AS"] != "65000" {
+		t.Fatalf("prose bracket parameters dropped: got %v", pGot)
 	}
 }
