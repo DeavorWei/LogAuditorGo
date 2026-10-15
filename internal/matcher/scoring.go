@@ -82,17 +82,38 @@ func init() {
 	}
 }
 
+var productFamilyMemo sync.Map // map[string]ProductFamily
+
 func resolveProductFamily(product string) ProductFamily {
 	upper := strings.ToUpper(strings.TrimSpace(product))
 	if upper == "" {
 		return FamilyUnknown
 	}
+	if cached, ok := productFamilyMemo.Load(upper); ok {
+		return cached.(ProductFamily)
+	}
+
+	fam := FamilyUnknown
 	for _, rule := range familyRules {
 		if re, ok := familyBoundaryRegex[rule.Family]; ok && re.MatchString(upper) {
-			return rule.Family
+			fam = rule.Family
+			break
 		}
 	}
-	return FamilyUnknown
+	productFamilyMemo.Store(upper, fam)
+	return fam
+}
+
+// ClearProductFamilyCache 清空产品族解析记忆化缓存与无版本条目兜底判定缓存 (闭环 S2)
+func ClearProductFamilyCache() {
+	candFallbackFamilyCache.Range(func(key, value any) bool {
+		candFallbackFamilyCache.Delete(key)
+		return true
+	})
+	productFamilyMemo.Range(func(key, value any) bool {
+		productFamilyMemo.Delete(key)
+		return true
+	})
 }
 
 // ResolveProductFamily 解析产品所属的大族（公开供 API 校验等场景复用）
@@ -395,9 +416,12 @@ func resolveCandidateFamily(cand *model.Knowledge) ProductFamily {
 
 	if checkContains("WLAN", "ACMAC", "APMAC", "SSID") {
 		fam = FamilyWLAN
-	} else if checkContains("WIREDUSERINFO", "WIRED_USER_INFO", "USER_INFO", "USERINFO", "DEVICEMAC") {
-		// 闭环 R4: 覆盖 CE/NE 交换机常见的 wiredUserInfo，统一兜底为已知有线族
+	} else if checkContains("WIREDUSERINFO", "WIRED_USER_INFO") {
+		// 闭环 S4: CE/NE 数据中心交换机常见字段，精准兜底为数据中心网络族
 		fam = FamilyCloudEngine
+	} else if checkContains("USER_INFO_", "USERINFO", "DEVICEMAC") {
+		// 闭环 S4: 园区网络典型特征，精准兜底为园区网络族
+		fam = FamilyCampus
 	}
 
 	if cand.ID > 0 {

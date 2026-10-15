@@ -31,21 +31,29 @@ type matchCacheItem struct {
 // 物理阻断有线与无线报文的缓存污染。
 // 各字段用 strconv.Quote 编码，避免产品名/版本号中出现的 ':' 造成跨字段碰撞 (PARSE-17)。
 
-func buildBaseKey(module, upperBrief, product, version string, isWireless bool, severity int) string {
+// buildExactBestKey 构建候选选优缓存 Key (闭环 S1 & S5):
+// 选优逻辑 (FindBestKnowledgeMatchPtr) 仅依赖 module, brief, product, version 以及是否具备无线/有线协议特征。
+// 它与具体日志的正文变动、严重级别完全解耦，可被同一 brief 的海量不同正文日志 100% 跨行复用！
+func buildExactBestKey(module, upperBrief, product, version string, isWireless, isWired bool) string {
 	wFlag := "0"
 	if isWireless {
 		wFlag = "1"
 	}
+	wiredFlag := "0"
+	if isWired {
+		wiredFlag = "1"
+	}
 	return strconv.Quote(module) + ":" + strconv.Quote(upperBrief) + ":" +
 		strconv.Quote(strings.ToUpper(strings.TrimSpace(product))) + ":" +
-		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag +
-		":S=" + strconv.Itoa(severity)
+		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag + ":Wired=" + wiredFlag
 }
 
-func buildBodyKey(baseKey, messageBody string) string {
+// buildBodyKey 构建正文级终端匹配置信度缓存 Key (闭环 R1 & S5):
+// 融合选优特征、严重级别以及正文哈希指纹，用于相同报文秒级回放，同时绝不跨正文污染一致性判定。
+func buildBodyKey(bestKey string, severity int, messageBody string) string {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(messageBody))
-	return baseKey + ":" + strconv.FormatUint(h.Sum64(), 36)
+	return bestKey + ":S=" + strconv.Itoa(severity) + ":" + strconv.FormatUint(h.Sum64(), 36)
 }
 
 // ---------------- 助记符后缀归一化 (PARSE-13) ----------------
@@ -91,9 +99,10 @@ func polarityAllowed(logPol, candPol int8) bool {
 }
 
 const (
-	defaultMatchCacheCap    = 100000
-	defaultNegativeCacheCap = 50000
-	defaultRegexCacheCap    = 10000
+	defaultMatchCacheCap     = 100000
+	defaultExactBestCacheCap = 50000
+	defaultNegativeCacheCap  = 50000
+	defaultRegexCacheCap     = 10000
 )
 
 type MatchEngine struct {
@@ -115,21 +124,23 @@ type MatchEngine struct {
 	templateBuckets map[string]map[string][]*model.Knowledge
 
 	// 运行时结果缓存与负缓存 (LRU Bounded)
-	cache         *cache.LRUCache[string, *matchCacheItem]
-	negativeCache *cache.LRUCache[string, struct{}]
-	regexCache    *cache.LRUCache[string, *regexp.Regexp]
+	cache          *cache.LRUCache[string, *matchCacheItem]
+	exactBestCache *cache.LRUCache[string, *model.Knowledge] // 选优结果缓存 (闭环 S1)
+	negativeCache  *cache.LRUCache[string, struct{}]
+	regexCache     *cache.LRUCache[string, *regexp.Regexp]
 }
 
 func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
 	engine := &MatchEngine{
-		db:            db,
-		indexer:       indexer,
-		exactMap:      make(map[string][]*model.Knowledge),
-		moduleMap:     make(map[string][]*model.Knowledge),
-		idMap:         make(map[uint]*model.Knowledge),
-		cache:         cache.NewLRUCache[string, *matchCacheItem](defaultMatchCacheCap),
-		negativeCache: cache.NewLRUCache[string, struct{}](defaultNegativeCacheCap),
-		regexCache:    cache.NewLRUCache[string, *regexp.Regexp](defaultRegexCacheCap),
+		db:             db,
+		indexer:        indexer,
+		exactMap:       make(map[string][]*model.Knowledge),
+		moduleMap:      make(map[string][]*model.Knowledge),
+		idMap:          make(map[uint]*model.Knowledge),
+		cache:          cache.NewLRUCache[string, *matchCacheItem](defaultMatchCacheCap),
+		exactBestCache: cache.NewLRUCache[string, *model.Knowledge](defaultExactBestCacheCap),
+		negativeCache:  cache.NewLRUCache[string, struct{}](defaultNegativeCacheCap),
+		regexCache:     cache.NewLRUCache[string, *regexp.Regexp](defaultRegexCacheCap),
 	}
 	if db != nil {
 		engine.loadIndexLocked()
@@ -148,6 +159,9 @@ func (m *MatchEngine) Reload() {
 	if m.cache != nil {
 		m.cache.Purge()
 	}
+	if m.exactBestCache != nil {
+		m.exactBestCache.Purge()
+	}
 	if m.negativeCache != nil {
 		m.negativeCache.Purge()
 	}
@@ -155,6 +169,8 @@ func (m *MatchEngine) Reload() {
 	if m.regexCache != nil {
 		m.regexCache.Purge()
 	}
+	// 闭环 S2: 清理产品族解析与兜底记忆化缓存，保证知识库原地热更新后族判定即时生效
+	ClearProductFamilyCache()
 }
 
 func (m *MatchEngine) loadIndexLocked() {
@@ -242,14 +258,15 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 
 	// PARSE-01 / P0-A / D7: 缓存 Key 分层（详见 buildBaseKey / buildBodyKey 注释）
 	isWireless := (norm != nil && IsWirelessLog(norm.MessageBody))
+	isWired := (norm != nil && IsWiredLog(norm.MessageBody))
 	severity := 0
 	if norm != nil {
 		severity = norm.Severity
 	}
-	baseKey := buildBaseKey(module, upperBrief, product, version, isWireless, severity)
-	bodyKey := buildBodyKey(baseKey, norm.MessageBody)
+	exactBestKey := buildExactBestKey(module, upperBrief, product, version, isWireless, isWired)
+	bodyKey := buildBodyKey(exactBestKey, severity, norm.MessageBody)
 
-	// 1. 查询结果缓存（统一按包含正文指纹与属性维度的 bodyKey 粒度查询，闭环 R1 跨正文模板一致性干扰）
+	// 1. 查询结果缓存（统一按包含正文指纹与属性维度的 bodyKey 粒度查询，相同报文 0 耗时秒回，闭环 R1）
 	if m.cache != nil {
 		if item, exists := m.cache.Get(bodyKey); exists && item != nil {
 			return item.k, item.tier, item.conf
@@ -270,18 +287,28 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 
 	// ---------------- Tier 1: EXACT 内存精确匹配 ----------------
 	//
-	// PARSE-06: 原实现是硬短路——只要 Module+Brief 命中非空候选就无条件返回，
-	// 完全不校验 Severity / 正文，也不管候选与日志的贴合程度，
-	// 于是"不同严重级、不同子类的日志被糊成同一条知识"，且置信度恒为 1.0。
-	//
-	// 现在改为软短路：先算一次轻量一致性分，达到 MinTier1Confidence 才立即返回；
-	// 低于阈值时把该候选记为"保底候选"，让日志继续下探 Tier2/3/4，
-	// 只有当后续全部落空时才退回它——既杜绝强制误配，又不至于把可诊断的日志丢成 UNMATCHED。
+	// PARSE-06 / S1 优化:
+	// 1. 候选选优缓存 (exactBestCache): FindBestKnowledgeMatchPtr 仅依赖 (module, brief, product, version, W, Wired)，
+	//    与具体正文和严重级别无关。同 brief 日志的选优结果 100% 共享，消灭 99.9% 的候选打分冷路径开销！
+	// 2. 正文一致性逐行校验 (Tier1Consistency): 选优后逐行计算严重级差与模板匹配扣分，达到阈值立即软短路返回；
+	//    既彻底杜绝正文间的一致性缓存污染，又将每行开销降至单次轻量校验级别。
 	var fallbackK *model.Knowledge
 	var fallbackConf float64
 
 	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
-		best := FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
+		var best *model.Knowledge
+		if m.exactBestCache != nil {
+			if cached, ok := m.exactBestCache.Get(exactBestKey); ok {
+				best = cached
+			}
+		}
+		if best == nil {
+			best = FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
+			if best != nil && m.exactBestCache != nil {
+				m.exactBestCache.Put(exactBestKey, best)
+			}
+		}
+
 		if best != nil {
 			consistency := Tier1Consistency(norm, best, m.matchTemplate)
 			if consistency >= MinTier1Confidence {

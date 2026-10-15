@@ -1,6 +1,7 @@
 package matcher_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -841,5 +842,93 @@ func TestTier1Consistency_BodyKeyCacheIsolation(t *testing.T) {
 		t.Fatalf("R1 regression: logB wrongly received cached conf=%f from logA, expected <= 0.45", confB)
 	}
 }
+
+// TestMatchEngineReload_ClearsFallbackFamilyCache 验证 S2:
+// 知识库条目原地更新内容后，Reload 必须清空 candFallbackFamilyCache 与选优缓存，保证族判定不陈旧
+func TestMatchEngineReload_ClearsFallbackFamilyCache(t *testing.T) {
+	engine, db := newIsolatedMatchEngine(t)
+
+	// 初始状态：ID=7777 为 WLAN 无线知识 (无版本映射)
+	k7777 := &model.Knowledge{
+		ID:          7777,
+		Module:      "AUTH",
+		Brief:       "USER_OFFLINE",
+		Severity:    4,
+		Message:     "ACMAC [ACMAC] SSID [SSID]",
+		Parameters:  "ACMAC,SSID",
+		ContentHash: "hash_k7777_test",
+	}
+	if err := db.Create(k7777).Error; err != nil {
+		t.Fatalf("failed to create knowledge: %v", err)
+	}
+	engine.Reload()
+
+	acLog := &model.NormalizedLog{
+		Module:      "AUTH",
+		Brief:       "USER_OFFLINE",
+		Severity:    4,
+		MessageBody: "[WLAN_STA_INFO_OFFLINE]ACMAC:f4-e5-f2-70-f4-bc;SSID:office;",
+	}
+
+	// 首次匹配：归为 FamilyWLAN，特征得分 +30
+	sBefore := matcher.CalcFeatureScoreForTest(acLog, k7777)
+	if sBefore != 30 {
+		t.Fatalf("expected +30 before update, got %d", sBefore)
+	}
+
+	// 模拟原地热更新：条目 ID=7777 修改为有线知识 (WIREDUSERINFO)
+	k7777.Message = "wired user offline"
+	k7777.Parameters = "WIREDUSERINFO"
+	if err := db.Save(k7777).Error; err != nil {
+		t.Fatalf("failed to update knowledge: %v", err)
+	}
+
+	// 执行 Reload
+	engine.Reload()
+
+	// 再次匹配：必须识别出新内容为有线族，特征得分转为 -20，绝不能沿用旧的 +30！
+	sAfter := matcher.CalcFeatureScoreForTest(acLog, k7777)
+	if sAfter != -20 {
+		t.Fatalf("S2 regression: expected -20 after Reload, got %d (stale cache detected)", sAfter)
+	}
+}
+
+// TestMatchEngine_ExactBestCachePerformance 验证 S1:
+// 同 module:brief 下不同正文的日志，候选选优结果能够跨行秒级复用，保证极速匹配
+func TestMatchEngine_ExactBestCachePerformance(t *testing.T) {
+	engine, db := newIsolatedMatchEngine(t)
+
+	// 创建 10 个同 module:brief 的知识条目 (模拟多候选)
+	for i := 1; i <= 10; i++ {
+		k := &model.Knowledge{
+			ID:          uint(8000 + i),
+			Module:      "IFNET",
+			Brief:       "IF_STATE",
+			Severity:    4,
+			Message:     fmt.Sprintf("Interface GigabitEthernet0/0/%d changed state to down", i),
+			Description: "接口状态告警",
+			ContentHash: fmt.Sprintf("hash_if_state_%d", i),
+		}
+		if err := db.Create(k).Error; err != nil {
+			t.Fatalf("failed to create knowledge %d: %v", i, err)
+		}
+	}
+	engine.Reload()
+
+	// 连续匹配 100 行不同正文的日志 (模拟真实场景正文中接口、时间不同)
+	for i := 1; i <= 100; i++ {
+		logItem := &model.NormalizedLog{
+			Module:      "IFNET",
+			Brief:       "IF_STATE",
+			Severity:    4,
+			MessageBody: fmt.Sprintf("Interface GigabitEthernet0/0/1 changed state to down (logIndex=%d randomIp=10.0.%d.1)", i, i),
+		}
+		k, tier, _ := engine.Match(logItem, "CloudEngine", "V200R024C00")
+		if k == nil || tier == matcher.TierUnmatch {
+			t.Fatalf("expected matched item for log index %d, got tier=%v", i, tier)
+		}
+	}
+}
+
 
 

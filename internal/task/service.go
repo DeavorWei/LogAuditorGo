@@ -661,15 +661,8 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 		return &taskInfo, nil
 	}
 
-	result := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates)
-	if result.Error != nil {
-		return nil, result.Error
-	}
-	if result.RowsAffected == 0 {
-		return nil, fmt.Errorf("task not found: %s", taskID)
-	}
-
-	// 双写同步至任务库 (闭环 D5 & R6: 先探测任务库物理文件是否存在，避免凭空建库；若任务库存在且更新失败，严格返回错误保障双写一致)
+	// 闭环 S3: 任务库先行原则——若任务库物理文件存在，先更新任务库；
+	// 若任务库更新失败则立即中断返回，此时全局库尚未变动，绝不产生「响应 500 + 全局库已改」的中间态。
 	taskDBFile := storage.TaskDBPath(s.taskDir, taskID)
 	if _, statErr := os.Stat(taskDBFile); statErr == nil {
 		taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
@@ -682,6 +675,14 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 			logger.Log.Errorf("[Task Service] Failed to sync updates to task db: %v", updateErr)
 			return nil, fmt.Errorf("failed to sync updates to task database: %w", updateErr)
 		}
+	}
+
+	result := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskID).Updates(updates)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, fmt.Errorf("task not found: %s", taskID)
 	}
 
 	var taskInfo model.TaskInfo
