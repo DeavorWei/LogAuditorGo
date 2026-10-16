@@ -518,7 +518,8 @@ func taskDBDSN(dbPath string, mustExist bool) string {
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=foreign_keys(1)" +
-		"&_pragma=cache_size(-32000)" + // 32MB 页缓存
+		"&_pragma=cache_size(-64000)" + // 64MB 页缓存 (阶段二调优)
+		"&_pragma=temp_store(2)" + // 临时表与排序走内存 (MEMORY=2)
 		"&_txlock=immediate"
 	if mustExist {
 		dsn += "&mode=rw"

@@ -3,6 +3,7 @@ package task
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -479,11 +480,6 @@ func (s *Service) persistFileBundle(
 		CreatedAt: time.Now(),
 	}
 
-	first := true
-	processed := 0
-	lastFile := bundle.cleanName
-	var lastValidTS time.Time
-
 	// 补偿清理：删掉该文件已入库的碎片与 TaskFile 空壳，避免留下"幽灵文件记录"
 	cleanup := func() {
 		_ = taskDB.Exec("DELETE FROM log_tag_relations WHERE log_id IN (SELECT id FROM log_records WHERE source_file = ?)", bundle.cleanName).Error
@@ -497,41 +493,22 @@ func (s *Service) persistFileBundle(
 		}
 	}
 
-	commit := func(records []model.LogRecord) error {
-		if len(records) == 0 && !first {
-			return nil
-		}
+	cfg := PipelineConfig{
+		WorkerNum:     0, // 自动取 NumCPU
+		BatchSize:     importChunkLines,
+		FlushInterval: 500 * time.Millisecond,
+	}
+
+	// 1. 空文件特判（无行）：仅登记 TaskFile
+	if bundle.totalLines == 0 && len(bundle.lines) == 0 {
 		return taskDB.Transaction(func(tx *gorm.DB) error {
-			if first {
-				if err := tx.Create(&taskFile).Error; err != nil {
-					return fmt.Errorf("create task file record failed: %w", err)
-				}
-			}
-			if len(records) > 0 {
-				if err := tx.CreateInBatches(records, 1000).Error; err != nil {
-					return fmt.Errorf("batch insert log records failed: %w", err)
-				}
-			}
-			return nil
+			return tx.Create(&taskFile).Error
 		})
 	}
 
-	ingestChunk := func(chunk []string) error {
-		records := s.parseAndMatchChunk(chunk, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
-		alignChunkTimestamps(records, &lastFile, &lastValidTS)
-		if err := commit(records); err != nil {
-			cleanup()
-			return err
-		}
-		processed += len(records)
-		if onProgress != nil {
-			onProgress(processed)
-		}
-		first = false
-		return nil
-	}
+	var ingestErr error
 
-	// 磁盘文件：按块流式重读，内存占用与文件大小无关
+	// 2. 磁盘文件：流式接入 IngestStreamingPipeline
 	if len(bundle.lines) == 0 && bundle.item.FilePath != "" {
 		f, err := os.Open(bundle.item.FilePath)
 		if err != nil {
@@ -544,51 +521,36 @@ func (s *Service) persistFileBundle(
 			return err
 		}
 
-		chunk := make([]string, 0, importChunkLines)
-		scanner := bufio.NewScanner(dr)
-		scanBuf := make([]byte, 64*1024)
-		scanner.Buffer(scanBuf, maxScanLineBytes)
-
-		for scanner.Scan() {
-			text := scanner.Text()
-			if logparser.IsBlankOrGarbageLine(text) {
-				continue
-			}
-			l := logparser.SanitizeLogLine(text)
-			if l == "" {
-				continue
-			}
-			chunk = append(chunk, l)
-			if len(chunk) >= importChunkLines {
-				if err := ingestChunk(chunk); err != nil {
-					return err
-				}
-				chunk = chunk[:0]
-			}
-		}
-		if scanErr := scanner.Err(); scanErr != nil {
-			cleanup()
-			return fmt.Errorf("scan file %s failed: %w", bundle.item.FileName, scanErr)
-		}
-		if len(chunk) > 0 || first {
-			return ingestChunk(chunk)
-		}
-		return nil
+		lineSource := makeFileReaderLineSource(dr)
+		ingestErr = s.IngestStreamingPipeline(
+			context.Background(),
+			taskDB,
+			lineSource,
+			bundle,
+			deviceType,
+			deviceVersion,
+			cfg,
+			onProgress,
+		)
+	} else {
+		// 3. 内存内容 / 一次性 Reader：切片流式接入 IngestStreamingPipeline
+		lineSource := makeSliceLineSource(bundle.lines)
+		ingestErr = s.IngestStreamingPipeline(
+			context.Background(),
+			taskDB,
+			lineSource,
+			bundle,
+			deviceType,
+			deviceVersion,
+			cfg,
+			onProgress,
+		)
 	}
 
-	// 内存内容 / 一次性 Reader：按块切分已载入的行
-	if len(bundle.lines) == 0 && first {
-		// 空文件：仅登记 TaskFile
-		return commit(nil)
+	if ingestErr != nil {
+		cleanup()
+		return ingestErr
 	}
-	for start := 0; start < len(bundle.lines); start += importChunkLines {
-		end := start + importChunkLines
-		if end > len(bundle.lines) {
-			end = len(bundle.lines)
-		}
-		if err := ingestChunk(bundle.lines[start:end]); err != nil {
-			return err
-		}
-	}
+
 	return nil
 }
