@@ -2,6 +2,7 @@ package main_test
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/netutil"
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
@@ -177,3 +179,24 @@ Apr 15 2026 14:10:00 CORE-SW-02 %%01BGP/4/BGP_AUTH_FAILED(l)[301][Slot=1/2]: BGP
 		t.Errorf("expected substantial HTML report, got %d bytes", len(htmlReport))
 	}
 }
+
+func TestPortConflictRetryIntegration(t *testing.T) {
+	// 1. 模拟端口冲突并成功顺延绑定
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("probe failed: %v", err)
+	}
+	blockedPort := probe.Addr().(*net.TCPAddr).Port
+	defer probe.Close()
+
+	ln, actualPort, err := netutil.ListenWithPortRetry("127.0.0.1", blockedPort, 5, nil)
+	if err != nil {
+		t.Fatalf("expected successful port retry, got: %v", err)
+	}
+	defer ln.Close()
+
+	if actualPort <= blockedPort {
+		t.Errorf("expected actual port > %d, got %d", blockedPort, actualPort)
+	}
+}
+

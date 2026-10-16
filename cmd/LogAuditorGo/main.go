@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -14,9 +13,11 @@ import (
 	"time"
 
 	"logauditorgo/internal/api"
+	"logauditorgo/internal/browser"
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/matcher"
+	"logauditorgo/internal/netutil"
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/storage"
@@ -50,6 +51,7 @@ func main() {
 	portFlag := flag.Int("port", 0, "覆盖配置文件中的监听端口 (1-65535)")
 	showVersion := flag.Bool("version", false, "打印版本信息并退出")
 	noTray := flag.Bool("no-tray", false, "禁用系统托盘图标 (适用于无头服务器环境)")
+	noBrowser := flag.Bool("no-browser", false, "禁用程序启动时自动打开系统默认浏览器")
 	trayTheme := flag.String("tray-theme", "blue_shield", "托盘图标风格: blue_shield (默认蓝盾), emerald_terminal (翠绿终端), indigo_radar (星穹雷达)")
 	iconPath := flag.String("icon", "", "自定义托盘图标文件路径 (.ico 或 .png)")
 	flag.Parse()
@@ -129,10 +131,18 @@ func main() {
 		log.Warnf("Failed to recover dangling RCA tasks on startup: %v", err)
 	}
 
-	// 6. 初始化并启动 HTTP 服务
-	r := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
-	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
+	// 6. 初始化并启动 HTTP 服务（自动检测端口冲突，失败时自动累加端口尝试启动，最多尝试 5 次，全失败则终止）
+	ln, actualPort, err := netutil.ListenWithPortRetry(cfg.Server.Host, cfg.Server.Port, netutil.DefaultMaxPortRetries, log)
+	if err != nil {
+		log.Errorf("HTTP 服务端口绑定失败且重试已达上限: %v", err)
+		os.Exit(1)
+	}
 
+	// 端口顺延后同步更新配置对象与实际服务访问地址
+	cfg.Server.Port = actualPort
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, actualPort)
+
+	r := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 	server := &http.Server{
 		Addr:              addr,
 		Handler:           r,
@@ -144,13 +154,6 @@ func main() {
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-
-	// 显式先执行 TCP 监听，确保端口绑定成功后再触发就绪信号与托盘通知 (N2 / ISSUE-CMD-03)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Errorf("HTTP server listen error on %s: %v", addr, err)
-		os.Exit(1)
-	}
 
 	serverErrCh := make(chan error, 1)
 	readyCh := make(chan struct{})
@@ -173,11 +176,34 @@ func main() {
 		serverErrCh <- nil
 	}()
 
-	// 7. 初始化并启动系统托盘图标 (Windows)
+	// 7. 程序运行时自动调用系统默认浏览器打开网页 (可通过 -no-browser 禁用)
+	if !*noBrowser {
+		go func() {
+			select {
+			case <-readyCh:
+				time.Sleep(150 * time.Millisecond)
+				webHost := cfg.Server.Host
+				if webHost == "0.0.0.0" || webHost == "" {
+					webHost = "127.0.0.1"
+				}
+				webURL := fmt.Sprintf("http://%s:%d", webHost, actualPort)
+				log.Infof("正在调用系统默认浏览器打开 Web 控制台: %s", webURL)
+				if err := browser.Open(webURL); err != nil {
+					log.Warnf("调用系统默认浏览器打开失败: %v, 请手动在浏览器访问: %s", err, webURL)
+				} else {
+					log.Infof("已成功调用默认浏览器打开网页: %s", webURL)
+				}
+			case <-notifyCtx.Done():
+				return
+			}
+		}()
+	}
+
+	// 8. 初始化并启动系统托盘图标 (Windows)
 	var systemTray tray.Tray
 	if !*noTray {
 		systemTray = tray.New(tray.Config{
-			Port:     cfg.Server.Port,
+			Port:     actualPort,
 			LogDir:   cfg.Log.Dir,
 			DataDir:  filepath.Dir(cfg.Storage.KnowledgeDB),
 			Version:  "v1.0.0",
