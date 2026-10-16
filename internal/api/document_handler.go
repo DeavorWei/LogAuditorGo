@@ -142,6 +142,7 @@ func (h *DocumentHandler) ImportDir(c *gin.Context) {
 				}
 			}()
 			_, _ = h.knowledgeSvc.ImportDocumentsFromPaths(targets, conflictMode, tracker)
+			InvalidateStatsCache()
 		}()
 
 		SuccessResponse(c, gin.H{
@@ -159,6 +160,7 @@ func (h *DocumentHandler) ImportDir(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, stats, "Import completed successfully")
 }
 
@@ -187,6 +189,7 @@ func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, nil, "Document deleted successfully")
 }
 
@@ -214,6 +217,7 @@ func (h *DocumentHandler) BatchDeleteDocuments(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, gin.H{
 		"deleted_count": deleted,
 	}, fmt.Sprintf("Successfully deleted %d documents", deleted))

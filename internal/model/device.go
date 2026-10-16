@@ -6,10 +6,10 @@ import "time"
 type Device struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	TaskID       string    `gorm:"size:64;index" json:"task_id"`
-	DeviceName   string    `gorm:"size:255" json:"device_name"`    // 用户定义的设备名称 (如: Router-Core-01)
-	DeviceType   string    `gorm:"size:128" json:"device_type"`    // 设备类型: Router, Switch, Firewall 等
-	ManagementIP string    `gorm:"size:64" json:"management_ip"`   // 管理 IP
-	Hostname     string    `gorm:"size:128;index" json:"hostname"` // 匹配日志中的 Hostname
+	DeviceName   string    `gorm:"size:255" json:"device_name"`          // 用户定义的设备名称 (如: Router-Core-01)
+	DeviceType   string    `gorm:"size:128;index" json:"device_type"`    // 设备类型: Router, Switch, Firewall 等
+	ManagementIP string    `gorm:"size:64;index" json:"management_ip"`   // 管理 IP
+	Hostname     string    `gorm:"size:128;index" json:"hostname"`       // 匹配日志中的 Hostname
 	Description  string    `gorm:"type:text" json:"description"`   // 描述
 	Color        string    `gorm:"size:32" json:"color"`           // 时间线标识颜色 (如 #3B82F6)
 	LogCount     int       `json:"log_count"`                      // 该设备导入的日志总数

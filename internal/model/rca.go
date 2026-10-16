@@ -15,13 +15,13 @@ type ImpactEvent struct {
 type RCAEvent struct {
 	ID                uint          `gorm:"primaryKey;autoIncrement" json:"id"`
 	RootLogID         uint          `gorm:"index" json:"root_log_id"`
-	RootModule        string        `gorm:"size:64" json:"root_module"`
-	RootBrief         string        `gorm:"size:128" json:"root_brief"`
+	RootModule        string        `gorm:"size:64;index" json:"root_module"`
+	RootBrief         string        `gorm:"size:128;index" json:"root_brief"`
 	RootTimestamp     string        `gorm:"size:64" json:"root_timestamp"`
 	RootCauseSummary  string        `gorm:"type:text" json:"root_cause_summary"`
 	CorrelatedLogIDs  string        `gorm:"type:text" json:"correlated_log_ids"` // JSON 数组: [105, 108, 112]
 	ImpactEventsJSON  string        `gorm:"type:text" json:"impact_events_json"` // JSON 结构体数组
-	ImpactLevel       string        `gorm:"size:32" json:"impact_level"`         // CRITICAL, HIGH, MEDIUM, LOW
+	ImpactLevel       string        `gorm:"size:32;index" json:"impact_level"`   // CRITICAL, HIGH, MEDIUM, LOW
 	Confidence        float64       `json:"confidence"`
 	RecommendedAction string        `gorm:"type:text" json:"recommended_action"`
 }

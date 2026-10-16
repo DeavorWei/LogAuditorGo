@@ -83,15 +83,14 @@ func findFirstSeparator(s string) int {
 	return eIdx
 }
 
-// isSemicolonStructuredBody 判定报文是否属于分号结构化键值对报文：
+// isSemicolonStructuredSegments 判定报文是否属于分号结构化键值对报文（复用已切分的段）：
 // 1. 包含前导标签 [TAG] 且至少存在 1 个分号；或
 // 2. 切分段中，有效键值对数 >= 2 且占非空段比例 >= 60% (覆盖两段式纯冒号报文)。
-func isSemicolonStructuredBody(msg string) bool {
-	if strings.IndexByte(msg, ';') == -1 {
+func isSemicolonStructuredSegments(msg string, segments []string) bool {
+	if len(segments) <= 1 {
 		return false
 	}
 	hasTag := leadingTagRegex.MatchString(strings.TrimSpace(msg))
-	segments := splitSemicolonWithQuotes(msg)
 	validPairs := 0
 	nonEmptySegments := 0
 
@@ -118,8 +117,19 @@ func isSemicolonStructuredBody(msg string) bool {
 	return nonEmptySegments >= 2 && validPairs >= 2 && (float64(validPairs)/float64(nonEmptySegments) >= 0.6)
 }
 
+// isSemicolonStructuredBody 判定报文是否属于分号结构化键值对报文（兼容外部及单测调用）
+func isSemicolonStructuredBody(msg string) bool {
+	if strings.IndexByte(msg, ';') == -1 {
+		return false
+	}
+	return isSemicolonStructuredSegments(msg, splitSemicolonWithQuotes(msg))
+}
+
 func scanSemicolonPairs(s string, emit func(key, value string)) {
-	segments := splitSemicolonWithQuotes(s)
+	scanSemicolonSegments(splitSemicolonWithQuotes(s), emit)
+}
+
+func scanSemicolonSegments(segments []string, emit func(key, value string)) {
 	for idx, seg := range segments {
 		trimmed := strings.TrimSpace(seg)
 		if trimmed == "" {
@@ -207,23 +217,25 @@ func ExtractParametersInto(msg string, params map[string]string) {
 		return
 	}
 
-	isSemi := isSemicolonStructuredBody(msg)
-	if isSemi {
-		// 1. 分号结构化报文优先扫描 (overwrite=true)
-		scanSemicolonPairs(msg, func(k, v string) {
-			putParam(params, k, v, true)
-		})
-		// 2. 括号块补漏扫描 (overwrite=false)，保留散文括号内独有参数，杜绝覆盖分号高优先级键
-		if strings.IndexByte(msg, '(') != -1 {
-			for _, sub := range paramBlockRegex.FindAllStringSubmatch(msg, -1) {
-				if len(sub) >= 2 && strings.IndexByte(sub[1], '=') != -1 {
-					scanKVPairs(sub[1], true, func(k, v string) {
-						putParam(params, k, v, false)
-					})
+	if strings.IndexByte(msg, ';') != -1 {
+		segments := splitSemicolonWithQuotes(msg)
+		if isSemicolonStructuredSegments(msg, segments) {
+			// 1. 分号结构化报文优先扫描 (overwrite=true)
+			scanSemicolonSegments(segments, func(k, v string) {
+				putParam(params, k, v, true)
+			})
+			// 2. 括号块补漏扫描 (overwrite=false)，保留散文括号内独有参数，杜绝覆盖分号高优先级键
+			if strings.IndexByte(msg, '(') != -1 {
+				for _, sub := range paramBlockRegex.FindAllStringSubmatch(msg, -1) {
+					if len(sub) >= 2 && strings.IndexByte(sub[1], '=') != -1 {
+						scanKVPairs(sub[1], true, func(k, v string) {
+							putParam(params, k, v, false)
+						})
+					}
 				}
 			}
+			return
 		}
-		return
 	}
 
 	// 非分号常规报文分支

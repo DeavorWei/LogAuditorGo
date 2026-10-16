@@ -518,11 +518,14 @@ func (t *JobTracker) Subscribe() (chan ProgressSnapshot, func()) {
 	default:
 	}
 
+	var once sync.Once
 	unsubscribe := func() {
-		t.subMu.Lock()
-		delete(t.subscribers, ch)
-		t.subMu.Unlock()
-		close(ch)
+		once.Do(func() {
+			t.subMu.Lock()
+			delete(t.subscribers, ch)
+			close(ch)
+			t.subMu.Unlock()
+		})
 	}
 
 	return ch, unsubscribe

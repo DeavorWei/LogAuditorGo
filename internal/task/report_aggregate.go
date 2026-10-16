@@ -167,7 +167,7 @@ func aggregateTimelineSpan(taskDB *gorm.DB, deviceIDs []uint) (timelineSpan, err
 
 	span.Total = r.Total
 	minT, maxT := parseSQLTime(r.MinTime), parseSQLTime(r.MaxTime)
-	span.HasEvents = r.Total > 0 && minT != nil && maxT != nil
+	span.HasEvents = r.Total > 0 && minT != nil && maxT != nil && !minT.IsZero() && !maxT.IsZero()
 	if minT != nil {
 		span.MinTime = *minT
 	}

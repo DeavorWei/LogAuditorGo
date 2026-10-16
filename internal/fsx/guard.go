@@ -72,6 +72,26 @@ func (g *SecurePathGuard) Validate(path string) error {
 	// FSX-01: 解析软链接与 Junction 获取底层真实物理路径 (CWE-59 防御)
 	if realTarget, err := filepath.EvalSymlinks(target); err == nil {
 		target = filepath.Clean(realTarget)
+	} else {
+		// 若目标路径尚不存在，逐级向上解析首个存在的祖先目录并还原真实路径
+		dir := filepath.Dir(target)
+		var relSuffixes []string
+		relSuffixes = append(relSuffixes, filepath.Base(target))
+		for {
+			if realDir, err := filepath.EvalSymlinks(dir); err == nil {
+				for i := len(relSuffixes) - 1; i >= 0; i-- {
+					realDir = filepath.Join(realDir, relSuffixes[i])
+				}
+				target = filepath.Clean(realDir)
+				break
+			}
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				break
+			}
+			relSuffixes = append(relSuffixes, filepath.Base(dir))
+			dir = parent
+		}
 	}
 
 	for _, root := range g.roots {

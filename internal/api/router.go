@@ -228,6 +228,11 @@ func SetupRouter(
 				stat, err := f.Stat()
 				_ = f.Close()
 				if err == nil && !stat.IsDir() {
+					if strings.HasPrefix(cleanPath, "assets/") {
+						c.Header("Cache-Control", "public, max-age=31536000, immutable")
+					} else {
+						c.Header("Cache-Control", "public, max-age=3600")
+					}
 					fileServer.ServeHTTP(c.Writer, c.Request)
 					return
 				}
@@ -236,6 +241,9 @@ func SetupRouter(
 
 		// 如果请求根路径或前端路由 (如 /workbench, /tasks 等)，且存在打包的 index.html，则返回 SPA 页面
 		if len(indexContent) > 0 {
+			c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+			c.Header("Pragma", "no-cache")
+			c.Header("Expires", "0")
 			c.Data(http.StatusOK, "text/html; charset=utf-8", indexContent)
 			return
 		}

@@ -358,4 +358,19 @@ func TestMergeCapturedParameters_EmptyValuePreserved(t *testing.T) {
 	}
 }
 
+func TestCaptureTemplateParams_SpaceAndPercent(t *testing.T) {
+	tpl := "BGP/4/PEER_BACK: BGP peer <Peer IP> went down due to %s."
+	body := "BGP peer 192.168.10.1 went down due to hold timer expired."
+	params, prov := CaptureTemplateParamsWithProvenance(tpl, body)
+	if prov != "regex" {
+		t.Errorf("expected provenance 'regex', got '%s'", prov)
+	}
+	if params["Peer IP"] != "192.168.10.1" {
+		t.Errorf("expected '192.168.10.1', got %q", params["Peer IP"])
+	}
+	if params["s"] != "hold timer expired" {
+		t.Errorf("expected 'hold timer expired', got %q", params["s"])
+	}
+}
+
 

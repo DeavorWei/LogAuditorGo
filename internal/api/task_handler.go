@@ -261,6 +261,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 			_, _ = h.taskSvc.ImportLogs(taskInfo.TaskID, items, "overwrite", tracker)
 		}()
 
+		InvalidateStatsCache()
 		SuccessResponse(c, gin.H{
 			"task_id":  taskInfo.TaskID,
 			"task":     taskInfo,
@@ -277,6 +278,7 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, updatedInfo, "Task created and analyzed successfully")
 }
 
@@ -355,8 +357,10 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 				}
 			}()
 			_, _ = h.taskSvc.ImportLogs(taskID, items, conflictMode, tracker)
+			InvalidateStatsCache()
 		}()
 
+		InvalidateStatsCache()
 		SuccessResponse(c, gin.H{
 			"task_id":  taskID,
 			"job_id":   tracker.JobID(),
@@ -372,6 +376,7 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, taskInfo, "Logs imported and analyzed successfully")
 }
 
@@ -410,6 +415,7 @@ func (h *TaskHandler) DeleteTaskFile(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, taskInfo, "Log file deleted successfully")
 }
 
@@ -847,6 +853,7 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 		return
 	}
 
+	InvalidateStatsCache()
 	SuccessResponse(c, nil, "Task deleted successfully")
 }
 

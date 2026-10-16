@@ -259,3 +259,70 @@ func TestBleveIndexerChunkedBatching(t *testing.T) {
 	}
 }
 
+func TestRebuildFromDB_SuccessAndRollback(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bleve_rebuild_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	indexPath := filepath.Join(tmpDir, "orig.bleve")
+	indexer, err := search.InitIndexer(indexPath)
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	initialItem := []model.Knowledge{
+		{
+			ID:        1,
+			EntryType: model.EntryTypeLog,
+			Module:    "OSPF",
+			Message:   "OSPF neighbor is DOWN",
+		},
+	}
+	if err := indexer.IndexKnowledge(initialItem); err != nil {
+		t.Fatalf("initial index failed: %v", err)
+	}
+
+	// 1. 正常重建测试
+	newItems := []model.Knowledge{
+		{
+			ID:        2,
+			EntryType: model.EntryTypeLog,
+			Module:    "BGP",
+			Message:   "BGP peer state changed to ESTABLISHED",
+		},
+	}
+	loadPage := func(offset, limit int) ([]model.Knowledge, error) {
+		if offset == 0 {
+			return newItems, nil
+		}
+		return nil, nil
+	}
+	countAll := func() (int64, error) {
+		return int64(len(newItems)), nil
+	}
+
+	progressCalls := 0
+	opts := search.RebuildOptions{
+		PageSize: 100,
+		OnProgress: func(indexed, total int) {
+			progressCalls++
+		},
+	}
+
+	if err := indexer.RebuildFromDB(loadPage, countAll, opts); err != nil {
+		t.Fatalf("RebuildFromDB failed: %v", err)
+	}
+	if progressCalls == 0 {
+		t.Fatalf("expected OnProgress to be invoked")
+	}
+
+	// 检索验证新索引生效
+	res, err := indexer.Search(search.SearchFilter{Module: "BGP"})
+	if err != nil || res.Total != 1 {
+		t.Fatalf("expected BGP hit in rebuilt index, got total=%d, err=%v", res.Total, err)
+	}
+}
+

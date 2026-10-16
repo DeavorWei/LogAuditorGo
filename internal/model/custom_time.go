@@ -115,6 +115,7 @@ func (ct CustomTime) Value() (driver.Value, error) {
 }
 
 // Scan 实现 database/sql.Scanner
+// MODEL-01: 数据库脏数据读取提供稳健回退，格式无法解析时降级为零值，避免整条记录查询崩溃
 func (ct *CustomTime) Scan(value interface{}) error {
 	if value == nil {
 		ct.Time = time.Time{}
@@ -125,10 +126,31 @@ func (ct *CustomTime) Scan(value interface{}) error {
 		ct.Time = v
 		return nil
 	case string:
-		return ct.UnmarshalJSON([]byte(`"` + v + `"`))
+		parsed, err := ParseCustomTime(v)
+		if err != nil {
+			ct.Time = time.Time{}
+			return nil
+		}
+		if parsed != nil {
+			ct.Time = parsed.Time
+		} else {
+			ct.Time = time.Time{}
+		}
+		return nil
 	case []byte:
-		return ct.UnmarshalJSON([]byte(`"` + string(v) + `"`))
+		parsed, err := ParseCustomTime(string(v))
+		if err != nil {
+			ct.Time = time.Time{}
+			return nil
+		}
+		if parsed != nil {
+			ct.Time = parsed.Time
+		} else {
+			ct.Time = time.Time{}
+		}
+		return nil
 	default:
-		return fmt.Errorf("cannot scan type %T into CustomTime", value)
+		ct.Time = time.Time{}
+		return nil
 	}
 }

@@ -112,3 +112,31 @@ func TestCustomTime_UnmarshalJSON(t *testing.T) {
 		})
 	}
 }
+
+func TestCustomTime_ScanFallback(t *testing.T) {
+	var ct CustomTime
+	// 测试非法格式字符串 Scan 不抛 error 且保留零值
+	if err := ct.Scan("invalid-date-string"); err != nil {
+		t.Fatalf("expected nil error on invalid string scan, got: %v", err)
+	}
+	if !ct.IsZero() {
+		t.Fatalf("expected zero time, got %v", ct.Time)
+	}
+
+	// 测试非法字节切片
+	if err := ct.Scan([]byte("corrupted-bytes")); err != nil {
+		t.Fatalf("expected nil error on corrupted bytes scan, got: %v", err)
+	}
+	if !ct.IsZero() {
+		t.Fatalf("expected zero time, got %v", ct.Time)
+	}
+
+	// 测试有效时间正常 Scan
+	validStr := "2024-05-01 12:00:00"
+	if err := ct.Scan(validStr); err != nil {
+		t.Fatalf("expected nil error on valid time, got: %v", err)
+	}
+	if ct.Year() != 2024 || ct.Month() != 5 || ct.Day() != 1 {
+		t.Fatalf("unexpected scanned time: %v", ct.Time)
+	}
+}

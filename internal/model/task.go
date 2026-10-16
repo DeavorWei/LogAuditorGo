@@ -27,7 +27,7 @@ const (
 type TaskInfo struct {
 	TaskID       string     `gorm:"primaryKey;size:64" json:"task_id"`
 	TaskName     string     `gorm:"size:255" json:"task_name"`
-	DeviceType   string     `gorm:"size:128" json:"device_type"`
+	DeviceType   string     `gorm:"size:128;index" json:"device_type"`
 	// DeviceVersion 设备软件版本（如 V200R024C00）。
 	//
 	// PARSE-04: 新增字段。此前生产代码恒以空版本号调用 Match()，
@@ -40,13 +40,13 @@ type TaskInfo struct {
 	MatchedCount int        `json:"matched_count"`
 	RcaCount     int        `json:"rca_count"`
 	DBPath       string     `gorm:"size:512" json:"db_path"`
-	Status       TaskStatus `gorm:"size:32" json:"status"`
+	Status       TaskStatus `gorm:"size:32;index" json:"status"`
 	ErrorMessage string     `gorm:"type:text" json:"error_message,omitempty"`
-	StartTime    time.Time  `json:"start_time"`
+	StartTime    time.Time  `gorm:"index" json:"start_time"`
 	FinishTime   *time.Time `json:"finish_time,omitempty"`
 
 	// --- RCA 独立异步状态字段 (存量数据零值兜底为 PENDING) ---
-	RCAStatus        RCAStatus  `gorm:"size:32;default:'PENDING'" json:"rca_status"`
+	RCAStatus        RCAStatus  `gorm:"size:32;default:'PENDING';index" json:"rca_status"`
 	RCAErrorMessage  string     `gorm:"type:text" json:"rca_error_message,omitempty"`
 	RCAFinishTime    *time.Time `json:"rca_finish_time,omitempty"`
 	// RCAAnalyzedUntil 记录超时截断时已分析到的时序边界，供前端渲染提示

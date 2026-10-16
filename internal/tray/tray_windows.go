@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
-	"syscall"
 	"time"
 	"unsafe"
 
@@ -291,9 +290,6 @@ func (t *windowsTray) Start() error {
 		if int32(ret) <= 0 {
 			break
 		}
-		if m.message == wmUser+999 {
-			break
-		}
 		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
 		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
 	}
@@ -458,9 +454,9 @@ func (t *windowsTray) handleMenuCommand(menuID uint16) {
 // openURL 在默认浏览器中打开指定子路径
 func (t *windowsTray) openURL(subpath string) {
 	url := t.GetURL(subpath)
-	cmd := exec.Command("cmd", "/c", "start", "", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
-	_ = cmd.Start()
+	verbPtr, _ := windows.UTF16PtrFromString("open")
+	urlPtr, _ := windows.UTF16PtrFromString(url)
+	_ = windows.ShellExecute(0, verbPtr, urlPtr, nil, nil, windows.SW_SHOWNORMAL)
 }
 
 // openFolder 在 Windows 文件资源管理器中打开目录

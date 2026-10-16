@@ -33,10 +33,12 @@ type StatsHandler struct {
 }
 
 func NewStatsHandler(db *gorm.DB) *StatsHandler {
-	return &StatsHandler{
+	h := &StatsHandler{
 		db:       db,
 		cacheTTL: 15 * time.Second,
 	}
+	globalStatsHandler = h
+	return h
 }
 
 // InvalidateCache 清空统计缓存

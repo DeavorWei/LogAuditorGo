@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
@@ -126,9 +127,20 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 // RebuildIndex 全量重建 Bleve 全文检索索引 (KB-01)。
 //
 // 默认异步执行并返回 job_id，前端可复用进度弹窗展示重建进度；
-// 传 `?async=false` 时同步执行（便于测试与脚本调用）。
+// 传 `?async=false` 或 JSON `{"async":false}` 时同步执行（便于测试与脚本调用）。
 func (h *KnowledgeHandler) RebuildIndex(c *gin.Context) {
+	if h.knowledgeSvc.IsReindexing() {
+		ErrorResponse(c, http.StatusConflict, -1, "Another reindex job or document import is already running")
+		return
+	}
+
 	isAsync := c.Query("async") != "false" && c.PostForm("async") != "false"
+	var body struct {
+		Async *bool `json:"async"`
+	}
+	if err := c.ShouldBindBodyWith(&body, binding.JSON); err == nil && body.Async != nil {
+		isAsync = *body.Async
+	}
 
 	tracker := progress.GetHub().NewJob("reindex", "", knowledge.ReindexStages)
 	tracker.AddLog("info", "收到重建索引请求 (mode: %s)", map[bool]string{true: "async", false: "sync"}[isAsync])

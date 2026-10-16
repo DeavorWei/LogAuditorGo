@@ -1374,3 +1374,49 @@ func TestReanalyzeTask_DecoupledDeviceVersion(t *testing.T) {
 	}
 }
 
+// TestRecoverDanglingTasks 验证系统启动时断电残留 PROCESSING 任务自愈为 FAILED
+func TestRecoverDanglingTasks(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "task_recover_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("init global db failed: %v", err)
+	}
+
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := task.NewService(globalDB, taskDir, nil, nil)
+
+	// 模拟进程断电残留：直接在 DB 插入 PROCESSING 任务
+	dangling := model.TaskInfo{
+		TaskID:     "task_dangling_01",
+		TaskName:   "断电残留任务",
+		DeviceType: "CloudEngine",
+		Status:     model.TaskStatusProcessing,
+		StartTime:  time.Now().Add(-1 * time.Hour),
+	}
+	if err := globalDB.Create(&dangling).Error; err != nil {
+		t.Fatalf("create dangling task failed: %v", err)
+	}
+
+	// 执行启动自愈
+	if err := svc.RecoverDanglingTasks(); err != nil {
+		t.Fatalf("RecoverDanglingTasks failed: %v", err)
+	}
+
+	var recovered model.TaskInfo
+	if err := globalDB.Where("task_id = ?", "task_dangling_01").First(&recovered).Error; err != nil {
+		t.Fatalf("query recovered task failed: %v", err)
+	}
+	if recovered.Status != model.TaskStatusFailed {
+		t.Fatalf("expected TaskStatusFailed, got %s", recovered.Status)
+	}
+	if !strings.Contains(recovered.ErrorMessage, "服务异常中断或重启") {
+		t.Fatalf("expected self-healing error message, got: %q", recovered.ErrorMessage)
+	}
+}
+

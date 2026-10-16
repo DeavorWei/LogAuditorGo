@@ -2,6 +2,7 @@ package task
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -410,5 +411,70 @@ func TestBatchTagWithJobTracker(t *testing.T) {
 	untagSnap := untagTracker.GetSnapshot()
 	if untagSnap.Status != progress.JobCompleted {
 		t.Fatalf("expected JobCompleted status for untag, got %s", untagSnap.Status)
+	}
+}
+
+// TestBatchTagLogs_ChunkingBoundary 验证跨越 20000 chunk 边界的大批量分批打标与摘标逻辑 (闭环 TASK-02 漏标深度测试)
+func TestBatchTagLogs_ChunkingBoundary(t *testing.T) {
+	svc, taskID, cleanup := setupTagTestEnv(t)
+	defer cleanup()
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(svc.taskDir, taskID)
+	if err != nil {
+		t.Fatalf("get task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	// 快速批量插入 20050 条日志记录
+	const testCount = 20050
+	batch := make([]model.LogRecord, 0, 1000)
+	for i := 1; i <= testCount; i++ {
+		batch = append(batch, model.LogRecord{
+			ID:       uint(100 + i),
+			Module:   "TEST",
+			Severity: 4,
+			RawLog:   fmt.Sprintf("log line %d", i),
+		})
+		if len(batch) >= 1000 {
+			if err := taskDB.Create(&batch).Error; err != nil {
+				t.Fatalf("insert batch logs failed: %v", err)
+			}
+			batch = batch[:0]
+		}
+	}
+	if len(batch) > 0 {
+		if err := taskDB.Create(&batch).Error; err != nil {
+			t.Fatalf("insert remaining logs failed: %v", err)
+		}
+	}
+
+	tag, err := svc.CreateTaskTag(taskID, model.TagCreateRequest{Name: "分批超限标签"})
+	if err != nil {
+		t.Fatalf("create tag failed: %v", err)
+	}
+
+	tracker := progress.NewJobTracker("test_chunk_tag_01", taskID, "batch_tag", BatchTagStages)
+	tagged, total, err := svc.BatchTagLogs(taskID, tag.ID, model.LogQueryRequestBody{
+		Module:   "TEST",
+		PageSize: 10,
+	}, 0, tracker)
+	if err != nil {
+		t.Fatalf("batch tag chunked failed: %v", err)
+	}
+	if tagged != testCount || total != testCount {
+		t.Fatalf("expected tagged=%d, total=%d, got tagged=%d, total=%d", testCount, testCount, tagged, total)
+	}
+
+	// 验证批量摘标同样能跨批次完整摘除
+	untagTracker := progress.NewJobTracker("test_chunk_untag_01", taskID, "batch_untag", BatchUntagStages)
+	untagged, err := svc.BatchUntagLogs(taskID, tag.ID, model.LogQueryRequestBody{
+		Module:   "TEST",
+		PageSize: 10,
+	}, 0, untagTracker)
+	if err != nil {
+		t.Fatalf("batch untag chunked failed: %v", err)
+	}
+	if untagged != testCount {
+		t.Fatalf("expected untagged=%d, got %d", testCount, untagged)
 	}
 }

@@ -23,8 +23,8 @@ var templateCaptureCache = cache.NewLRUCache[string, *compiledTemplate](512)
 // 知识库模板头部前缀正则，例如 "FWD/4/SESSCTRLEND: " 或 "%%01FWD/4/hwEntityExtCpuUsageNotfication_clear(l): "
 var templateHeaderRegex = regexp.MustCompile(`^(?:%%[0-9a-zA-Z]+\s*)?[\w\-]+/\d+/[\w\-]+(?:\([a-zA-Z]\))?:\s*`)
 
-// 占位符模式：[name], <name>, {name}
-var placeholderPattern = regexp.MustCompile(`\[\s*([a-zA-Z0-9_\-]+)\s*\]|<\s*([a-zA-Z0-9_\-]+)\s*>|\{\s*([a-zA-Z0-9_\-]+)\s*\}`)
+// 占位符模式：[name], <name>, {name}, %s, %d (兼容包含空格的网元变量如 <Peer IP>)
+var placeholderPattern = regexp.MustCompile(`\[\s*([^\[\]]+?)\s*\]|<\s*([^<>]+?)\s*>|\{\s*([^{}]+?)\s*\}|%(s|d)`)
 
 // 最外层括号块匹配
 var parenBlockRegex = regexp.MustCompile(`\(([^()]*(?:\([^()]*\)[^()]*)*)\)`)
@@ -148,7 +148,7 @@ func compileTemplate(template string) *compiledTemplate {
 		matchStart, matchEnd := loc[0], loc[1]
 		// 提取占位符文本中的名称
 		var paramName string
-		for group := 1; group <= 3; group++ {
+		for group := 1; 2*group+1 < len(loc); group++ {
 			gStart, gEnd := loc[2*group], loc[2*group+1]
 			if gStart >= 0 && gEnd >= 0 {
 				paramName = strings.TrimSpace(stripped[gStart:gEnd])

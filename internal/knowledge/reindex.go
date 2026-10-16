@@ -31,6 +31,15 @@ func (s *Service) TryReindex() bool {
 	return reindexRWMu.TryLock()
 }
 
+// IsReindexing 检查当前是否已有正在运行的重建索引或导入任务
+func (s *Service) IsReindexing() bool {
+	if reindexRWMu.TryLock() {
+		reindexRWMu.Unlock()
+		return false
+	}
+	return true
+}
+
 // IsReindexDirty 返回是否存在索引脏标记或 mapping 过期的文档（供前端提示重建）
 func (s *Service) IsReindexDirty() (bool, error) {
 	if s.db == nil {

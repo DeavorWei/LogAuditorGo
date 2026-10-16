@@ -439,7 +439,15 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 						score: BleveWeightRelevance*relevance + BleveWeightVersion*versionFit,
 					})
 				}
-				sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
+				sort.SliceStable(ranked, func(i, j int) bool {
+					if ranked[i].score != ranked[j].score {
+						return ranked[i].score > ranked[j].score
+					}
+					if ranked[i].k != nil && ranked[j].k != nil {
+						return ranked[i].k.ID < ranked[j].k.ID
+					}
+					return false
+				})
 
 				best := ranked[0].k
 				if best != nil {
@@ -601,5 +609,11 @@ func (m *MatchEngine) ClearCache() {
 	}
 	if m.negativeCache != nil {
 		m.negativeCache.Purge()
+	}
+	if m.exactBestCache != nil {
+		m.exactBestCache.Purge()
+	}
+	if m.regexCache != nil {
+		m.regexCache.Purge()
 	}
 }

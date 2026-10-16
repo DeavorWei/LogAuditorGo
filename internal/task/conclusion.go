@@ -110,6 +110,9 @@ func generateMultiDeviceConclusion(
 			span.MinTime.Format("2006-01-02 15:04:05"),
 			span.MaxTime.Format("2006-01-02 15:04:05"),
 			span.Total, totalCrit))
+	} else if span.Total > 0 {
+		sb.WriteString(fmt.Sprintf("共汇聚分析 %d 条日志（其中严重告警级别≤3共 %d 条），但日志内时间戳未包含有效年份或无法对齐时间跨度。\n\n",
+			span.Total, totalCrit))
 	} else {
 		sb.WriteString("暂无时间线日志记录。\n\n")
 	}
