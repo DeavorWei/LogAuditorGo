@@ -75,6 +75,7 @@ func TestEndToEndSystemIntegration(t *testing.T) {
 			t.Fatalf("index knowledge to Bleve failed: %v", err)
 		}
 		t.Logf("E2E: Indexed %d knowledge items into Bleve", len(allKnowledge))
+		matchEngine.Reload()
 	} else {
 		// Mock 知识库条目
 		mockKnowledges := []struct {
@@ -103,6 +104,7 @@ func TestEndToEndSystemIntegration(t *testing.T) {
 			knowList = append(knowList, item)
 		}
 		_ = indexer.IndexKnowledge(knowList)
+		matchEngine.Reload()
 	}
 
 	// 2. 模拟包含真实场景的 Syslog 报文序列
