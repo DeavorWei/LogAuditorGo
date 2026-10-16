@@ -20,6 +20,9 @@ func TestResolveLineContext(t *testing.T) {
 		7: {ID: 7, DeviceType: "AC6508", DeviceVersion: "V200R024C00"},
 		8: {ID: 8, DeviceType: "CloudEngine"},
 		9: {ID: 9, DeviceVersion: "V200R019C00"},
+		// 历史遗留：DeviceType 被旧版本写死为形态分类，应按"型号未配置"处理
+		11: {ID: 11, DeviceType: "Router", DeviceVersion: "V200R019C00"},
+		12: {ID: 12, DeviceType: " switch "},
 	}
 
 	cases := []struct {
@@ -81,6 +84,18 @@ func TestResolveLineContext(t *testing.T) {
 			wantProduct: matcher.NeutralProductName,
 			wantVersion: "V200R019C00",
 		},
+		{
+			name:        "历史遗留 Router 型号 + 可嗅探主机名：视作未配置并恢复真实上下文",
+			rec:         model.LogRecord{DeviceID: 11, Hostname: "AC6508"},
+			wantProduct: "AC6508",
+			wantVersion: "V200R019C00",
+		},
+		{
+			name:        "历史遗留 Switch 型号（含空白）+ 无法嗅探：中性兜底",
+			rec:         model.LogRecord{DeviceID: 12, Hostname: "CORE-SW-01"},
+			wantProduct: matcher.NeutralProductName,
+			wantVersion: "",
+		},
 	}
 
 	for _, tc := range cases {
@@ -91,6 +106,34 @@ func TestResolveLineContext(t *testing.T) {
 					p, v, tc.wantProduct, tc.wantVersion)
 			}
 		})
+	}
+}
+
+// TestNormalizeDeviceProduct 守护"历史形态分类不算型号"的归一规则。
+//
+// 该规则决定存量任务能否在重新分析后自动恢复真实匹配上下文：
+// AutoAssignDevices 旧版本把 device_type 写死为 Router，若不做归一，
+// 这批设备会永远拿不到同型号/同族版本分档（本方案 §9.1 的读路径等价替代）。
+func TestNormalizeDeviceProduct(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"", ""},
+		{"   ", ""},
+		{"Router", ""},
+		{"router", ""},
+		{" switch ", ""},
+		{"FIREWALL", ""},
+		{"Other", ""},
+		{"AC6508", "AC6508"},
+		{"CloudEngine", "CloudEngine"},
+		{" Huawei-VRP ", "Huawei-VRP"},
+	}
+	for _, tc := range cases {
+		if got := normalizeDeviceProduct(tc.in); got != tc.want {
+			t.Fatalf("normalizeDeviceProduct(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 
@@ -154,5 +197,64 @@ func TestPrepareBundles_DeviceContext(t *testing.T) {
 	}
 	if b.deviceID != dev.ID {
 		t.Fatalf("bundle.deviceID = %d, want %d", b.deviceID, dev.ID)
+	}
+}
+
+// TestPrepareBundles_LegacyDeviceTypeRecovered 守护存量设备的上下文自愈：
+// 旧版本把 device_type 写死为 "Router"，这批设备行不做人工订正也应能重新拿到
+// 真实匹配上下文（型号归一为空 → 主机名嗅探接管），否则存量任务的版本分档
+// 将永久停留在跨产品通用档（本方案 §9.1 的意图，此处以无副作用读路径实现）。
+func TestPrepareBundles_LegacyDeviceTypeRecovered(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bundle_legacy_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	const taskID = "bundle-legacy-type-test"
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, taskID)
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(taskID)
+
+	// 预置历史遗留设备：型号是形态分类，主机名才是真实型号信息
+	legacy := model.Device{
+		TaskID:     taskID,
+		DeviceName: "AC6508",
+		DeviceType: "Router",
+		Hostname:   "AC6508",
+	}
+	if err := taskDB.Create(&legacy).Error; err != nil {
+		t.Fatalf("seed legacy device failed: %v", err)
+	}
+
+	content := "Apr 15 2026 14:00:01 AC6508 %%01IFNET/4/IF_DOWN(l)[1]: Interface down.\n"
+	items := []FileUploadItem{{
+		FileName: "ac6508.log",
+		FileSize: int64(len(content)),
+		Content:  content,
+	}}
+
+	svc := &Service{}
+	bundles, _, failed, err := svc.prepareBundles(
+		context.Background(), taskID, 0, items, "overwrite", taskDB,
+		map[string]model.TaskFile{}, map[string]bool{}, nil)
+	if err != nil {
+		t.Fatalf("prepareBundles failed: %v", err)
+	}
+	if len(failed) != 0 {
+		t.Fatalf("unexpected failed files: %v", failed)
+	}
+	if len(bundles) != 1 {
+		t.Fatalf("expected 1 bundle, got %d", len(bundles))
+	}
+
+	b := bundles[0]
+	if b.targetProduct != "AC6508" {
+		t.Fatalf("legacy device must recover real context, got targetProduct=%q, want %q", b.targetProduct, "AC6508")
+	}
+	if b.deviceID != legacy.ID {
+		t.Fatalf("bundle.deviceID = %d, want existing legacy device %d (不得重复建设备)", b.deviceID, legacy.ID)
 	}
 }

@@ -334,7 +334,8 @@ func (s *Service) prepareBundles(
 				fileDevID = dev.ID
 				// 设备行即权威：新建时已写入真实型号；已存在时以库内配置为准。
 				// 不使用 created 标志分流，避免制造第二条决议分支（本方案 §6.1 说明）。
-				targetProduct = strings.TrimSpace(dev.DeviceType)
+				// 历史遗留形态分类（Router/Switch…）视为"型号未配置"，回落主机名嗅探。
+				targetProduct = normalizeDeviceProduct(dev.DeviceType)
 				targetVersion = strings.TrimSpace(dev.DeviceVersion)
 				if targetProduct == "" {
 					targetProduct = inferredProduct

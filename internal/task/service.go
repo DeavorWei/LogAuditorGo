@@ -1572,6 +1572,33 @@ func getOrCreateDevice(taskDB *gorm.DB, taskID, name, hostname, resolvedProduct 
 	return dev, nil
 }
 
+// legacyFormTypeValues 历史遗留的"设备形态分类"取值（小写）。
+//
+// 型号解耦之前，AutoAssignDevices / CreateDevice 会把新建设备的 device_type
+// 硬编码为 "Router"；用户也可能在旧版 UI 里选 Switch / Firewall / Other。
+// 这些取值不携带任何产品族信息，却会被"设备行即权威"当成有效匹配上下文，
+// 使存量任务的版本分档长期停留在跨产品通用档（10 分）。
+var legacyFormTypeValues = map[string]bool{
+	"router":   true,
+	"switch":   true,
+	"firewall": true,
+	"other":    true,
+}
+
+// normalizeDeviceProduct 把设备行上的型号归一为可用于匹配的串。
+//
+// 空白值与历史形态分类一律视为"型号未配置"（返回空串），
+// 由上层继续走"主机名嗅探 → 显式覆盖 → 中性兜底"回退链。
+// 这样存量设备无需人工订正即可重新获得真实的匹配上下文
+// （例如 Hostname=AC6508 的设备会重新按 WLAN 族匹配）。
+func normalizeDeviceProduct(deviceType string) string {
+	v := strings.TrimSpace(deviceType)
+	if v == "" || legacyFormTypeValues[strings.ToLower(v)] {
+		return ""
+	}
+	return v
+}
+
 // resolveLineContext 重分析链路的单行匹配上下文决议（本方案 §4.5）。
 //
 // 优先级：**设备库内属性 > 主机名嗅探 > 调用方显式覆盖 > 中性兜底**。
@@ -1584,7 +1611,7 @@ func resolveLineContext(rec *model.LogRecord, devMap map[uint]model.Device, over
 	product, version := "", ""
 	if rec.DeviceID > 0 {
 		if d, ok := devMap[rec.DeviceID]; ok {
-			product = strings.TrimSpace(d.DeviceType)
+			product = normalizeDeviceProduct(d.DeviceType)
 			version = strings.TrimSpace(d.DeviceVersion)
 		}
 	}
