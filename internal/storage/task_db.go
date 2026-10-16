@@ -105,7 +105,7 @@ type TaskDBPool struct {
 	idleTime  time.Duration
 	entries   map[string]*dbEntry
 	order     *list.List // front = 最近使用
-	initLocks sync.Map   // taskID -> *refLock: 串行化同一任务库的打开与 AutoMigrate，杜绝并发建库冲突
+	initLocks map[string]*refLock // taskID -> *refLock: 串行化同一任务库的打开与 AutoMigrate，在 p.mu 保护下管理
 }
 
 type refLock struct {
@@ -114,21 +114,29 @@ type refLock struct {
 }
 
 func (p *TaskDBPool) acquireInitLock(taskID string) (*refLock, func()) {
-	v, _ := p.initLocks.LoadOrStore(taskID, &refLock{})
-	lock := v.(*refLock)
-	atomic.AddInt32(&lock.refs, 1)
+	p.mu.Lock()
+	lock, ok := p.initLocks[taskID]
+	if !ok {
+		lock = &refLock{}
+		p.initLocks[taskID] = lock
+	}
+	lock.refs++
+	p.mu.Unlock()
+
 	lock.Lock()
 
+	var once sync.Once
 	unlock := func() {
-		lock.Unlock()
-		if atomic.AddInt32(&lock.refs, -1) <= 0 {
+		once.Do(func() {
+			lock.Unlock()
+
 			p.mu.Lock()
-			_, inPool := p.entries[taskID]
-			p.mu.Unlock()
-			if !inPool {
-				p.initLocks.Delete(taskID)
+			lock.refs--
+			if lock.refs <= 0 {
+				delete(p.initLocks, taskID)
 			}
-		}
+			p.mu.Unlock()
+		})
 	}
 	return lock, unlock
 }
@@ -142,10 +150,11 @@ func NewTaskDBPool(maxSize int, idleTimeout time.Duration) *TaskDBPool {
 		idleTimeout = poolIdleTimeout
 	}
 	return &TaskDBPool{
-		maxSize:  maxSize,
-		idleTime: idleTimeout,
-		entries:  make(map[string]*dbEntry),
-		order:    list.New(),
+		maxSize:   maxSize,
+		idleTime:  idleTimeout,
+		entries:   make(map[string]*dbEntry),
+		order:     list.New(),
+		initLocks: make(map[string]*refLock),
 	}
 }
 
@@ -212,6 +221,86 @@ func (p *TaskDBPool) AcquireTaskDB(taskDir string, taskID string) (*gorm.DB, err
 	return db, nil
 }
 
+// AcquireExistingTaskDB 获取已存在的任务库连接，引用计数 +1。
+// 若物理 .db 文件不存在，直接返回 os.ErrNotExist，绝不新建空库文件 (ISSUE-TASK-05)。
+// 调用方必须在使用完毕后调用 ReleaseTaskDB。
+func (p *TaskDBPool) AcquireExistingTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
+	if !isValidTaskID(taskID) {
+		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+
+	dbPath := TaskDBPath(taskDir, taskID)
+
+	p.mu.Lock()
+	if entry, ok := p.entries[taskID]; ok && !entry.closing {
+		// 快速确认物理文件依然存在
+		if _, err := os.Stat(dbPath); err == nil {
+			atomic.AddInt32(&entry.refCount, 1)
+			entry.lastUsed = time.Now()
+			p.order.MoveToFront(entry.elem)
+			p.mu.Unlock()
+			return entry.db, nil
+		}
+		// 物理文件已在磁盘丢失，移出池
+		p.removeLocked(taskID, entry)
+		p.mu.Unlock()
+		p.closeEntry(entry)
+		return nil, fmt.Errorf("task db (%s) not found: %w", dbPath, os.ErrNotExist)
+	}
+	p.mu.Unlock()
+
+	// 未命中缓存：按 taskID 获取互斥锁
+	_, unlockInit := p.acquireInitLock(taskID)
+	defer unlockInit()
+
+	// 获取锁后二次检查池缓存
+	p.mu.Lock()
+	if entry, ok := p.entries[taskID]; ok && !entry.closing {
+		if _, err := os.Stat(dbPath); err == nil {
+			atomic.AddInt32(&entry.refCount, 1)
+			entry.lastUsed = time.Now()
+			p.order.MoveToFront(entry.elem)
+			p.mu.Unlock()
+			return entry.db, nil
+		}
+		p.removeLocked(taskID, entry)
+		p.mu.Unlock()
+		p.closeEntry(entry)
+		return nil, fmt.Errorf("task db (%s) not found: %w", dbPath, os.ErrNotExist)
+	}
+	p.mu.Unlock()
+
+	// 锁内检查物理文件是否存在，彻底杜绝与 Evict/DeleteTaskDB 之间的打开窗口
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, fmt.Errorf("task db (%s) not found: %w", dbPath, os.ErrNotExist)
+	}
+
+	// 严格以 mustExist=true 打开已存在库，带 &mode=rw
+	db, err := openTaskDBWithMode(taskDir, taskID, true)
+	if err != nil {
+		return nil, err
+	}
+
+	p.mu.Lock()
+	if pending, ok := p.entries[taskID]; ok {
+		p.removeLocked(taskID, pending)
+		p.closeEntry(pending)
+	}
+
+	evicted := p.evictIdleLocked()
+
+	entry := &dbEntry{db: db, refCount: 1, lastUsed: time.Now()}
+	entry.elem = p.order.PushFront(taskID)
+	p.entries[taskID] = entry
+	p.mu.Unlock()
+
+	if evicted {
+		p.CleanUnusedInitLocks()
+	}
+
+	return db, nil
+}
+
 // ReleaseTaskDB 归还任务库连接，引用计数 -1 并刷新 LRU 位置。
 // 对未知 taskID 或重复 Release 是安全的（不会把计数减成负数）。
 func (p *TaskDBPool) ReleaseTaskDB(taskID string) {
@@ -258,10 +347,7 @@ func (p *TaskDBPool) EvictTaskDB(taskID string) error {
 
 	// 互斥正在进行中的建库/迁移 (AcquireTaskDB)，防止删库与建库并发导致幽灵连接入池
 	_, unlockInit := p.acquireInitLock(taskID)
-	defer func() {
-		p.initLocks.Delete(taskID)
-		unlockInit()
-	}()
+	defer unlockInit()
 
 	p.mu.Lock()
 	entry, ok := p.entries[taskID]
@@ -308,52 +394,25 @@ func (p *TaskDBPool) CloseAll() {
 		p.removeLocked(id, entry)
 		snapshot = append(snapshot, entry)
 	}
+	p.initLocks = make(map[string]*refLock)
 	p.mu.Unlock()
 
 	for _, entry := range snapshot {
 		p.closeEntry(entry)
 	}
-
-	p.initLocks.Range(func(key, _ any) bool {
-		p.initLocks.Delete(key)
-		return true
-	})
 }
 
-// CleanUnusedInitLocks 扫描并清理已不在池中且当前无竞争的初始化锁
+// CleanUnusedInitLocks 扫描并清理已不在池中且当前无引用的初始化锁
 func (p *TaskDBPool) CleanUnusedInitLocks() {
-	p.initLocks.Range(func(key, value any) bool {
-		taskID, ok := key.(string)
-		if !ok {
-			return true
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for taskID, lock := range p.initLocks {
+		if lock.refs <= 0 {
+			if _, inPool := p.entries[taskID]; !inPool {
+				delete(p.initLocks, taskID)
+			}
 		}
-		lock, ok := value.(*refLock)
-		if !ok {
-			return true
-		}
-
-		if atomic.LoadInt32(&lock.refs) > 0 {
-			return true
-		}
-		if !lock.TryLock() {
-			return true
-		}
-		defer lock.Unlock()
-
-		if atomic.LoadInt32(&lock.refs) > 0 {
-			return true
-		}
-
-		p.mu.Lock()
-		_, inPool := p.entries[taskID]
-		p.mu.Unlock()
-
-		// 不在池中且没有在途竞争，可以安全释放锁对象
-		if !inPool {
-			p.initLocks.Delete(taskID)
-		}
-		return true
-	})
+	}
 }
 
 // Stats 返回当前池的规模快照，便于测试与排障
@@ -453,27 +512,46 @@ func (p *TaskDBPool) closeEntry(entry *dbEntry) {
 // _txlock=immediate 让写事务在 BEGIN 阶段即取写锁：deferred 事务升级写锁时
 // 遇到并发写会立刻返回 SQLITE_BUSY_SNAPSHOT（该错误不触发 busy handler），
 // immediate + busy_timeout 则退化为"排队等待"而非"立即失败"。
-func taskDBDSN(dbPath string) string {
-	return dbPath +
+func taskDBDSN(dbPath string, mustExist bool) string {
+	dsn := dbPath +
 		"?_pragma=busy_timeout(5000)" +
 		"&_pragma=journal_mode(WAL)" +
 		"&_pragma=synchronous(NORMAL)" +
 		"&_pragma=foreign_keys(1)" +
 		"&_pragma=cache_size(-32000)" + // 32MB 页缓存
 		"&_txlock=immediate"
+	if mustExist {
+		dsn += "&mode=rw"
+	}
+	return dsn
 }
 
 // openTaskDB 打开（必要时创建）任务库并施加 SQLite 调优参数与表结构迁移
 func openTaskDB(taskDir string, taskID string) (*gorm.DB, error) {
-	if err := os.MkdirAll(taskDir, 0755); err != nil {
-		return nil, fmt.Errorf("create task dir failed: %w", err)
+	return openTaskDBWithMode(taskDir, taskID, false)
+}
+
+// openTaskDBWithMode 打开任务库。
+// 当 mustExist=true 时，若物理文件不存在直接返回 os.ErrNotExist，且以 mode=rw 打开，绝不新建空库。
+func openTaskDBWithMode(taskDir string, taskID string, mustExist bool) (*gorm.DB, error) {
+	dbPath := TaskDBPath(taskDir, taskID)
+	if mustExist {
+		if _, err := os.Stat(dbPath); err != nil {
+			return nil, fmt.Errorf("task db (%s) not found: %w", dbPath, os.ErrNotExist)
+		}
+	} else {
+		if err := os.MkdirAll(taskDir, 0755); err != nil {
+			return nil, fmt.Errorf("create task dir failed: %w", err)
+		}
 	}
 
-	dbPath := TaskDBPath(taskDir, taskID)
-	db, err := gorm.Open(sqlite.Open(taskDBDSN(dbPath)), &gorm.Config{
+	db, err := gorm.Open(sqlite.Open(taskDBDSN(dbPath, mustExist)), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
+		if mustExist && (errors.Is(err, os.ErrNotExist) || strings.Contains(strings.ToLower(err.Error()), "unable to open database file") || strings.Contains(strings.ToLower(err.Error()), "no such file")) {
+			return nil, fmt.Errorf("open existing task db (%s) failed: %w", dbPath, os.ErrNotExist)
+		}
 		return nil, fmt.Errorf("open task db (%s) failed: %w", dbPath, err)
 	}
 
@@ -670,18 +748,11 @@ func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) 
 
 // GetExistingTaskDB 获取已存在的任务 DB。若物理 .db 文件不存在，直接返回 os.ErrNotExist，绝不新建幽灵库 (ISSUE-TASK-05)
 func GetExistingTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) {
-	if !isValidTaskID(taskID) {
-		return nil, "", fmt.Errorf("invalid task id: %s", taskID)
-	}
-	dbPath := TaskDBPath(taskDir, taskID)
-	if _, err := os.Stat(dbPath); err != nil {
-		return nil, "", fmt.Errorf("task db not found: %w", os.ErrNotExist)
-	}
-	db, err := GlobalPool.AcquireTaskDB(taskDir, taskID)
+	db, err := GlobalPool.AcquireExistingTaskDB(taskDir, taskID)
 	if err != nil {
 		return nil, "", err
 	}
-	return db, dbPath, nil
+	return db, TaskDBPath(taskDir, taskID), nil
 }
 
 // ReleaseTaskDB 归还由 GetOrCreateTaskDB / AcquireTaskDB 获取的连接

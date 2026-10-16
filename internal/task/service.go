@@ -406,9 +406,13 @@ func (s *Service) DeleteTaskFile(taskID string, fileID uint) (*model.TaskInfo, e
 		s.CancelTaskRCA(taskID)
 		_ = taskDB.Where("id > 0").Delete(&model.RCAEvent{}).Error
 		s.updateTaskRCAState(taskID, model.RCAStatusPending, "", nil, 0)
-		s.finalizeTaskInfo(taskDB, &taskInfo, 0, 0, model.TaskStatusPending, "")
+		if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, 0, 0, model.TaskStatusPending, ""); fErr != nil {
+			logger.Log.Errorf("[Task Service] finalizeTaskInfo pending failed: %v", fErr)
+		}
 	} else {
-		s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, "")
+		if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, ""); fErr != nil {
+			logger.Log.Errorf("[Task Service] finalizeTaskInfo completed failed: %v", fErr)
+		}
 		s.MarkRCAQueuedSync(taskID)
 		s.TriggerTaskRCA(taskID, true)
 	}
@@ -495,7 +499,9 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	}
 
 	taskInfo.Status = model.TaskStatusProcessing
-	s.persistTaskInfo(taskDB, &taskInfo)
+	if pErr := s.persistTaskInfo(taskDB, &taskInfo); pErr != nil {
+		logger.Log.Errorf("[Task Service] persistTaskInfo processing failed: %v", pErr)
+	}
 
 	// TASK-01: panic 时除了把任务置为 FAILED，还必须给命名返回值 err 赋值，
 	// 否则调用方会收到 (nil, nil) 并误判为成功。
@@ -505,7 +511,9 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 			logger.Log.Errorf("[Task Service] %s", errStr)
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = errStr
-			s.persistTaskInfo(taskDB, &taskInfo)
+			if pErr := s.persistTaskInfo(taskDB, &taskInfo); pErr != nil {
+				logger.Log.Errorf("[Task Service] persistTaskInfo failed state failed: %v", pErr)
+			}
 			if tr != nil {
 				tr.Fail(fmt.Errorf("%s", errStr), "日志处理异常中断")
 			}
@@ -599,8 +607,10 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	if len(failedFiles) > 0 {
 		errSummary = fmt.Sprintf("部分文件导入失败: %s", strings.Join(failedFiles, "; "))
 	}
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount),
-		model.TaskStatusCompleted, errSummary)
+	if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount),
+		model.TaskStatusCompleted, errSummary); fErr != nil {
+		logger.Log.Errorf("[Task Service] finalizeTaskInfo failed on import completion: %v", fErr)
+	}
 
 	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched",
 		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount)
@@ -2326,7 +2336,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 
 	taskInfo.Status = model.TaskStatusProcessing
 	taskInfo.ErrorMessage = ""
-	s.persistTaskInfo(taskDB, &taskInfo)
+	if pErr := s.persistTaskInfo(taskDB, &taskInfo); pErr != nil {
+		logger.Log.Errorf("[Task Service] persistTaskInfo reanalyze processing failed: %v", pErr)
+	}
 
 	// REANA-02: panic 时置 FAILED 并回填 err，绝不静默返回 (nil, nil)
 	defer func() {
@@ -2335,7 +2347,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			logger.Log.Errorf("[Task Service] %s", errStr)
 			taskInfo.Status = model.TaskStatusFailed
 			taskInfo.ErrorMessage = errStr
-			s.persistTaskInfo(taskDB, &taskInfo)
+			if pErr := s.persistTaskInfo(taskDB, &taskInfo); pErr != nil {
+				logger.Log.Errorf("[Task Service] persistTaskInfo reanalyze failed state failed: %v", pErr)
+			}
 			if tr != nil {
 				tr.Fail(fmt.Errorf("%s", errStr), "重新分析异常中断")
 			}
@@ -2480,7 +2494,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	finalLogCount, finalMatched := recountTaskLogs(taskDB)
 
 	// ---------- 阶段三：收尾 (主流程极速就绪) ----------
-	s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), model.TaskStatusCompleted, "")
+	if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), model.TaskStatusCompleted, ""); fErr != nil {
+		logger.Log.Errorf("[Task Service] finalizeTaskInfo failed on reanalyze completion: %v", fErr)
+	}
 
 	logger.Log.Infof("[Task Service] Reanalyze completed for task %s: %d total logs, %d matched",
 		taskID, taskInfo.LogCount, taskInfo.MatchedCount)

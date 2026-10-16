@@ -114,31 +114,49 @@ func SanitizeLogLine(s string) string {
 }
 
 var (
-	// 匹配命令行及正文中明文口令、密文与 Community
-	credCmdRegex = regexp.MustCompile(`(?i)\b(password\s+(?:simple|cipher)|password|cipher|community\s+(?:read|write|simple|cipher)|shared-key\s+(?:simple|cipher)|pre-shared-key\s+(?:simple|cipher)?)\s+([^\s,;]+)`)
-	// 匹配键值对参数中的口令
-	credKVRegex = regexp.MustCompile(`(?i)\b(pass(?:word)?|pwd|secret|token|key|shared-key|pre-shared-key)\s*=\s*([^,;\s\)]+)`)
+	// 匹配华为特征密文字符串 (前缀 %^%#，后缀 %^# 或 %^%#)
+	huaweiCipherRegex = regexp.MustCompile(`%\x5e%#[^\s,;]+?%\x5e%?#`)
+
+	// 匹配命令行及正文中明文口令、密文与 Community (含 irreversible-cipher 与多修饰词组合)
+	credCmdRegex = regexp.MustCompile(`(?i)\b(password(?:\s+(?:simple|cipher|irreversible-cipher))?|(?:snmp(?:-agent)?\s+)?community(?:\s+(?:read|write))?(?:\s+(?:simple|cipher))?|shared-key(?:\s+(?:simple|cipher))?|pre-shared-key(?:\s+(?:simple|cipher))?)\s+(\S+)`)
+
+	// 匹配 JSON 报文中的敏感凭据
+	credJSONRegex = regexp.MustCompile(`(?i)"(pass(?:word)?|pwd|secret|token|community|shared[_-]?key|pre[_-]?shared[_-]?key|api[_-]?key|auth[_-]?key)"\s*:\s*"([^"]*)"`)
+
+	// 匹配键值对参数中的口令 (避免宽泛裸 key= 误伤正常网络参数如 key=10)
+	credKVRegex = regexp.MustCompile(`(?i)\b(pass(?:word)?|pwd|secret|token|shared[_-]?key|pre[_-]?shared[_-]?key|api[_-]?key|auth[_-]?key)\s*=\s*([^,;\s\)]+)`)
 )
 
-// MaskSensitiveCredentials 对日志中暴露的密码、密文散列与只读/读写共同体进行脱敏遮盖 (ISSUE-LOG-01)
+// MaskSensitiveCredentials 对日志中暴露的密码、密文散列与只读/读写共同体进行脱敏遮盖 (ISSUE-LOG-01 / N1)
 func MaskSensitiveCredentials(s string) string {
 	lower := strings.ToLower(s)
 	if strings.IndexByte(s, '=') == -1 &&
+		strings.IndexByte(s, ':') == -1 &&
+		!strings.Contains(s, "%^%#") &&
 		!strings.Contains(lower, "password") &&
 		!strings.Contains(lower, "cipher") &&
 		!strings.Contains(lower, "community") &&
-		!strings.Contains(lower, "key") &&
 		!strings.Contains(lower, "secret") &&
 		!strings.Contains(lower, "token") {
 		return s
 	}
 
-	s = credKVRegex.ReplaceAllString(s, "$1=******")
+	// 1. JSON 结构脱敏
+	if strings.IndexByte(s, '{') != -1 && strings.IndexByte(s, ':') != -1 {
+		s = credJSONRegex.ReplaceAllString(s, `"$1":"******"`)
+	}
 
+	// 2. 键值对参数脱敏
+	if strings.IndexByte(s, '=') != -1 {
+		s = credKVRegex.ReplaceAllString(s, "$1=******")
+	}
+
+	// 3. 命令行与前缀链命令脱敏
 	s = credCmdRegex.ReplaceAllStringFunc(s, func(m string) string {
 		parts := strings.Fields(m)
 		if len(parts) >= 2 {
 			last := strings.ToLower(parts[len(parts)-1])
+			// 排除纯描述性状态谓词
 			if last == "error" || last == "failed" || last == "mismatch" || last == "invalid" ||
 				last == "expired" || last == "changed" || last == "policy" || last == "required" {
 				return m
@@ -148,6 +166,11 @@ func MaskSensitiveCredentials(s string) string {
 		}
 		return m
 	})
+
+	// 4. 特征密文兜底脱敏 (如独立出现或未被前置规则遮盖的 %^%#...%^#)
+	if strings.Contains(s, "%^%#") {
+		s = huaweiCipherRegex.ReplaceAllString(s, "******")
+	}
 
 	return s
 }

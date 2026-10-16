@@ -177,6 +177,36 @@ func TestMaskSensitiveCredentials(t *testing.T) {
 			input:    "%%01BGP/4/BGP_AUTH_FAILED: md5 password error",
 			expected: "%%01BGP/4/BGP_AUTH_FAILED: md5 password error",
 		},
+		{
+			name:     "SNMP community read cipher with huawei cipher text",
+			input:    "snmp-agent community read cipher %^%#snmp%^#",
+			expected: "snmp-agent community read cipher ******",
+		},
+		{
+			name:     "Local user password irreversible-cipher with huawei cipher text",
+			input:    "local-user admin password irreversible-cipher %^%#abcd%^#",
+			expected: "local-user admin password irreversible-cipher ******",
+		},
+		{
+			name:     "Bare community public",
+			input:    "community public",
+			expected: "community ******",
+		},
+		{
+			name:     "JSON format credentials",
+			input:    `{"username":"admin","password":"Admin@123","token":"abc"}`,
+			expected: `{"username":"admin","password":"******","token":"******"}`,
+		},
+		{
+			name:     "Non-credential key=10 must not be falsely masked",
+			input:    "interface GigabitEthernet0/0/1 key=10",
+			expected: "interface GigabitEthernet0/0/1 key=10",
+		},
+		{
+			name:     "Standalone Huawei cipher text",
+			input:    "alarm data %^%#12345678%^# details",
+			expected: "alarm data ****** details",
+		},
 	}
 
 	for _, tt := range tests {

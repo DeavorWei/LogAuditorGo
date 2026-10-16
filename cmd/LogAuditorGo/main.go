@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -144,15 +145,25 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
+	// 显式先执行 TCP 监听，确保端口绑定成功后再触发就绪信号与托盘通知 (N2 / ISSUE-CMD-03)
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Errorf("HTTP server listen error on %s: %v", addr, err)
+		os.Exit(1)
+	}
+
 	serverErrCh := make(chan error, 1)
 	readyCh := make(chan struct{})
+	close(readyCh)
+	log.Infof("Server listening on http://%s", addr)
+
+	notifyCtx, notifyCancel := context.WithCancel(context.Background())
+	defer notifyCancel()
+
 	go func() {
-		log.Infof("Server listening on http://%s", addr)
-		close(readyCh)
-		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Errorf("HTTP server listen error: %v", err)
+		if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Errorf("HTTP server serve error: %v", err)
 			serverErrCh <- err
-			// 通知主流程进入优雅关闭，而不是直接 Fatal 退出
 			select {
 			case quit <- syscall.SIGTERM:
 			default:
@@ -187,21 +198,20 @@ func main() {
 			}
 		}()
 
-		// 启动就绪后延迟弹出 Windows 原生气泡通知（CMD-03: 等待服务真正就绪）
+		// 启动就绪后延迟弹出 Windows 原生气泡通知（使用独立 notifyCtx，杜绝抢占 quit 退出信号）
 		go func() {
 			select {
 			case <-readyCh:
-				time.Sleep(300 * time.Millisecond)
 				select {
-				case <-quit:
-					return
-				default:
+				case <-time.After(300 * time.Millisecond):
 					systemTray.ShowNotification(
 						"LogAuditorGo 服务已就绪",
 						fmt.Sprintf("日志审计系统正在后台运行 (地址: %s)\n点击托盘图标可快速打开控制台", addr),
 					)
+				case <-notifyCtx.Done():
+					return
 				}
-			case <-quit:
+			case <-notifyCtx.Done():
 				return
 			}
 		}()
@@ -209,6 +219,7 @@ func main() {
 
 	// 8. 等待终止信号（或 HTTP 启动失败）
 	sig := <-quit
+	notifyCancel()
 	log.Infof("Shutting down server gracefully (signal: %v)...", sig)
 
 	// 退出时安全卸载托盘图标
