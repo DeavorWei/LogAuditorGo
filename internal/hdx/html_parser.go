@@ -16,7 +16,7 @@ import (
 )
 
 var whitespaceRegex = regexp.MustCompile(`\s+`)
-var validTitleRegex = regexp.MustCompile(`^[A-Za-z0-9_]+/[1-8]/[A-Za-z0-9_\-]+$`)
+var validTitleRegex = regexp.MustCompile(`^[A-Za-z0-9_]+/[0-8]/[A-Za-z0-9_\-]+$`)
 
 // CleanText 去除多余空白与换行
 func CleanText(s string) string {

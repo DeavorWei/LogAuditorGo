@@ -995,6 +995,10 @@ func (s *Service) clearDocumentIndexDirty(doc *model.Document) {
 // importSingleDocUnlocked 执行单个 HDX 文档包（目录或压缩包内文档根）的解析与入库
 // 内部调用，自动获取文档级细粒度锁
 func (s *Service) importSingleDocUnlocked(src hdx.DocSource, conflictMode string, tr *progress.JobTracker) (stats *ImportStats, err error) {
+	// ISSUE-SRCH-02: 导入期间持有读锁，互斥索引重建排他写锁，防止写入老索引被替换抹除
+	reindexRWMu.RLock()
+	defer reindexRWMu.RUnlock()
+
 	// 锁 key 用来源唯一 ID：压缩包场景为 "绝对路径::包内文档根"，目录场景为绝对路径
 	docMu := s.getDocLock(src.ID())
 	docMu.Lock()
@@ -1131,6 +1135,10 @@ func (s *Service) GetKnowledgeMapByIDs(ids []uint) (map[uint]*model.Knowledge, e
 // 先删索引、后删 DB；任一步失败都向上返回并提示可重建索引自愈。
 // DeleteDocuments 批量删除指定的多个文档及其版本映射，并级联清理孤儿知识条目与 Bleve 索引
 func (s *Service) DeleteDocuments(docIDs []uint) (int, error) {
+	// ISSUE-SRCH-02: 删除期间持有读锁，互斥索引重建排他写锁
+	reindexRWMu.RLock()
+	defer reindexRWMu.RUnlock()
+
 	if s.db == nil {
 		return 0, fmt.Errorf("knowledge db is not initialized")
 	}

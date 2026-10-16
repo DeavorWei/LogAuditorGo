@@ -7,11 +7,24 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"golang.org/x/text/encoding"
+	"golang.org/x/text/encoding/htmlindex"
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
 )
 
+var gbkEncoding encoding.Encoding
+
+func init() {
+	var err error
+	gbkEncoding, err = htmlindex.Get("gb18030")
+	if err != nil {
+		gbkEncoding = simplifiedchinese.GB18030
+	}
+}
+
 // DecodeGBK 将 GBK/GB2312/GB18030 编码的字节数组转为 UTF-8 字符串
+// 遇非法或截断字节使用 \uFFFD 容错替代，避免整体报错乱码
 func DecodeGBK(src []byte) (string, error) {
 	if len(src) == 0 {
 		return "", nil
@@ -19,7 +32,7 @@ func DecodeGBK(src []byte) (string, error) {
 	if utf8.Valid(src) {
 		return string(src), nil
 	}
-	reader := transform.NewReader(bytes.NewReader(src), simplifiedchinese.GB18030.NewDecoder())
+	reader := transform.NewReader(bytes.NewReader(src), gbkEncoding.NewDecoder())
 	d, err := io.ReadAll(reader)
 	if err != nil {
 		return string(src), err
@@ -28,6 +41,7 @@ func DecodeGBK(src []byte) (string, error) {
 }
 
 // DecodeGBKBytes 将 GBK/GB2312/GB18030 字节转为 UTF-8 字节
+// 遇非法或截断字节使用 \uFFFD 容错替代，避免整体报错乱码
 func DecodeGBKBytes(src []byte) ([]byte, error) {
 	if len(src) == 0 {
 		return []byte{}, nil
@@ -35,7 +49,7 @@ func DecodeGBKBytes(src []byte) ([]byte, error) {
 	if utf8.Valid(src) {
 		return src, nil
 	}
-	reader := transform.NewReader(bytes.NewReader(src), simplifiedchinese.GB18030.NewDecoder())
+	reader := transform.NewReader(bytes.NewReader(src), gbkEncoding.NewDecoder())
 	d, err := io.ReadAll(reader)
 	if err != nil {
 		return src, err
@@ -47,7 +61,7 @@ func DecodeGBKBytes(src []byte) ([]byte, error) {
 func XMLCharsetReader(charset string, input io.Reader) (io.Reader, error) {
 	switch strings.ToLower(strings.TrimSpace(charset)) {
 	case "gbk", "gb2312", "gb18030", "windows-936", "cp936":
-		return transform.NewReader(input, simplifiedchinese.GB18030.NewDecoder()), nil
+		return transform.NewReader(input, gbkEncoding.NewDecoder()), nil
 	case "utf-8", "utf8", "":
 		return input, nil
 	default:

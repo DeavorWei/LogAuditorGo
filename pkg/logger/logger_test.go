@@ -313,3 +313,52 @@ func TestRotatingFileWriter_ConcurrentCleanOldLogs(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// TestRotatingFileWriter_StartupRenameFail_FallbackAppend 验证 ISSUE-LOG-05:
+// 当启动时重命名归档失败（如文件被锁定占用），严禁以 O_TRUNC 清空历史崩溃日志，必须降级为 O_APPEND 保留
+func TestRotatingFileWriter_StartupRenameFail_FallbackAppend(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "logger_test_lock_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	activeLogPath := filepath.Join(tempDir, DefaultLogFileName)
+	crashLog := []byte("FATAL CRASH LOG RECORD THAT MUST NOT BE TRUNCATED\n")
+	if err := os.WriteFile(activeLogPath, crashLog, 0644); err != nil {
+		t.Fatalf("write crash log failed: %v", err)
+	}
+
+	// 在 Windows 上以读写排他方式打开文件，导致后续 os.Rename 失败
+	lockFile, err := os.OpenFile(activeLogPath, os.O_RDWR, 0644)
+	if err != nil {
+		t.Fatalf("open lock file failed: %v", err)
+	}
+
+	// 启动 NewRotatingFileWriter，此时 os.Rename 将失败，应降级为 O_APPEND
+	w, err := NewRotatingFileWriter(tempDir, 1024, 180)
+	_ = lockFile.Close() // 释放锁句柄
+	if err != nil {
+		t.Fatalf("NewRotatingFileWriter should succeed even if rename fails: %v", err)
+	}
+
+	// 写入新日志
+	newMsg := []byte("new run message\n")
+	if _, err := w.Write(newMsg); err != nil {
+		t.Fatalf("write new message failed: %v", err)
+	}
+	_ = w.Close()
+
+	// 验证旧崩溃记录没有被 O_TRUNC 抹除，新内容追加在末尾
+	finalContent, err := os.ReadFile(activeLogPath)
+	if err != nil {
+		t.Fatalf("read final content failed: %v", err)
+	}
+	if !strings.Contains(string(finalContent), "FATAL CRASH LOG RECORD") {
+		t.Fatalf("CRITICAL: old crash log was wiped! content: %s", string(finalContent))
+	}
+	if !strings.Contains(string(finalContent), "new run message") {
+		t.Fatalf("new message was not written! content: %s", string(finalContent))
+	}
+}
+

@@ -128,19 +128,31 @@ func NewRotatingFileWriter(dir string, maxSizeMB, maxDays int) (*RotatingFileWri
 
 	// 规则 1 & 2: 程序每次启动时，若存在上次程序运行产生的 log.log，将其改名为该文件上次修改时间，并生成独立的空白 log.log
 	activePath := filepath.Join(w.dir, w.filename)
+	openFlags := os.O_CREATE | os.O_WRONLY
+	var initialSize int64
+
 	if info, err := os.Stat(activePath); err == nil && !info.IsDir() {
 		archiveName := resolveCollision(w.dir, FormatArchiveName(info.ModTime()))
 		archivePath := filepath.Join(w.dir, archiveName)
-		_ = os.Rename(activePath, archivePath)
+		if renameErr := os.Rename(activePath, archivePath); renameErr != nil {
+			// 审计修复 ISSUE-LOG-05: 重命名失败时严禁使用 O_TRUNC 抹除历史崩溃日志，降级为追加模式并保留旧日志
+			fmt.Fprintf(os.Stderr, "[Logger Warning] failed to archive old log file %s: %v, falling back to append mode\n", activePath, renameErr)
+			openFlags |= os.O_APPEND
+			initialSize = info.Size()
+		} else {
+			openFlags |= os.O_TRUNC
+		}
+	} else {
+		openFlags |= os.O_TRUNC
 	}
 
-	// 创建全新的空白 log.log
-	file, err := os.OpenFile(activePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// 打开日志文件
+	file, err := os.OpenFile(activePath, openFlags, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s failed: %w", activePath, err)
 	}
 	w.file = file
-	w.currentSize = 0
+	w.currentSize = initialSize
 	w.cleanTrigger = make(chan struct{}, 1)
 	w.cleanDone = make(chan struct{})
 

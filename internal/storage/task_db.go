@@ -105,12 +105,32 @@ type TaskDBPool struct {
 	idleTime  time.Duration
 	entries   map[string]*dbEntry
 	order     *list.List // front = 最近使用
-	initLocks sync.Map   // taskID -> *sync.Mutex: 串行化同一任务库的打开与 AutoMigrate，杜绝并发建库冲突
+	initLocks sync.Map   // taskID -> *refLock: 串行化同一任务库的打开与 AutoMigrate，杜绝并发建库冲突
 }
 
-func (p *TaskDBPool) getInitLock(taskID string) *sync.Mutex {
-	actual, _ := p.initLocks.LoadOrStore(taskID, &sync.Mutex{})
-	return actual.(*sync.Mutex)
+type refLock struct {
+	sync.Mutex
+	refs int32
+}
+
+func (p *TaskDBPool) acquireInitLock(taskID string) (*refLock, func()) {
+	v, _ := p.initLocks.LoadOrStore(taskID, &refLock{})
+	lock := v.(*refLock)
+	atomic.AddInt32(&lock.refs, 1)
+	lock.Lock()
+
+	unlock := func() {
+		lock.Unlock()
+		if atomic.AddInt32(&lock.refs, -1) <= 0 {
+			p.mu.Lock()
+			_, inPool := p.entries[taskID]
+			p.mu.Unlock()
+			if !inPool {
+				p.initLocks.Delete(taskID)
+			}
+		}
+	}
+	return lock, unlock
 }
 
 // NewTaskDBPool 创建任务库连接池
@@ -150,9 +170,8 @@ func (p *TaskDBPool) AcquireTaskDB(taskDir string, taskID string) (*gorm.DB, err
 	p.mu.Unlock()
 
 	// 未命中缓存：按 taskID 获取互斥锁，确保同一任务库在任何时刻只有一个 goroutine 执行 openTaskDB / AutoMigrate
-	initLock := p.getInitLock(taskID)
-	initLock.Lock()
-	defer initLock.Unlock()
+	_, unlockInit := p.acquireInitLock(taskID)
+	defer unlockInit()
 
 	// 获取锁后进行二次检查（排在前方的并发 goroutine 可能已经完成初始化并入池）
 	p.mu.Lock()
@@ -199,25 +218,30 @@ func (p *TaskDBPool) ReleaseTaskDB(taskID string) {
 	if !isValidTaskID(taskID) {
 		return
 	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	var entryToClose *dbEntry
 
+	p.mu.Lock()
 	entry, ok := p.entries[taskID]
-	if !ok {
-		return
+	if ok {
+		entry.lastUsed = time.Now()
+		if entry.elem != nil {
+			p.order.MoveToFront(entry.elem)
+		}
+		curRef := atomic.AddInt32(&entry.refCount, -1)
+		if curRef < 0 {
+			atomic.StoreInt32(&entry.refCount, 0)
+			curRef = 0
+		}
+		if entry.closing && curRef <= 0 {
+			p.removeLocked(taskID, entry)
+			entryToClose = entry
+		}
 	}
-	entry.lastUsed = time.Now()
-	if entry.elem != nil {
-		p.order.MoveToFront(entry.elem)
-	}
-	curRef := atomic.AddInt32(&entry.refCount, -1)
-	if curRef < 0 {
-		atomic.StoreInt32(&entry.refCount, 0)
-		curRef = 0
-	}
-	if entry.closing && curRef <= 0 {
-		p.removeLocked(taskID, entry)
-		p.closeEntry(entry)
+	p.mu.Unlock()
+
+	// STOR-02: 移出锁外执行耗时的 I/O 与连接关闭，避免阻塞其他任务连接获取
+	if entryToClose != nil {
+		p.closeEntry(entryToClose)
 	}
 }
 
@@ -233,11 +257,10 @@ func (p *TaskDBPool) EvictTaskDB(taskID string) error {
 	}
 
 	// 互斥正在进行中的建库/迁移 (AcquireTaskDB)，防止删库与建库并发导致幽灵连接入池
-	initLock := p.getInitLock(taskID)
-	initLock.Lock()
+	_, unlockInit := p.acquireInitLock(taskID)
 	defer func() {
 		p.initLocks.Delete(taskID)
-		initLock.Unlock()
+		unlockInit()
 	}()
 
 	p.mu.Lock()
@@ -304,16 +327,22 @@ func (p *TaskDBPool) CleanUnusedInitLocks() {
 		if !ok {
 			return true
 		}
-		lock, ok := value.(*sync.Mutex)
+		lock, ok := value.(*refLock)
 		if !ok {
 			return true
 		}
 
-		// 若当前有协程持有该锁（TryLock 失败），说明正在建库或驱逐中，跳过
+		if atomic.LoadInt32(&lock.refs) > 0 {
+			return true
+		}
 		if !lock.TryLock() {
 			return true
 		}
 		defer lock.Unlock()
+
+		if atomic.LoadInt32(&lock.refs) > 0 {
+			return true
+		}
 
 		p.mu.Lock()
 		_, inPool := p.entries[taskID]
@@ -407,6 +436,8 @@ func (p *TaskDBPool) closeEntry(entry *dbEntry) {
 	if err != nil {
 		return
 	}
+	// 先执行 WAL 截断归档合并，释放 -shm 共享内存映射 (STOR-03)
+	_, _ = sqlDB.Exec("PRAGMA wal_checkpoint(TRUNCATE);")
 	if err := sqlDB.Close(); err != nil {
 		logger.Log.Warnf("[TaskDBPool] close task sql.DB failed: %v", err)
 	}
@@ -663,18 +694,23 @@ func DeleteTaskDBFiles(taskDir string, taskID string) error {
 		return fmt.Errorf("invalid task id: %s", taskID)
 	}
 	dbPath := TaskDBPath(taskDir, taskID)
-	_ = os.Remove(dbPath + "-wal")
-	_ = os.Remove(dbPath + "-shm")
+	targets := []string{dbPath + "-wal", dbPath + "-shm", dbPath}
 
 	var lastErr error
-	for i := 0; i < 10; i++ {
-		lastErr = os.Remove(dbPath)
-		if lastErr == nil || os.IsNotExist(lastErr) {
-			return nil
+	for _, target := range targets {
+		for i := 0; i < 15; i++ {
+			err := os.Remove(target)
+			if err == nil || os.IsNotExist(err) {
+				break
+			}
+			lastErr = err
+			time.Sleep(25 * time.Millisecond)
 		}
-		time.Sleep(25 * time.Millisecond)
 	}
-	return fmt.Errorf("remove task db file (%s) failed: %w", dbPath, lastErr)
+	if _, err := os.Stat(dbPath); err == nil {
+		return fmt.Errorf("remove task db file (%s) failed: %w", dbPath, lastErr)
+	}
+	return nil
 }
 
 // DeleteTaskDB 强制驱逐连接并删除任务数据库物理文件

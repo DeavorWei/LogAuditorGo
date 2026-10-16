@@ -19,14 +19,16 @@ var ReindexStages = []progress.StageDef{
 	{Key: "COMPLETE", Name: "重建完成"},
 }
 
-// reindexMu 保证同一时刻只有一个重建任务在执行。
-// Bleve 索引目录无法并发读写，且重建期间应考虑禁止并发导入。
-var reindexMu sync.Mutex
+// reindexRWMu 保证索引重建与增量导入/删除之间的读写互斥 (ISSUE-SRCH-02)。
+// 重建索引（RebuildIndex）作为写者，持有排他写锁 Lock()；
+// 增量导入与文档删除作为读者，持有共享读锁 RLock()。
+// 彻底杜绝重建期间写入老索引导致数据被覆盖抹除的竞态。
+var reindexRWMu sync.RWMutex
 
 // TryReindex 尝试以非阻塞方式启动一次重建（供后台 goroutine 使用）。
-// 已有重建在跑时直接返回 false。
+// 已有重建在跑或正在导入时直接返回 false。
 func (s *Service) TryReindex() bool {
-	return reindexMu.TryLock()
+	return reindexRWMu.TryLock()
 }
 
 // IsReindexDirty 返回是否存在索引脏标记或 mapping 过期的文档（供前端提示重建）
@@ -66,10 +68,10 @@ func (s *Service) RebuildIndex(tr *progress.JobTracker) (retErr error) {
 		return fmt.Errorf("knowledge db is not initialized")
 	}
 
-	if !reindexMu.TryLock() {
-		return fmt.Errorf("another reindex job is already running")
+	if !reindexRWMu.TryLock() {
+		return fmt.Errorf("another reindex job or document import is already running")
 	}
-	defer reindexMu.Unlock()
+	defer reindexRWMu.Unlock()
 
 	start := time.Now()
 

@@ -210,16 +210,14 @@ func (m *MatchEngine) loadIndexLocked() {
 		m.moduleMap = newModule
 		m.idMap = newID
 		m.templateBuckets = newBuckets
-		if len(list) > 0 {
-			m.loaded = true
-		}
+		m.loaded = true
 		logger.Log.Debugf("[Matcher] In-memory knowledge index loaded: %d items", len(list))
 	}
 }
 
 func (m *MatchEngine) ensureIndex() {
 	m.indexMu.RLock()
-	if m.loaded && len(m.idMap) > 0 {
+	if m.loaded {
 		m.indexMu.RUnlock()
 		return
 	}
@@ -227,7 +225,7 @@ func (m *MatchEngine) ensureIndex() {
 
 	m.indexMu.Lock()
 	defer m.indexMu.Unlock()
-	if !m.loaded || len(m.idMap) == 0 {
+	if !m.loaded {
 		m.loadIndexLocked()
 	}
 }
@@ -326,15 +324,8 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	}
 
 	// ---------------- Tier 2: MNEMONIC 助记符别名/前后缀匹配 ----------------
-	// 闭环 P1-1: Tier2 的候选召回与选优仅依赖 (module, brief词干, product, version, isWireless, isWired)，
-	// 与具体日志正文和严重级别解耦，置信度恒为 ConfidenceMnemonic。
-	// 若 Tier1 未短路拦截，进入 Tier2 前先查 exactBestKey 跨正文复用，杜绝海量不同正文重复遍历全模块候选集与选优打分！
-	if m.cache != nil {
-		if item, exists := m.cache.Get(exactBestKey); exists && item != nil && item.tier == TierMnemonic {
-			return item.k, item.tier, item.conf
-		}
-	}
-
+	// 审计修复 ISSUE-MAT-02: Tier 2 选优过程依赖正文特征（无线/有线），
+	// 故严禁使用不含正文哈希的 exactBestKey 跨正文复用，统一在命中后写入 bodyKey。
 	// PARSE-13: 统一转大写后剥离状态后缀，并对互斥极性后缀建立黑名单
 	logStem, logPol := mnemonicStem(brief)
 	if logStem != "" {
@@ -347,7 +338,6 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 					if polarityAllowed(logPol, candPol) {
 						if m.cache != nil {
 							item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
-							m.cache.Put(exactBestKey, item)
 							m.cache.Put(bodyKey, item)
 						}
 						return best, TierMnemonic, ConfidenceMnemonic
@@ -375,7 +365,6 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				if best != nil {
 					if m.cache != nil {
 						item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
-						m.cache.Put(exactBestKey, item)
 						m.cache.Put(bodyKey, item)
 					}
 					return best, TierMnemonic, ConfidenceMnemonic

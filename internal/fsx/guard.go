@@ -3,6 +3,7 @@ package fsx
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -33,7 +34,11 @@ func NewSecurePathGuard(roots []string) *SecurePathGuard {
 		if err != nil {
 			continue
 		}
-		cleaned = append(cleaned, filepath.Clean(abs))
+		clean := filepath.Clean(abs)
+		if realRoot, err := filepath.EvalSymlinks(clean); err == nil {
+			clean = filepath.Clean(realRoot)
+		}
+		cleaned = append(cleaned, clean)
 	}
 	return &SecurePathGuard{roots: cleaned}
 }
@@ -63,8 +68,18 @@ func (g *SecurePathGuard) Validate(path string) error {
 	if err != nil {
 		return fmt.Errorf("invalid path %q: %w", path, err)
 	}
+
+	// FSX-01: 解析软链接与 Junction 获取底层真实物理路径 (CWE-59 防御)
+	if realTarget, err := filepath.EvalSymlinks(target); err == nil {
+		target = filepath.Clean(realTarget)
+	}
+
 	for _, root := range g.roots {
-		if isWithin(root, target) {
+		evalRoot := root
+		if realRoot, err := filepath.EvalSymlinks(root); err == nil {
+			evalRoot = filepath.Clean(realRoot)
+		}
+		if isWithin(evalRoot, target) {
 			return nil
 		}
 	}
@@ -100,8 +115,13 @@ func isWithin(root, target string) bool {
 	if root == "" || target == "" {
 		return false
 	}
+	r, t := root, target
+	if runtime.GOOS == "windows" {
+		r = strings.ToLower(r)
+		t = strings.ToLower(t)
+	}
 	// Windows 上盘符大小写不敏感，统一按小写比较以保证行为一致
-	rel, err := filepath.Rel(root, target)
+	rel, err := filepath.Rel(r, t)
 	if err != nil {
 		return false
 	}

@@ -409,6 +409,7 @@ func (s *Service) DeleteTaskFile(taskID string, fileID uint) (*model.TaskInfo, e
 		s.finalizeTaskInfo(taskDB, &taskInfo, 0, 0, model.TaskStatusPending, "")
 	} else {
 		s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, "")
+		s.MarkRCAQueuedSync(taskID)
 		s.TriggerTaskRCA(taskID, true)
 	}
 
@@ -614,6 +615,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	}
 
 	// ---------- 异步派发 RCA Worker ----------
+	s.MarkRCAQueuedSync(taskID)
 	s.TriggerTaskRCA(taskID, false)
 
 	return &taskInfo, nil
@@ -2492,6 +2494,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	}
 
 	// ---------- 异步派发 RCA Worker (强制重新分析) ----------
+	s.MarkRCAQueuedSync(taskID)
 	s.TriggerTaskRCA(taskID, true)
 
 	// 闭环 P3-1: 重新从 globalDB 查询最新的 taskInfo，确保返回给调用方的任务属性（如并发更新的设备类型、版本等）为最新权威状态

@@ -485,18 +485,19 @@ func (ix *invertedIndex) keyOf(module, brief string) string {
 
 // rangeOf 返回 key 对应下标数组中，时间戳落在 (after, before] 且下标在 [lo, hi) 内的区间。
 // 下标数组本身按时间升序，因此可用两次二分定位，整体复杂度 O(log n + 命中数)。
-func (ix *invertedIndex) rangeOf(key string, lo, hi int, after, before time.Time) (int, int) {
+// RCA-01: 同秒事件判定严格要求下游事件 ID 大于当前事件自身 minID，杜绝同秒因果倒置。
+func (ix *invertedIndex) rangeOf(key string, lo, hi int, after time.Time, minID uint, before time.Time) (int, int) {
 	idxList, ok := ix.byKey[key]
 	if !ok || lo >= hi {
 		return 0, 0
 	}
 	// 第一个下标 >= lo 的元素
 	start := sort.Search(len(idxList), func(m int) bool { return idxList[m] >= lo })
-	// 第一个时间戳 > after 的元素（严格大于，杜绝同秒因果倒置，RCA-12）
+	// 第一个时间戳 > after 的元素（若同秒则严格要求 ID > minID，杜绝同秒因果倒置）
 	start2 := sort.Search(len(idxList), func(m int) bool {
 		t := ix.logs[idxList[m]].Timestamp
 		if t.Equal(after) {
-			return ix.logs[idxList[m]].ID > ix.logs[lo].ID
+			return ix.logs[idxList[m]].ID > minID
 		}
 		return t.After(after)
 	})
@@ -824,7 +825,7 @@ func (e *Engine) propagate(
 			for _, brf := range edge.toBrf.keywords {
 				for _, mod := range edge.toMod.keywords {
 					key := ix.keyOf(mod, brf)
-					start, end := ix.rangeOf(key, lo, hi, curr.Timestamp, endTime)
+					start, end := ix.rangeOf(key, lo, hi, curr.Timestamp, curr.ID, endTime)
 					for m := start; m < end; m++ {
 						if m%50 == 0 {
 							select {

@@ -202,7 +202,7 @@ func traverseTopic(topic RawTopic, parentChain []string, naviDir string, depth i
 		item.Module = module
 
 		sev, err := strconv.Atoi(strings.TrimSpace(parts[1]))
-		if err != nil || sev < 1 || sev > 8 {
+		if err != nil || sev < 0 || sev > 8 {
 			// 非法日志级别，直接跳过非标准叶子节点
 			return
 		}

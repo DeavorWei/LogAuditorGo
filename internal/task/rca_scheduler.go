@@ -571,6 +571,42 @@ func (s *Service) ExecuteRCAPipelineForTest(ctx context.Context, taskID string) 
 	s.executeRCAPipeline(ctx, taskID, dummyInst)
 }
 
+// RecoverDanglingTasks 启动自愈：扫描全局库中处于 PROCESSING 的任务，
+// 统一自愈为 FAILED，避免服务重启后导入/重分析中的任务永久悬挂 (ISSUE-TASK-07)
+func (s *Service) RecoverDanglingTasks() error {
+	if s.globalDB == nil {
+		return nil
+	}
+	var dangling []model.TaskInfo
+	if err := s.globalDB.Where("status = ?", model.TaskStatusProcessing).Find(&dangling).Error; err != nil {
+		return err
+	}
+	if len(dangling) == 0 {
+		return nil
+	}
+
+	errMsg := "服务异常中断或重启，任务未完成，请重试"
+	for _, t := range dangling {
+		logger.Log.Warnf("[Task Service] Recovering dangling task %s from PROCESSING to FAILED", t.TaskID)
+		_ = s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", t.TaskID).Updates(map[string]interface{}{
+			"status":        model.TaskStatusFailed,
+			"error_message": errMsg,
+		}).Error
+
+		if _, statErr := os.Stat(storage.TaskDBPath(s.taskDir, t.TaskID)); statErr == nil {
+			taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, t.TaskID)
+			if err == nil {
+				_ = taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", t.TaskID).Updates(map[string]interface{}{
+					"status":        model.TaskStatusFailed,
+					"error_message": errMsg,
+				}).Error
+				storage.ReleaseTaskDB(t.TaskID)
+			}
+		}
+	}
+	return nil
+}
+
 // RecoverDanglingRCATasks 启动自愈：扫描全局库中处于 QUEUED 或 RUNNING 的任务，
 // 统一自愈为 FAILED，避免服务重启后任务永久悬挂
 func (s *Service) RecoverDanglingRCATasks() error {

@@ -47,6 +47,8 @@ var (
 	procGlobalAlloc              = kernel32.NewProc("GlobalAlloc")
 	procGlobalLock               = kernel32.NewProc("GlobalLock")
 	procGlobalUnlock             = kernel32.NewProc("GlobalUnlock")
+	procGlobalFree               = kernel32.NewProc("GlobalFree")
+	procRtlMoveMemory            = kernel32.NewProc("RtlMoveMemory")
 )
 
 const (
@@ -564,13 +566,21 @@ func writeClipboardText(text string) error {
 
 	ptr, _, _ := procGlobalLock.Call(hMem)
 	if ptr == 0 {
+		procGlobalFree.Call(hMem)
 		return fmt.Errorf("failed to lock global memory")
 	}
 
-	dst := unsafe.Slice((*uint16)(unsafe.Pointer(ptr)), len(u16))
-	copy(dst, u16)
+	// 审计修复 ISSUE-TRAY-01: 使用 Win32 原生 RtlMoveMemory 直接进行内存拷贝，
+	// 彻底杜绝 unsafe.Slice((*uint16)(unsafe.Pointer(ptr))) 引发的 unsafe.Pointer 违规告警与 GC 风险
+	procRtlMoveMemory.Call(ptr, uintptr(unsafe.Pointer(&u16[0])), size)
 
 	procGlobalUnlock.Call(hMem)
-	procSetClipboardData.Call(cfUnicodeText, hMem)
+
+	// SetClipboardData 成功后由操作系统接管内存所有权；失败则必须显式释放
+	hData, _, _ := procSetClipboardData.Call(cfUnicodeText, hMem)
+	if hData == 0 {
+		procGlobalFree.Call(hMem)
+		return fmt.Errorf("failed to set clipboard data")
+	}
 	return nil
 }

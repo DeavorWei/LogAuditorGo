@@ -317,21 +317,25 @@ func inferYear(month time.Month, day, hour, min, sec, nsec int, loc *time.Locati
 	// 容忍 24h 的时钟偏差与时区差异
 	deadline := now.Add(24 * time.Hour)
 
-	for _, y := range [2]int{currentYear, currentYear - 1} {
+	// 审计修复 ISSUE-LOG-02: 支持当前年及前 4 年历史年份回溯，
+	// 确保覆盖完整 4 年闰年周期（如 2026 年推断 2024-02-29），避免历史日志跨年倒挂与闰日失效。
+	candidateYears := []int{currentYear, currentYear - 1, currentYear - 2, currentYear - 3, currentYear - 4}
+
+	for _, y := range candidateYears {
 		t := time.Date(y, month, day, hour, min, sec, nsec, loc)
 		// 该年不存在该日期（如平年的 2 月 29 日）：换年份，绝不产出 3 月 1 日这种伪造日期
 		if t.Day() != day {
 			continue
 		}
-		// 结果落在未来一天以上，说明这份"缺年份"的日志属于上一年
+		// 结果落在未来一天以上，说明该缺年份的日志属于过去年份
 		if t.After(deadline) {
 			continue
 		}
 		return t, nil
 	}
 
-	return time.Time{}, fmt.Errorf("invalid date %02d-%02d: not present in year %d or %d",
-		int(month), day, currentYear, currentYear-1)
+	return time.Time{}, fmt.Errorf("invalid date %02d-%02d: not present in recent years [%d..%d]",
+		int(month), day, currentYear-4, currentYear)
 }
 
 // numericOffsetRegex 匹配以 4 位数字结尾、且没有冒号分隔的时区偏移（如 +0800 / -0530）

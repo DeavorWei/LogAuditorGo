@@ -45,7 +45,8 @@ func main() {
 	// ARCH-20: 用 flag 暴露配置路径与端口，支持便携部署与脚本化启停。
 	// 优先级：命令行参数 > 配置文件 > 默认值。
 	configPath := flag.String("config", "", "指定配置文件路径 (默认 <data_dir>/config.yaml)")
-	portFlag := flag.Int("port", 0, "覆盖配置文件中的监听端口")
+	hostFlag := flag.String("host", "", "覆盖配置文件中的监听主机地址 (默认 127.0.0.1)")
+	portFlag := flag.Int("port", 0, "覆盖配置文件中的监听端口 (1-65535)")
 	showVersion := flag.Bool("version", false, "打印版本信息并退出")
 	noTray := flag.Bool("no-tray", false, "禁用系统托盘图标 (适用于无头服务器环境)")
 	trayTheme := flag.String("tray-theme", "blue_shield", "托盘图标风格: blue_shield (默认蓝盾), emerald_terminal (翠绿终端), indigo_radar (星穹雷达)")
@@ -63,8 +64,14 @@ func main() {
 		fmt.Printf("Failed to load configuration: %v\n", err)
 		os.Exit(1)
 	}
-	if *portFlag > 0 {
-		if *portFlag > 0 && *portFlag <= 65535 {
+	if *hostFlag != "" {
+		cfg.Server.Host = *hostFlag
+	}
+	if cfg.Server.Host == "" {
+		cfg.Server.Host = "127.0.0.1"
+	}
+	if *portFlag != 0 {
+		if *portFlag >= 1 && *portFlag <= 65535 {
 			cfg.Server.Port = *portFlag
 		} else {
 			fmt.Printf("Invalid port %d, must be within 1-65535\n", *portFlag)
@@ -114,13 +121,16 @@ func main() {
 	knowledgeSvc.SetMatchEngine(matchEngine)
 	rcaEngine := rootcause.NewEngine()
 	taskSvc := task.NewService(globalDB, cfg.Storage.TaskDir, matchEngine, rcaEngine)
+	if err := taskSvc.RecoverDanglingTasks(); err != nil {
+		log.Warnf("Failed to recover dangling tasks on startup: %v", err)
+	}
 	if err := taskSvc.RecoverDanglingRCATasks(); err != nil {
 		log.Warnf("Failed to recover dangling RCA tasks on startup: %v", err)
 	}
 
 	// 6. 初始化并启动 HTTP 服务
 	r := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
-	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 
 	server := &http.Server{
 		Addr:              addr,
@@ -131,19 +141,14 @@ func main() {
 		WriteTimeout:      writeTimeout,
 	}
 
-	// quit 通道提升到 main 作用域，供启动 goroutine 在 ListenAndServe 失败时通知主流程。
-	//
-	// ARCH-04: 原实现在 goroutine 内直接 `log.Fatalf(...)`，
-	// 端口占用等启动失败会跳过全部资源释放：Bleve 索引未 Close，
-	// SQLite 未 Close，`defer cancel()` 也不执行。
-	// Fatal 在 goroutine 里还会绕过所有已注册的 defer，是典型的资源泄漏点。
 	quit := make(chan os.Signal, 1)
-	// ARCH-20: os.Interrupt 在 Unix 上就是 SIGINT，原先同时注册了三者属于重复项
 	signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
 	serverErrCh := make(chan error, 1)
+	readyCh := make(chan struct{})
 	go func() {
-		log.Infof("Server listening on http://localhost%s", addr)
+		log.Infof("Server listening on http://%s", addr)
+		close(readyCh)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Errorf("HTTP server listen error: %v", err)
 			serverErrCh <- err
@@ -182,13 +187,23 @@ func main() {
 			}
 		}()
 
-		// 启动就绪后延迟弹出 Windows 原生气泡通知
+		// 启动就绪后延迟弹出 Windows 原生气泡通知（CMD-03: 等待服务真正就绪）
 		go func() {
-			time.Sleep(600 * time.Millisecond)
-			systemTray.ShowNotification(
-				"LogAuditorGo 服务已就绪",
-				fmt.Sprintf("日志审计系统正在后台运行 (端口: %d)\n点击托盘图标可快速打开控制台", cfg.Server.Port),
-			)
+			select {
+			case <-readyCh:
+				time.Sleep(300 * time.Millisecond)
+				select {
+				case <-quit:
+					return
+				default:
+					systemTray.ShowNotification(
+						"LogAuditorGo 服务已就绪",
+						fmt.Sprintf("日志审计系统正在后台运行 (地址: %s)\n点击托盘图标可快速打开控制台", addr),
+					)
+				}
+			case <-quit:
+				return
+			}
 		}()
 	}
 

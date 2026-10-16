@@ -24,6 +24,7 @@ type RCAConfig struct {
 }
 
 type ServerConfig struct {
+	Host string `mapstructure:"host" json:"host" yaml:"host"`
 	Port int    `mapstructure:"port" json:"port" yaml:"port"`
 	Mode string `mapstructure:"mode" json:"mode" yaml:"mode"`
 }
@@ -107,6 +108,7 @@ func Load(configPath string) (*Config, error) {
 	v := viper.New()
 
 	// 默认值
+	v.SetDefault("server.host", "127.0.0.1")
 	v.SetDefault("server.port", 8080)
 	v.SetDefault("server.mode", "release")
 	v.SetDefault("storage.data_dir", DefaultDataDir)

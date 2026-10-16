@@ -1030,6 +1030,24 @@ func TestResolveProductFamily_SpecificModels(t *testing.T) {
 	}
 }
 
+// TestMatcherEmptyDB 验证 ISSUE-MAT-01: 空知识库时 loaded = true，多次 Match 不会死循环或崩溃
+func TestMatcherEmptyDB(t *testing.T) {
+	engine, _ := newIsolatedMatchEngine(t)
+	// 知识库为空，执行 Match
+	norm := &model.NormalizedLog{
+		Module:      "BGP",
+		Brief:       "PEER_DOWN",
+		Severity:    3,
+		MessageBody: "BGP peer 1.1.1.1 is down",
+	}
+	k, tier, conf := engine.Match(norm, "", "")
+	if k != nil || tier != matcher.TierUnmatch || conf != 0.0 {
+		t.Fatalf("expected unmatch on empty db, got tier=%s, k=%v", tier, k)
+	}
 
-
-
+	// 再次调用 Match，验证不会反复加写锁加载
+	k2, tier2, conf2 := engine.Match(norm, "", "")
+	if k2 != nil || tier2 != matcher.TierUnmatch || conf2 != 0.0 {
+		t.Fatalf("expected unmatch on empty db, got tier=%s, k=%v", tier2, k2)
+	}
+}

@@ -40,6 +40,16 @@ func TestCharsetDecode(t *testing.T) {
 	if err != nil || emptyDecoded != "" {
 		t.Errorf("expected empty string without error, got '%s', err: %v", emptyDecoded, err)
 	}
+
+	// 4. GBK 非法坏字节容错转码 (ISSUE-HDX-02)
+	badGBK := []byte{0xbb, 0xaa, 0xff} // 0xbb 0xaa 是 "华"，0xff 为非法坏字节
+	decodedBad, err := hdx.DecodeGBK(badGBK)
+	if err != nil {
+		t.Fatalf("decode bad gbk should not return error: %v", err)
+	}
+	if !strings.HasPrefix(decodedBad, "华") {
+		t.Errorf("expected prefix '华', got '%s'", decodedBad)
+	}
 }
 
 func TestParseProfileXML(t *testing.T) {
@@ -95,7 +105,9 @@ func TestParseNaviXMLAndLeafFiltering(t *testing.T) {
   <topic id="ZH-CN_LOGREF_0000000001" txt="局域网与城域网接入日志" url="dc_lan_log.html">
     <!-- 有效叶子日志节点 -->
     <topic id="ZH-CN_LOGREF_0000000002" txt="BGP/4/BGP_AUTH_FAILED" url="dc_bgp_auth_fail.html" />
-    <!-- 非法级别叶子节点 (Config 不是 1~8) 应被过滤 -->
+    <!-- 有效 0 级 Emergency 叶子日志节点 (ISSUE-HDX-03) -->
+    <topic id="ZH-CN_LOGREF_0000000006" txt="BGP/0/BGP_EMERGENCY" url="dc_bgp_emergency.html" />
+    <!-- 非法级别叶子节点 (Config 不是 0~8) 应被过滤 -->
     <topic id="ZH-CN_LOGREF_0000000003" txt="BGP/Config/OVERVIEW" url="dc_bgp_overview.html" />
     <!-- 空 URL 叶子节点应被过滤 -->
     <topic id="ZH-CN_LOGREF_0000000004" txt="BGP/4/BGP_PEER_DOWN" url="" />
@@ -119,8 +131,8 @@ func TestParseNaviXMLAndLeafFiltering(t *testing.T) {
 		t.Fatalf("ParseNaviXML failed: %v", err)
 	}
 
-	if len(items) != 2 {
-		t.Fatalf("expected exactly 2 valid leaf items, got %d", len(items))
+	if len(items) != 3 {
+		t.Fatalf("expected exactly 3 valid leaf items, got %d", len(items))
 	}
 
 	// 校验第 1 条日志节点
@@ -135,8 +147,20 @@ func TestParseNaviXMLAndLeafFiltering(t *testing.T) {
 		t.Errorf("unexpected URL: %s", logItem.URL)
 	}
 
-	// 校验第 2 条告警节点
-	alarmItem := items[1]
+	// 校验第 2 条 0 级 Emergency 日志节点 (ISSUE-HDX-03)
+	log0Item := items[1]
+	if log0Item.EntryType != model.EntryTypeLog {
+		t.Errorf("expected EntryTypeLog, got %v", log0Item.EntryType)
+	}
+	if log0Item.Module != "BGP" || log0Item.Severity != 0 || log0Item.Brief != "BGP_EMERGENCY" {
+		t.Errorf("unexpected 0-level log item parsed: %+v", log0Item)
+	}
+	if log0Item.URL != "dc_bgp_emergency.html" {
+		t.Errorf("unexpected URL: %s", log0Item.URL)
+	}
+
+	// 校验第 3 条告警节点
+	alarmItem := items[2]
 	if alarmItem.EntryType != model.EntryTypeAlarm {
 		t.Errorf("expected EntryTypeAlarm, got %v", alarmItem.EntryType)
 	}
