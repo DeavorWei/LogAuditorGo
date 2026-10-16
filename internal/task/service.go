@@ -1719,12 +1719,13 @@ func (s *Service) GetDevice(taskID string, deviceID uint) (*model.Device, error)
 // 任何新增的内部调用点都能重新引入"改主键 / 跨任务划转 / 伪造统计"的越权写入。
 // 纵深防御要求这里也必须过滤——不在白名单内的键一律丢弃并记录告警。
 var DeviceUpdatableFields = map[string]bool{
-	"device_name":   true,
-	"device_type":   true,
-	"management_ip": true,
-	"hostname":      true,
-	"description":   true,
-	"color":         true,
+	"device_name":    true,
+	"device_type":    true,
+	"device_version": true,
+	"management_ip":  true,
+	"hostname":       true,
+	"description":    true,
+	"color":          true,
 }
 
 // ErrNoUpdatableField 表示请求中没有任何可更新的白名单字段

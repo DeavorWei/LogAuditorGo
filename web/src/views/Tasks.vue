@@ -11,6 +11,13 @@
     </el-card>
 
     <el-card shadow="never" class="table-card">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="table-tip"
+        title="日志匹配按各设备的型号与版本逐台进行：请在任务的【设备管理】中配置型号（可填具体型号如 AC6508）与软件版本，修改后点击【重新分析】生效。"
+      />
       <el-table :data="taskList" v-loading="loading" style="width: 100%;" border>
         <el-table-column prop="task_name" label="任务名称" min-width="180">
           <template #default="{ row }">
@@ -55,8 +62,8 @@
           <template #default="{ row }">
             <el-button v-if="row.status === 'PENDING'" type="primary" size="small" @click="openTask(row.task_id)">导入日志</el-button>
             <el-button v-else type="primary" link size="small" @click="openTask(row.task_id)">查看审计</el-button>
-            <el-button v-if="row.status !== 'PENDING'" type="warning" link size="small" :disabled="row.log_count === 0" @click="handleOpenReanalyzeDialog(row)">重新分析</el-button>
-            <el-button type="info" link size="small" @click="handleOpenReanalyzeDialog(row)">编辑属性</el-button>
+            <el-button v-if="row.status !== 'PENDING'" type="warning" link size="small" :disabled="row.log_count === 0" @click="handleReanalyze(row)">重新分析</el-button>
+            <el-button type="info" link size="small" @click="openRenameDialog(row)">重命名</el-button>
             <el-button type="success" link size="small" :disabled="row.status === 'PENDING'" @click="exportHTML(row.task_id)">导出报告</el-button>
             <el-button v-if="row.device_count > 1" type="warning" link size="small" :disabled="row.status === 'PENDING'" @click="exportMultiHTML(row.task_id)">多设备报告</el-button>
             <el-popconfirm title="确定彻底删除该任务数据库吗？" @confirm="handleDelete(row.task_id)">
@@ -77,13 +84,24 @@
       @failed="handleProgressFailed"
     />
 
-    <!-- 重新分析与属性配置弹窗 (闭环 D2) -->
-    <ReanalyzeDialog
-      v-model="showReanalyzeDialog"
-      :task="targetTask"
-      @confirm="handleReanalyzeConfirm"
-      @updated="fetchTasks"
-    />
+    <!-- 任务重命名弹窗：任务级 device_type/device_version 已不参与匹配，仅保留任务名可编辑 -->
+    <el-dialog v-model="showRenameDialog" title="重命名任务" width="420px" destroy-on-close>
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="任务名称">
+          <el-input
+            v-model="renameForm.taskName"
+            maxlength="64"
+            show-word-limit
+            placeholder="请输入新的任务名称"
+            @keyup.enter="submitRename"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showRenameDialog = false">取消</el-button>
+        <el-button type="primary" :loading="renaming" @click="submitRename">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -92,7 +110,6 @@ import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
-import ReanalyzeDialog from '@/components/ReanalyzeDialog.vue'
 import api from '@/api'
 import { formatTime as sharedFormatTime } from '@/utils/format'
 import { useReanalyze } from '@/composables/useReanalyze'
@@ -101,9 +118,13 @@ const router = useRouter()
 const loading = ref(false)
 const taskList = ref([])
 const showProgressModal = ref(false)
-const showReanalyzeDialog = ref(false)
-const targetTask = ref(null)
 const currentJobId = ref('')
+
+// 任务重命名（取代原"编辑属性"弹窗：型号/版本已下沉到设备管理，任务级只剩名称可编辑）
+const showRenameDialog = ref(false)
+const renaming = ref(false)
+const renameTarget = ref(null)
+const renameForm = ref({ taskName: '' })
 
 const fetchTasks = async () => {
   loading.value = true
@@ -146,14 +167,36 @@ const { reanalyze: handleReanalyze } = useReanalyze({
   }
 })
 
-const handleOpenReanalyzeDialog = (task) => {
-  targetTask.value = task
-  showReanalyzeDialog.value = true
+// 去阻断：重新分析一键直达（`handleReanalyze` 即 useReanalyze 返回的编排函数），
+// 只做一次轻量确认，不再弹型号选择框。
+const openRenameDialog = (task) => {
+  renameTarget.value = task
+  renameForm.value = { taskName: task?.task_name || '' }
+  showRenameDialog.value = true
 }
 
-const handleReanalyzeConfirm = (options) => {
-  if (!targetTask.value) return
-  handleReanalyze(targetTask.value, options)
+const submitRename = async () => {
+  const name = (renameForm.value.taskName || '').trim()
+  if (!renameTarget.value) return
+  if (!name) {
+    ElMessage.warning('任务名称不能为空')
+    return
+  }
+  renaming.value = true
+  try {
+    const res = await api.updateTask(renameTarget.value.task_id, { task_name: name })
+    if (res.code === 0) {
+      ElMessage.success('任务已重命名')
+      showRenameDialog.value = false
+      await fetchTasks()
+    } else {
+      ElMessage.error(res.message || '重命名失败')
+    }
+  } catch (e) {
+    ElMessage.error('重命名失败: ' + (e?.message || '网络异常'))
+  } finally {
+    renaming.value = false
+  }
 }
 
 // 注意：事件名必须与 ImportProgressModal 的 defineEmits 保持一致（completed / failed）。
@@ -203,6 +246,9 @@ onMounted(() => {
 }
 .table-card {
   border-radius: var(--radius-lg);
+}
+.table-tip {
+  margin-bottom: 12px;
 }
 .tasks-title {
   font-size: var(--fs-xl);

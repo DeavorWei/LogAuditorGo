@@ -15,7 +15,7 @@
         />
       </el-select>
       <template v-if="currentTask">
-        <span class="task-badge">设备: {{ currentTask.device_type }}</span>
+        <span class="task-badge">设备: {{ currentTask.device_count || 0 }} 台</span>
         <el-tag v-if="currentTask.status === 'PENDING'" type="warning" size="small" effect="dark">
           待导入日志
         </el-tag>
@@ -180,6 +180,7 @@ import { useTaskStore } from '@/stores/task'
 import { useFilterStore } from '@/stores/filter'
 import api from '@/api'
 import NewTaskDialog from '@/components/NewTaskDialog.vue'
+// 任务级 device_type 已不参与匹配（匹配上下文由设备行逐台决定），此处仅作新建任务的展示元数据
 import { TASK_DEVICE_TYPE_OPTIONS as DEVICE_TYPE_OPTIONS, DEFAULT_TASK_DEVICE_TYPE as DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 
 const emit = defineEmits([

@@ -50,7 +50,6 @@ func isValidDeviceType(dt string) bool {
 	return matcher.ResolveProductFamily(trimmed) != matcher.FamilyUnknown
 }
 
-
 type TaskHandler struct {
 	taskSvc      *task.Service
 	knowledgeSvc *knowledge.Service
@@ -72,10 +71,16 @@ func NewTaskHandler(taskSvc *task.Service, knowledgeSvc *knowledge.Service) *Tas
 }
 
 // logImportRequest 日志导入请求的统一入参（JSON 与表单双通道）
+//
+// 【遗留字段说明 (API 兼容)】DeviceType / DeviceVersion 为任务级元数据，
+// 自"设备型号解耦"改造后**不再参与任何日志匹配**：匹配上下文按文件束决议，
+// 权威来源是设备行（devices.device_type / devices.device_version）。
+// 为保证老客户端不 400，这里继续接受这两个字段并原样落库展示，
+// 但绝不能把它们重新接回匹配链（本方案 1.1 节 D1 正是由任务级单值透传造成的）。
 type logImportRequest struct {
 	TaskName   string `json:"task_name"`
 	DeviceType string `json:"device_type"`
-	// PARSE-04: 设备软件版本（如 V200R024C00），透传给匹配引擎做版本分档打分
+	// PARSE-04 → 遗留兼容：任务级版本仅作展示元数据，匹配上下文改由设备行决定
 	DeviceVersion string `json:"device_version"`
 
 	// 服务端本地路径模式
@@ -192,6 +197,14 @@ func (h *TaskHandler) CreateTask(c *gin.Context) {
 	}
 	if req.Async {
 		isAsync = true
+	}
+
+	// API 兼容：device_type / device_version 为遗留任务级元数据，已不再参与任何匹配。
+	// 这里只记 warning 提示调用方迁移到"设备管理"逐台配置型号与版本，绝不返回 400。
+	if deviceType != "" || deviceVersion != "" {
+		logger.Log.Warnf("[API Tasks] legacy task-level device_type/device_version ignored by matcher "+
+			"(task_name=%q device_type=%q device_version=%q); configure model/version per device instead",
+			taskName, deviceType, deviceVersion)
 	}
 
 	var items []task.FileUploadItem
@@ -336,8 +349,9 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 		return
 	}
 
-	// PARSE-04: 补充导入时允许用户补录/修正设备版本，
-	// 必须在启动导入前回写，否则本次匹配仍会沿用旧版本分档。
+	// PARSE-04 → 遗留兼容：任务级设备版本已不再参与匹配（上下文由设备行逐台决定），
+	// 这里仅按老契约回写任务元数据用于展示，绝不重新接回匹配链。
+	// 需要影响匹配时请通过设备管理配置 device_version 后执行"重新分析"。
 	if req.DeviceVersion != "" {
 		if err := h.taskSvc.SetTaskDeviceVersion(taskID, req.DeviceVersion); err != nil {
 			logger.Log.Warnf("[API Tasks] Update device_version for task %s failed: %v", taskID, err)
@@ -861,12 +875,13 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 // 使用指针字段以区分"未传"与"传了零值"；未在结构体中声明的字段一律不接受，
 // 从源头杜绝 id / task_id / log_count 等敏感列被客户端注入。
 type updateDeviceRequest struct {
-	DeviceName   *string `json:"device_name"`
-	DeviceType   *string `json:"device_type"`
-	ManagementIP *string `json:"management_ip"`
-	Hostname     *string `json:"hostname"`
-	Description  *string `json:"description"`
-	Color        *string `json:"color"`
+	DeviceName    *string `json:"device_name"`
+	DeviceType    *string `json:"device_type"`
+	DeviceVersion *string `json:"device_version"`
+	ManagementIP  *string `json:"management_ip"`
+	Hostname      *string `json:"hostname"`
+	Description   *string `json:"description"`
+	Color         *string `json:"color"`
 }
 
 // toUpdateMap 将 DTO 转换为白名单更新集，只包含本次真正传入的字段
@@ -877,6 +892,9 @@ func (r updateDeviceRequest) toUpdateMap() map[string]interface{} {
 	}
 	if v := r.DeviceType; v != nil {
 		updates["device_type"] = *v
+	}
+	if v := r.DeviceVersion; v != nil {
+		updates["device_version"] = *v
 	}
 	if v := r.ManagementIP; v != nil {
 		updates["management_ip"] = *v
@@ -895,13 +913,18 @@ func (r updateDeviceRequest) toUpdateMap() map[string]interface{} {
 
 // createDeviceRequest 设备创建的请求 DTO (ARCH-03)。
 // 原实现直接绑定 model.Device，客户端可预设 id / created_at 等字段。
+//
+// 型号与版本语义 (本方案 1.1 节 D3)：device_type 为"产品族或具体型号"
+// （如 WLAN / AC6508 / CloudEngine），device_version 为软件版本（如 V200R024C00），
+// 两者共同决定该设备日志匹配哪一族官方文档，而非 Router/Switch 形态分类。
 type createDeviceRequest struct {
-	DeviceName   string `json:"device_name"`
-	DeviceType   string `json:"device_type"`
-	ManagementIP string `json:"management_ip"`
-	Hostname     string `json:"hostname"`
-	Description  string `json:"description"`
-	Color        string `json:"color"`
+	DeviceName    string `json:"device_name"`
+	DeviceType    string `json:"device_type"`
+	DeviceVersion string `json:"device_version"`
+	ManagementIP  string `json:"management_ip"`
+	Hostname      string `json:"hostname"`
+	Description   string `json:"description"`
+	Color         string `json:"color"`
 }
 
 // CreateDevice 在任务中创建新设备
@@ -920,12 +943,13 @@ func (h *TaskHandler) CreateDevice(c *gin.Context) {
 
 	// 只取白名单字段构造实体，忽略请求体中可能携带的 id / task_id / 计数类字段
 	dev := &model.Device{
-		DeviceName:   req.DeviceName,
-		DeviceType:   req.DeviceType,
-		ManagementIP: req.ManagementIP,
-		Hostname:     req.Hostname,
-		Description:  req.Description,
-		Color:        req.Color,
+		DeviceName:    req.DeviceName,
+		DeviceType:    req.DeviceType,
+		DeviceVersion: req.DeviceVersion,
+		ManagementIP:  req.ManagementIP,
+		Hostname:      req.Hostname,
+		Description:   req.Description,
+		Color:         req.Color,
 	}
 
 	created, err := h.taskSvc.CreateDevice(taskID, dev)
@@ -1289,7 +1313,7 @@ func (h *TaskHandler) GetTaskModules(c *gin.Context) {
 	SuccessResponse(c, modules)
 }
 
-// UpdateTask 更新任务元数据（设备类型、设备版本、任务名称等）
+// UpdateTask 更新任务元数据（任务名称等；设备类型/版本字段为遗留展示元数据，不参与匹配）
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
@@ -1347,6 +1371,9 @@ func (h *TaskHandler) ReanalyzeTask(c *gin.Context) {
 		isAsync = true
 	}
 
+	// 语义收敛 (本方案 §6.2)：DeviceType/DeviceVersion 不再是"任务级匹配上下文"，
+	// 仅对该任务中 device_id == 0 的**未归属日志**起兜底作用；
+	// 已归属日志一律以设备行属性为准，此处传值不会造成跨设备错配。
 	opt := task.ReanalyzeOptions{
 		DeviceType:    strings.TrimSpace(req.DeviceType),
 		DeviceVersion: strings.TrimSpace(req.DeviceVersion),
@@ -1497,4 +1524,3 @@ func (h *TaskHandler) GetTaskLogSparkline(c *gin.Context) {
 	}
 	SuccessResponse(c, res)
 }
-

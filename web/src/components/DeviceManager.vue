@@ -25,6 +25,13 @@
 
     <!-- 设备列表表格 -->
     <el-card shadow="never" class="table-card">
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        class="table-tip"
+        title="设备型号与版本决定该设备日志匹配的官方知识库，修改后点击【重新分析】生效。"
+      />
       <el-table :data="deviceList" v-loading="loading" style="width: 100%;" border>
         <el-table-column label="设备标识" min-width="160">
           <template #default="{ row }">
@@ -35,10 +42,16 @@
           </template>
         </el-table-column>
 
-        <el-table-column prop="device_type" label="设备类型" width="150">
+        <el-table-column prop="device_type" label="设备型号" min-width="180">
           <template #default="{ row }">
             <!-- WEB-16: 展示统一口径的中文名，而不是直接把 value 透给用户 -->
             <el-tag size="small" effect="light">{{ deviceTypeLabel(row.device_type) }}</el-tag>
+          </template>
+        </el-table-column>
+
+        <el-table-column prop="device_version" label="软件版本" width="140">
+          <template #default="{ row }">
+            <span class="code-text">{{ row.device_version || '-' }}</span>
           </template>
         </el-table-column>
 
@@ -114,16 +127,34 @@
           <el-input v-model="deviceForm.device_name" placeholder="例如: Router-Core-01" />
         </el-form-item>
 
-        <el-form-item label="设备类型" prop="device_type" required>
-          <!-- WEB-16: 选项统一取自常量（设备形态分类，与任务的匹配设备类型是两套口径） -->
-          <el-select v-model="deviceForm.device_type" style="width: 100%;">
+        <el-form-item label="设备型号" prop="device_type" required>
+          <!-- 型号决定该设备日志匹配哪一族官方文档：可选标准产品族，也可直接填具体型号以命中版本分档 -->
+          <el-select
+            v-model="deviceForm.device_type"
+            style="width: 100%;"
+            filterable
+            allow-create
+            default-first-option
+            placeholder="请选择产品族，或直接输入具体型号（如 AC6508）"
+          >
             <el-option
-              v-for="opt in DEVICE_FORM_TYPE_OPTIONS"
+              v-for="opt in DEVICE_PRODUCT_OPTIONS"
               :key="opt.value"
               :label="opt.label"
               :value="opt.value"
             />
           </el-select>
+          <div class="form-tip">
+            支持标准产品族（WLAN / CloudEngine / Campus-Switch / HiSecEngine-USG / NetEngine / Huawei-VRP），
+            也支持具体型号（如 AC6508、CE16800、S12700，将按所属产品族规则匹配并享受同型号版本分档）。
+          </div>
+        </el-form-item>
+
+        <el-form-item label="软件版本" prop="device_version">
+          <el-input
+            v-model="deviceForm.device_version"
+            placeholder="可选，例如 V200R024C00（用于同版本分档加权）"
+          />
         </el-form-item>
 
         <!--
@@ -306,7 +337,7 @@
 <script setup>
 // UI-16: defineProps / defineEmits 是编译器宏，无需从 vue 导入
 import { ref, computed, nextTick, onMounted, watch } from 'vue'
-import { DEVICE_FORM_TYPE_OPTIONS, DEFAULT_DEVICE_FORM_TYPE, deviceTypeLabel } from '@/constants/deviceTypes'
+import { DEVICE_PRODUCT_OPTIONS, DEFAULT_DEVICE_PRODUCT, deviceTypeLabel } from '@/constants/deviceTypes'
 import { ElMessage } from 'element-plus'
 import { Monitor, Folder, FolderOpened, Document, Close, Plus, InfoFilled } from '@element-plus/icons-vue'
 import api from '@/api'
@@ -338,7 +369,8 @@ const colorPresets = DEVICE_COLOR_PRESETS
 const deviceFormRef = ref(null)
 const deviceForm = ref({
   device_name: '',
-  device_type: DEFAULT_DEVICE_FORM_TYPE,
+  device_type: DEFAULT_DEVICE_PRODUCT,
+  device_version: '',
   hostname: '',
   management_ip: '',
   color: DEFAULT_DEVICE_COLOR,
@@ -451,7 +483,8 @@ const openCreateDialog = () => {
   const defaultColor = colorPresets[deviceList.value.length % colorPresets.length]
   deviceForm.value = {
     device_name: `Device-${deviceList.value.length + 1}`,
-    device_type: DEFAULT_DEVICE_FORM_TYPE,
+    device_type: DEFAULT_DEVICE_PRODUCT,
+    device_version: '',
     hostname: '',
     management_ip: '',
     color: defaultColor,
@@ -468,6 +501,7 @@ const openEditDialog = (row) => {
   deviceForm.value = {
     device_name: row.device_name,
     device_type: row.device_type,
+    device_version: row.device_version || '',
     hostname: row.hostname,
     management_ip: row.management_ip,
     color: row.color || DEFAULT_DEVICE_COLOR,
@@ -770,6 +804,15 @@ defineExpose({
 }
 .table-card {
   border-radius: var(--radius-lg);
+}
+.table-tip {
+  margin-bottom: 12px;
+}
+.form-tip {
+  font-size: var(--fs-sm);
+  color: var(--gray-500);
+  line-height: 1.6;
+  margin-top: 6px;
 }
 .device-name-cell {
   display: flex;

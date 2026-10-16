@@ -154,13 +154,6 @@
       :job-id="currentJobId"
       @completed="handleLogImportCompleted"
     />
-
-    <ReanalyzeDialog
-      v-model="showReanalyzeDialog"
-      :task="currentTask"
-      @confirm="handleReanalyzeConfirm"
-      @updated="handleTaskUpdated"
-    />
   </div>
 </template>
 
@@ -197,7 +190,6 @@ import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
 import QuickTagModal from '@/components/QuickTagModal.vue'
 import AdvancedFilterModal from '@/components/AdvancedFilterModal.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
-import ReanalyzeDialog from '@/components/ReanalyzeDialog.vue'
 
 const route = useRoute()
 const taskStore = useTaskStore()
@@ -215,7 +207,6 @@ const logStreamRef = ref(null)
 
 const showLogDetailModal = ref(false)
 const showQuickTagModal = ref(false)
-const showReanalyzeDialog = ref(false)
 const quickTagTargetLog = ref(null)
 const showProgressModal = ref(false)
 const currentJobId = ref('')
@@ -385,18 +376,11 @@ const openProgressModalWithId = (jobId) => {
   showProgressModal.value = true
 }
 
+// 去阻断：一键直达重新分析（确认弹窗由 useReanalyze 统一提供），不再弹型号选择框。
+// 匹配上下文由各设备的 device_type / device_version 逐台决议。
 const handleReanalyzeTask = () => {
   if (!currentTaskId.value || !currentTask.value) return
-  showReanalyzeDialog.value = true
-}
-
-const handleReanalyzeConfirm = (options) => {
-  if (!currentTask.value) return
-  reanalyze(currentTask.value, options)
-}
-
-const handleTaskUpdated = async () => {
-  await fetchTasks()
+  reanalyze(currentTask.value)
 }
 
 // 8. 视图模式与路由联动

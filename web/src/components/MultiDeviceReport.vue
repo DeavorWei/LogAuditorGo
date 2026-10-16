@@ -74,7 +74,7 @@
           >
             <div class="device-card-header">
               <span class="device-name">{{ d.device.device_name }}</span>
-              <el-tag size="small">{{ d.device.device_type }}</el-tag>
+              <el-tag size="small">{{ deviceTypeLabel(d.device.device_type) }}</el-tag>
             </div>
             <div class="meta-row">
               <span class="label">Hostname:</span>
@@ -189,6 +189,7 @@ import { ElMessage } from 'element-plus'
 import { useRequest } from '@/composables/useRequest'
 import StatCard from '@/components/StatCard.vue'
 import { DEFAULT_DEVICE_COLOR } from '@/constants/tagColors'
+import { deviceTypeLabel } from '@/constants/deviceTypes'
 
 const props = defineProps({
   taskId: {

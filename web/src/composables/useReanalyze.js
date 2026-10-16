@@ -20,12 +20,13 @@ export function useReanalyze({ onJobStarted, onSettled } = {}) {
     if (!task || !task.task_id) return
 
     const targetName = options.task_name || task.task_name
-    const overrideNotice = options.device_type
-      ? `\n（将覆盖设备类型为: ${options.device_type}${options.device_version ? `，版本: ${options.device_version}` : ''}）`
-      : ''
+    // 语义变更（设备型号解耦）：重新分析不再需要选择任务级型号/版本，
+    // 匹配上下文由各设备的 device_type / device_version 逐台决议。
+    const contextNotice =
+      '\n（匹配将按各设备在【设备管理】中配置的型号与版本逐台决议，修改后重新分析即生效）'
 
     ElMessageBox.confirm(
-      `确认对任务【${targetName}】的全部 ${task.log_count || 0} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？${overrideNotice}`,
+      `确认对任务【${targetName}】的全部 ${task.log_count || 0} 行已导入日志重新执行知识库匹配与 RCA 根因拓扑分析吗？${contextNotice}`,
       '重新分析确认',
       {
         confirmButtonText: '开始重新分析',
@@ -35,11 +36,10 @@ export function useReanalyze({ onJobStarted, onSettled } = {}) {
     )
       .then(async () => {
         try {
+          // 不再携带 device_type / device_version：任务级单值不得再参与匹配
           const reanalyzePayload = {
             async: options.async !== false,
-            ...(options.task_name ? { task_name: options.task_name } : {}),
-            ...(options.device_type ? { device_type: options.device_type } : {}),
-            ...(options.device_version ? { device_version: options.device_version } : {})
+            ...(options.task_name ? { task_name: options.task_name } : {})
           }
           const res = await api.reanalyzeTask(task.task_id, reanalyzePayload)
           if (res.code === 0 && res.data?.job_id) {
