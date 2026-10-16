@@ -3,10 +3,12 @@ package api
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/task"
@@ -135,8 +137,8 @@ func (h *TaskHandler) BatchTagLogs(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req model.LogQueryRequestBody
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid filter body: "+err.Error())
 			return
 		}
@@ -208,8 +210,8 @@ func (h *TaskHandler) BatchUntagLogs(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
 
 	var req model.LogQueryRequestBody
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid filter body: "+err.Error())
 			return
 		}

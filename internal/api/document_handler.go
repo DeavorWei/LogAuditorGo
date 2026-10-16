@@ -176,8 +176,8 @@ func (h *DocumentHandler) ListDocuments(c *gin.Context) {
 // DeleteDocument 删除指定文档
 func (h *DocumentHandler) DeleteDocument(c *gin.Context) {
 	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid document ID")
 		return
 	}
@@ -201,6 +201,10 @@ func (h *DocumentHandler) BatchDeleteDocuments(c *gin.Context) {
 	}
 	if len(req.IDs) == 0 {
 		ErrorResponse(c, http.StatusBadRequest, -1, "ids cannot be empty")
+		return
+	}
+	if len(req.IDs) > 500 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "ids count exceeds maximum limit (500)")
 		return
 	}
 

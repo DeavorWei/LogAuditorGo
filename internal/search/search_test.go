@@ -138,8 +138,8 @@ func TestBleveIndexerAndSearch(t *testing.T) {
 		if doc.Severity != 2 {
 			t.Errorf("expected hit Document.Severity == 2, got %v", doc.Severity)
 		}
-		if len(doc.ProductList) != 1 || doc.ProductList[0] != "HiSecEngine USG6000F" {
-			t.Errorf("expected hit Document.ProductList == [HiSecEngine USG6000F], got %v", doc.ProductList)
+		if len(doc.ProductList) != 1 || doc.ProductList[0] != "HISECENGINE USG6000F" {
+			t.Errorf("expected hit Document.ProductList == [HISECENGINE USG6000F], got %v", doc.ProductList)
 		}
 	} else {
 		t.Fatalf("expected exactly 1 hit for severity filter, got %d", len(res3.Hits))
@@ -152,6 +152,17 @@ func TestBleveIndexerAndSearch(t *testing.T) {
 	}
 	if res4.Total != 1 || res4.Hits[0].KnowledgeID != 3 {
 		t.Errorf("expected knowledge ID 3 for entry_type ALARM, got %+v", res4)
+	}
+
+	// 5. 测试产品大小写归一化容错检索 (ISSUE-SRCH-03)
+	resLower, err := indexer.Search(search.SearchFilter{Product: "hisecengine usg6000f"})
+	if err != nil || resLower.Total != 1 || resLower.Hits[0].KnowledgeID != 3 {
+		t.Errorf("expected hit KnowledgeID 3 via lowercase product, got err=%v, res=%+v", err, resLower)
+	}
+
+	resUpper, err := indexer.Search(search.SearchFilter{Product: "HISECENGINE USG6000F"})
+	if err != nil || resUpper.Total != 1 || resUpper.Hits[0].KnowledgeID != 3 {
+		t.Errorf("expected hit KnowledgeID 3 via uppercase product, got err=%v, res=%+v", err, resUpper)
 	}
 }
 func TestBleveIndexerDefensive(t *testing.T) {

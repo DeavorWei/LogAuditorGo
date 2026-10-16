@@ -36,11 +36,19 @@ func UnzipConcurrent(src string, dest string, tracker *progress.JobTracker) erro
 	dirSet := make(map[string]struct{})
 
 	for _, f := range r.File {
+		// 审计修复 ISSUE-HDX-01: 拦截非法冒号（NTFS ADS 或 Windows 绝对盘符穿透）与符号链接
+		if strings.Contains(f.Name, ":") {
+			return fmt.Errorf("illegal file path in zip (colon not allowed): %s", f.Name)
+		}
+		if f.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("symbolic links not allowed in archive: %s", f.Name)
+		}
+
 		targetPath := filepath.Join(cleanDest, f.Name)
 		cleanTarget := filepath.Clean(targetPath)
 
-		// Zip Slip 安全检查：确保目标路径位于目标目录内部
-		if !strings.HasPrefix(cleanTarget+string(os.PathSeparator), cleanDestPrefix) && cleanTarget != cleanDest {
+		// Zip Slip 安全检查：严格判定为目标目录的后代条目（拒绝 cleanTarget == cleanDest 归一化回到根目录）
+		if !strings.HasPrefix(cleanTarget, cleanDestPrefix) {
 			return fmt.Errorf("illegal file path in zip (Zip Slip detected): %s", f.Name)
 		}
 

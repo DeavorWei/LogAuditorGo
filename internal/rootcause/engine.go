@@ -233,22 +233,17 @@ func (e *Engine) buildIndexes() {
 }
 
 // hasCycle 对单条规则的 DAG 边做拓扑排序检环 (RCA-16)。
-// 节点按 "Module|Brief" 归一化，若存在环则无法完成拓扑排序。
+// 审计修复 ISSUE-RCA-02: 节点按 Module|Brief 联合唯一标识归一化，并严格检测自环 (self-loop)。
 func hasCycle(rule *ProtocolFaultRule) bool {
 	n := len(rule.DAGEdges)
-	if n < 2 {
+	if n == 0 {
 		return false
 	}
 
 	nodeIndex := make(map[string]int)
-	nodeName := func(p *Pattern) string {
-		if p == nil || len(p.keywords) == 0 {
-			return ""
-		}
-		return strings.ToUpper(strings.TrimSpace(p.keywords[0]))
-	}
 	idOf := func(name string) int {
-		if name == "" {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "|" {
 			return -1
 		}
 		if idx, ok := nodeIndex[name]; ok {
@@ -269,10 +264,17 @@ func hasCycle(rule *ProtocolFaultRule) bool {
 	}
 
 	for i := range rule.DAGEdges {
-		from := idOf(nodeName(&rule.DAGEdges[i].fromMod))
-		to := idOf(nodeName(&rule.DAGEdges[i].toMod))
-		if from < 0 || to < 0 || from == to {
+		fromName := strings.ToUpper(strings.TrimSpace(rule.DAGEdges[i].FromModulePattern)) + "|" + strings.ToUpper(strings.TrimSpace(rule.DAGEdges[i].FromBriefPattern))
+		toName := strings.ToUpper(strings.TrimSpace(rule.DAGEdges[i].ToModulePattern)) + "|" + strings.ToUpper(strings.TrimSpace(rule.DAGEdges[i].ToBriefPattern))
+
+		from := idOf(fromName)
+		to := idOf(toName)
+		if from < 0 || to < 0 {
 			continue
+		}
+		// 检测自环 (self-loop)：自环直接判定为有环
+		if from == to {
+			return true
 		}
 		ensure(len(nodeIndex))
 		adj[from] = append(adj[from], to)
@@ -286,19 +288,21 @@ func hasCycle(rule *ProtocolFaultRule) bool {
 			queue = append(queue, i)
 		}
 	}
+
 	visited := 0
 	for len(queue) > 0 {
-		cur := queue[0]
+		curr := queue[0]
 		queue = queue[1:]
 		visited++
-		for _, next := range adj[cur] {
+		for _, next := range adj[curr] {
 			indegree[next]--
 			if indegree[next] == 0 {
 				queue = append(queue, next)
 			}
 		}
 	}
-	return visited != len(adj)
+
+	return visited < len(nodeIndex)
 }
 
 // edgeIndexIn 返回 edge 在 rule.DAGEdges 中的下标（按元素地址比较），未找到返回 -1
@@ -791,6 +795,9 @@ func (e *Engine) propagate(
 	correlatedIDs := make([]uint, 0, 8)
 	var impactEvents []model.ImpactEvent
 
+	// 审计修复 ISSUE-RCA-03: 局部字典暂存认领关系，防止超时中断时全局 claimed 被污染
+	localClaimed := make(map[uint]uint, 8)
+
 	queue := []*model.NormalizedLog{root}
 	visitedInDAG := make(map[uint]bool, 8)
 	visitedInDAG[root.ID] = true
@@ -870,9 +877,12 @@ func (e *Engine) propagate(
 						if owner, exists := claimed[otherLog.ID]; exists && owner != root.ID {
 							continue
 						}
+						if owner, exists := localClaimed[otherLog.ID]; exists && owner != root.ID {
+							continue
+						}
 
 						visitedInDAG[otherLog.ID] = true
-						claimed[otherLog.ID] = root.ID
+						localClaimed[otherLog.ID] = root.ID
 						correlatedIDs = append(correlatedIDs, otherLog.ID)
 
 						delay := otherLog.Timestamp.Sub(root.Timestamp)
@@ -904,6 +914,10 @@ func (e *Engine) propagate(
 		return model.RCAEvent{}, false
 	}
 
+	// 确认生成事件后，将暂存的认领关系合并入全局表
+	for k, v := range localClaimed {
+		claimed[k] = v
+	}
 	// 根因自身也标记为已认领，避免它被别的根因抢走当"衍生"
 	claimed[root.ID] = root.ID
 

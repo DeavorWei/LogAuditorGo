@@ -50,9 +50,10 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 // persistTaskInfo 把任务基础运行状态双写回全局库与任务库。
 // 采用字段白名单 Updates，严禁使用整行 Save。
 // 闭环 P2-1 & D3: 彻底移除 task_name / device_type / device_version，任务静态元数据写权收归 UpdateTask，杜绝竞态覆写。
-func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
+// 审计修复 ISSUE-TASK-11: 增加 error 返回值，向上抛出数据库双写失败错误。
+func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) error {
 	if taskInfo == nil {
-		return
+		return nil
 	}
 	updates := map[string]interface{}{
 		"file_count":    taskInfo.FileCount,
@@ -69,19 +70,25 @@ func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
 		updates["finish_time"] = nil
 	}
 
+	var firstErr error
 	if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
 		logger.Log.Errorf("[Task Service] save task info to global db failed: %v", err)
+		firstErr = fmt.Errorf("update global db failed: %w", err)
 	}
 	if taskDB != nil {
 		if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
 			logger.Log.Errorf("[Task Service] save task info to task db failed: %v", err)
+			if firstErr == nil {
+				firstErr = fmt.Errorf("update task db failed: %w", err)
+			}
 		}
 	}
+	return firstErr
 }
 
 // PersistTaskInfoForTest 供单元测试验证任务元信息更新策略
-func (s *Service) PersistTaskInfoForTest(taskDB *gorm.DB, taskInfo *model.TaskInfo) {
-	s.persistTaskInfo(taskDB, taskInfo)
+func (s *Service) PersistTaskInfoForTest(taskDB *gorm.DB, taskInfo *model.TaskInfo) error {
+	return s.persistTaskInfo(taskDB, taskInfo)
 }
 
 // prepareBundles 逐个文件完成"计数/采样 → 设备识别 → 命名冲突消解 → 旧数据清理"，

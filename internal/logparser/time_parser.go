@@ -218,17 +218,17 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 					return t.Local(), nil
 				}
 				if t, err := time.ParseInLocation("2006-01-02T15:04:05.999999", raw, time.Local); err == nil {
-					return t, nil
+					return t.Local(), nil
 				}
 			} else {
 				if t, err := time.ParseInLocation("2006-01-02 15:04:05.999999-07:00", raw, time.Local); err == nil {
-					return t, nil
+					return t.Local(), nil
 				}
 				if t, err := time.ParseInLocation("2006-01-02 15:04:05-07:00", raw, time.Local); err == nil {
-					return t, nil
+					return t.Local(), nil
 				}
 				if t, err := time.ParseInLocation("2006-01-02 15:04:05.999999", raw, time.Local); err == nil {
-					return t, nil
+					return t.Local(), nil
 				}
 			}
 		}
@@ -254,7 +254,7 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 		}
 		for _, layout := range layoutsWithYear {
 			if t, err := time.ParseInLocation(layout, raw, time.Local); err == nil {
-				return t, nil
+				return t.Local(), nil
 			}
 		}
 
@@ -291,7 +291,7 @@ func ParseHuaweiTimestamp(raw string) (time.Time, error) {
 					// PARSE-03: 缺年份时走窗口推断，不再无条件取当前年
 					return inferYear(t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), t.Nanosecond(), t.Location())
 				}
-				return t, nil
+				return t.Local(), nil
 			}
 		}
 	}

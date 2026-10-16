@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
 )
 
@@ -77,19 +78,34 @@ func (h *ProgressHandler) StreamProgress(c *gin.Context) {
 	ch, unsubscribe := tracker.Subscribe()
 	defer unsubscribe()
 
+	// 审计修复 ISSUE-API-06: 增加 15 秒心跳 Ticker 探活，防止代理超时切断长连接
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+
 	c.Stream(func(w io.Writer) bool {
 		select {
 		case <-c.Request.Context().Done():
 			return false
+		case <-ticker.C:
+			if _, err := fmt.Fprintf(w, ": ping\n\n"); err != nil {
+				return false
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			return true
 		case snap, ok := <-ch:
 			if !ok {
 				return false
 			}
 			data, err := json.Marshal(snap)
 			if err != nil {
-				return true
+				logger.Log.Errorf("[ProgressHandler] JSON marshal progress snapshot failed: %v", err)
+				return false
 			}
-			fmt.Fprintf(w, "data: %s\n\n", data)
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+				return false
+			}
 			if flusher, ok := w.(http.Flusher); ok {
 				flusher.Flush()
 			}

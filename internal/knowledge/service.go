@@ -776,8 +776,14 @@ func (s *Service) parseHTMLKnowledgeItems(src hdx.DocSource, leafItems []hdx.Lea
 	return resList, hashes
 }
 
+// persistMu 保证并发文档导入时的入库事务串行化，彻底杜绝 content_hash 唯一约束冲突 (ISSUE-STOR-04)
+var persistMu sync.Mutex
+
 // persistKnowledgeAndMappings 阶段 3：执行数据库事务持久化与全局去重入库
 func (s *Service) persistKnowledgeAndMappings(tx *gorm.DB, doc *model.Document, resList []parsedResult, uniqueHashes []string, stats *ImportStats) ([]*model.Knowledge, int, int, error) {
+	persistMu.Lock()
+	defer persistMu.Unlock()
+
 	// 在事务内处理 Document 记录与旧映射清理
 	var existingDoc model.Document
 	if dbErr := tx.Where("lib_id = ?", doc.LibID).First(&existingDoc).Error; dbErr == nil {
@@ -1196,16 +1202,30 @@ func (s *Service) DeleteDocuments(docIDs []uint) (int, error) {
 
 		if len(orphanUintIDs) > 0 {
 			// 顺序：先删索引，后删 DB。
-			// 反过来会短暂出现"DB 里没有但还能搜到"的幽灵条目。
+			// 审计修复 ISSUE-KNOW-02: 索引删除失败不提前 return，确保 DB 孤儿清理与 Reload 完整执行
+			var indexErr error
 			if s.indexer != nil {
 				if err := s.indexer.DeleteBatch(orphanIDs); err != nil {
 					logger.Log.Errorf("[Knowledge Service] delete orphan knowledge from bleve failed: %v", err)
-					// 索引删除失败不阻断 DB 清理，但必须明确告知需要重建
-					return deletedCount, fmt.Errorf("delete orphan knowledge from index failed: %w (please run a full reindex)", err)
+					indexErr = err
 				}
 			}
+			var dbErr error
 			if err := s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error; err != nil {
-				return deletedCount, fmt.Errorf("delete orphan knowledge failed: %w", err)
+				logger.Log.Errorf("[Knowledge Service] delete orphan knowledge from db failed: %v", err)
+				dbErr = err
+			}
+
+			// 无论索引是否报错，通知匹配引擎重载
+			if s.matchEngine != nil {
+				s.matchEngine.Reload()
+			}
+
+			if dbErr != nil {
+				return deletedCount, fmt.Errorf("delete orphan knowledge from db failed: %w", dbErr)
+			}
+			if indexErr != nil {
+				return deletedCount, fmt.Errorf("delete orphan knowledge from index failed: %w (please run a full reindex)", indexErr)
 			}
 		}
 	}

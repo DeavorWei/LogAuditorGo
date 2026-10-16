@@ -42,6 +42,14 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 20
+	} else if pageSize > 200 {
+		pageSize = 200
+	}
 
 	filter := search.SearchFilter{
 		Keyword:   keyword,
@@ -171,8 +179,8 @@ func (h *KnowledgeHandler) GetIndexStatus(c *gin.Context) {
 // GetKnowledgeDetail 获取单条知识详情
 func (h *KnowledgeHandler) GetKnowledgeDetail(c *gin.Context) {
 	idStr := c.Param("id")
-	id, err := strconv.Atoi(idStr)
-	if err != nil {
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil || id == 0 {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid knowledge ID")
 		return
 	}

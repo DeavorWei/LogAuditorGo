@@ -43,9 +43,16 @@ func (c *regexpCache) GetOrCompile(pattern string) (*regexp.Regexp, error) {
 		return re, nil
 	}
 
-	// 超过上限则整体清空，避免动态正则耗尽内存
+	// 审计修复 ISSUE-STOR-05: 超过上限时淘汰一半条目，杜绝全局清空导致的瞬时击穿抖动
 	if len(c.cache) >= c.maxSize {
-		c.cache = make(map[string]*regexp.Regexp, c.maxSize)
+		evictCount := c.maxSize / 2
+		for k := range c.cache {
+			delete(c.cache, k)
+			evictCount--
+			if evictCount <= 0 {
+				break
+			}
+		}
 	}
 
 	re, err := regexp.Compile(pattern)

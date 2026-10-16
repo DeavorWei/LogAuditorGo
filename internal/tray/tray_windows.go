@@ -347,8 +347,8 @@ func wndProc(hwnd windows.Handle, message uint32, wParam, lParam uintptr) uintpt
 	switch message {
 	case wmTrayIcon:
 		switch lParam {
-		case wmLButtonDblClk, wmLButtonUp:
-			// 左键单击/双击：直接在浏览器中打开主控制台
+		case wmLButtonDblClk:
+			// 审计修复 ISSUE-TRAY-02: 仅响应左键双击，避免与单击消息重叠导致连续多次拉起浏览器
 			go t.openURL("/")
 		case wmRButtonUp, wmContextMenu:
 			// 右键点击：弹出右键上下文菜单

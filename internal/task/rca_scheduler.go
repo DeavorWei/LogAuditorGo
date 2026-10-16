@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -438,8 +439,13 @@ func (s *Service) executeRCAPipeline(ctx context.Context, taskID string, inst *r
 	}
 
 	// 阶段 3: 短事务落库 (耗时 < 20ms)
-	writeDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
+	// 审计修复 ISSUE-TASK-05: 使用 GetExistingTaskDB 替代 GetOrCreateTaskDB，若任务已被删除则直接安全退出，杜绝空库幽灵复活
+	writeDB, _, err := storage.GetExistingTaskDB(s.taskDir, taskID)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) || strings.Contains(err.Error(), "not found") {
+			logger.Log.Infof("[Task Service] Task %s was deleted before RCA write, exiting gracefully", taskID)
+			return
+		}
 		logger.Log.Errorf("[Task Service] Open task db for saving RCA failed: %v", err)
 		s.updateTaskRCAState(taskID, model.RCAStatusFailed, fmt.Sprintf("写入分析结果失败: %v", err), nil)
 		return

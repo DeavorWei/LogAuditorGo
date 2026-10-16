@@ -386,13 +386,15 @@ func BuildIndexDoc(k model.Knowledge) BleveIndexDoc {
 	seenProd := make(map[string]bool)
 	seenVer := make(map[string]bool)
 	for _, v := range k.Versions {
-		if v.ProductType != "" && !seenProd[v.ProductType] {
-			seenProd[v.ProductType] = true
-			products = append(products, v.ProductType)
+		pt := strings.ToUpper(strings.TrimSpace(v.ProductType))
+		if pt != "" && !seenProd[pt] {
+			seenProd[pt] = true
+			products = append(products, pt)
 		}
-		if v.ProductVersion != "" && !seenVer[v.ProductVersion] {
-			seenVer[v.ProductVersion] = true
-			versions = append(versions, v.ProductVersion)
+		pv := strings.ToUpper(strings.TrimSpace(v.ProductVersion))
+		if pv != "" && !seenVer[pv] {
+			seenVer[pv] = true
+			versions = append(versions, pv)
 		}
 	}
 	return BleveIndexDoc{
@@ -510,16 +512,16 @@ func (idx *Indexer) Search(filter SearchFilter) (*SearchResult, error) {
 		queries = append(queries, termQuery)
 	}
 
-	// 5. 产品过滤（keyword 精确匹配，需与 mapping 配套）
+	// 5. 产品过滤（keyword 精确匹配，统一归一化为大写）
 	if prod := strings.TrimSpace(filter.Product); prod != "" {
-		termQuery := bleve.NewTermQuery(prod)
+		termQuery := bleve.NewTermQuery(strings.ToUpper(prod))
 		termQuery.SetField("product_list")
 		queries = append(queries, termQuery)
 	}
 
-	// 6. 版本过滤
+	// 6. 版本过滤（keyword 精确匹配，统一归一化为大写）
 	if ver := strings.TrimSpace(filter.Version); ver != "" {
-		termQuery := bleve.NewTermQuery(ver)
+		termQuery := bleve.NewTermQuery(strings.ToUpper(ver))
 		termQuery.SetField("version_list")
 		queries = append(queries, termQuery)
 	}

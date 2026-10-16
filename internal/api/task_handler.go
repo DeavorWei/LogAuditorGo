@@ -450,6 +450,14 @@ func (h *TaskHandler) QueryLogs(c *gin.Context) {
 
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "100"))
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 100
+	} else if pageSize > 1000 {
+		pageSize = 1000
+	}
 	module := c.Query("module")
 	brief := c.Query("brief")
 	hostname := c.Query("hostname")
@@ -702,8 +710,8 @@ func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20) // 1MB 限制
 
 	var req model.LogQueryRequestBody
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
 			return
 		}
@@ -1166,10 +1174,10 @@ func (h *TaskHandler) GetDeviceTimeline(c *gin.Context) {
 	// ARCH-14: 原实现 `_ = c.ShouldBindJSON(&filter)` 把解析错误完全吞掉，
 	// 非法 JSON 会被静默当作"空筛选条件"返回全量数据，掩盖客户端 bug。
 	// 这里与同文件其他接口一致，解析失败返回 400。
+	// 审计修复 ISSUE-API-05: 消除 ContentLength > 0 导致 chunked 请求体被忽略的缺陷
 	var filter model.MultiDeviceLogFilter
-	if err := c.ShouldBindJSON(&filter); err != nil {
-		// 时间线接口允许空 body（等价于"不带筛选条件"），只有非空且解析失败才报错
-		if c.Request.ContentLength > 0 {
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&filter, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid filter JSON: "+err.Error())
 			return
 		}
@@ -1195,12 +1203,18 @@ func (h *TaskHandler) GetMultiDeviceReport(c *gin.Context) {
 	var req struct {
 		DeviceIDs []uint `json:"device_ids"`
 	}
-	// ARCH-14: 同上，非空 body 解析失败必须返回 400 而不是静默降级为"全量设备"
-	if err := c.ShouldBindJSON(&req); err != nil {
-		if c.Request.ContentLength > 0 {
+	// 审计修复 ISSUE-API-05: 支持 chunked 编码反序列化，空 body 时 io.EOF 安全放行
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request JSON: "+err.Error())
 			return
 		}
+	}
+
+	// 审计修复 ISSUE-API-10: 批量 DeviceIDs 增加硬上限防护（单次最大 500）
+	if len(req.DeviceIDs) > 500 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "device_ids count exceeds maximum limit (500)")
+		return
 	}
 
 	report, err := h.taskSvc.GetMultiDeviceReport(taskID, req.DeviceIDs)
@@ -1272,7 +1286,7 @@ func (h *TaskHandler) GetTaskModules(c *gin.Context) {
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	taskID := c.Param("id")
 	if !isValidTaskID(taskID) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
 		return
 	}
 
@@ -1280,7 +1294,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	ct := c.GetHeader("Content-Type")
 	if strings.Contains(strings.ToLower(ct), "application/json") {
 		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid json: " + err.Error()})
+			ErrorResponse(c, http.StatusBadRequest, -1, "invalid json: "+err.Error())
 			return
 		}
 	} else {
@@ -1289,7 +1303,7 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 
 	if req.DeviceType != "" {
 		if !isValidDeviceType(req.DeviceType) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported device_type: " + req.DeviceType})
+			ErrorResponse(c, http.StatusBadRequest, -1, "unsupported device_type: "+req.DeviceType)
 			return
 		}
 	}
@@ -1297,14 +1311,14 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 	taskInfo, err := h.taskSvc.UpdateTask(taskID, req)
 	if err != nil {
 		if strings.Contains(err.Error(), "record not found") || strings.Contains(err.Error(), "not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": "task not found"})
+			ErrorResponse(c, http.StatusNotFound, -1, "task not found")
 			return
 		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": taskInfo})
+	SuccessResponse(c, taskInfo)
 }
 
 // ReanalyzeTask 基于任务已持久化的日志记录重新执行知识库匹配与 RCA 根因拓扑分析
@@ -1462,8 +1476,8 @@ func (h *TaskHandler) GetTaskLogSparkline(c *gin.Context) {
 	}
 
 	var req model.LogQueryRequestBody
-	if c.Request.ContentLength > 0 {
-		if err := c.ShouldBindJSON(&req); err != nil {
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
 			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
 			return
 		}

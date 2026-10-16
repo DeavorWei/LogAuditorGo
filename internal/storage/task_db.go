@@ -668,6 +668,22 @@ func GetOrCreateTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) 
 	return db, TaskDBPath(taskDir, taskID), nil
 }
 
+// GetExistingTaskDB 获取已存在的任务 DB。若物理 .db 文件不存在，直接返回 os.ErrNotExist，绝不新建幽灵库 (ISSUE-TASK-05)
+func GetExistingTaskDB(taskDir string, taskID string) (*gorm.DB, string, error) {
+	if !isValidTaskID(taskID) {
+		return nil, "", fmt.Errorf("invalid task id: %s", taskID)
+	}
+	dbPath := TaskDBPath(taskDir, taskID)
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil, "", fmt.Errorf("task db not found: %w", os.ErrNotExist)
+	}
+	db, err := GlobalPool.AcquireTaskDB(taskDir, taskID)
+	if err != nil {
+		return nil, "", err
+	}
+	return db, dbPath, nil
+}
+
 // ReleaseTaskDB 归还由 GetOrCreateTaskDB / AcquireTaskDB 获取的连接
 func ReleaseTaskDB(taskID string) {
 	GlobalPool.ReleaseTaskDB(taskID)

@@ -1896,3 +1896,39 @@ func TestTaskAPI_UpdateTask_And_Reanalyze(t *testing.T) {
 	}
 }
 
+// TestAPI_NegativeID_And_BatchLimit 验证 ISSUE-API-10 与 ISSUE-API-11
+func TestAPI_NegativeID_And_BatchLimit(t *testing.T) {
+	router, _, _ := setupTestRouterWithTask(t)
+
+	// 1. 负数文档 ID 必须拦截为 400，严禁溢出转为极大 uint
+	reqDel, _ := http.NewRequest(http.MethodDelete, "/api/v1/documents/-1", nil)
+	wDel := httptest.NewRecorder()
+	router.ServeHTTP(wDel, reqDel)
+	if wDel.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative document ID, got %d: %s", wDel.Code, wDel.Body.String())
+	}
+
+	// 2. 负数知识 ID 必须拦截为 400
+	reqKnow, _ := http.NewRequest(http.MethodGet, "/api/v1/knowledge/-99", nil)
+	wKnow := httptest.NewRecorder()
+	router.ServeHTTP(wKnow, reqKnow)
+	if wKnow.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for negative knowledge ID, got %d: %s", wKnow.Code, wKnow.Body.String())
+	}
+
+	// 3. 批量删除文档 ID 数量超过 500 时必须拦截为 400
+	oversizedIDs := make([]uint, 501)
+	for i := range oversizedIDs {
+		oversizedIDs[i] = uint(i + 1)
+	}
+	bodyBytes, _ := json.Marshal(map[string]interface{}{"ids": oversizedIDs})
+	reqBatch, _ := http.NewRequest(http.MethodPost, "/api/v1/documents/batch-delete", bytes.NewReader(bodyBytes))
+	reqBatch.Header.Set("Content-Type", "application/json")
+	wBatch := httptest.NewRecorder()
+	router.ServeHTTP(wBatch, reqBatch)
+	if wBatch.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for oversized batch delete, got %d: %s", wBatch.Code, wBatch.Body.String())
+	}
+}
+
+
