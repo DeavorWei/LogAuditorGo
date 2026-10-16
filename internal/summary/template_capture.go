@@ -527,8 +527,10 @@ func MergeCapturedParameters(rawParams map[string]string, captured map[string]st
 	if len(captured) == 0 {
 		return rawParams
 	}
-	if rawParams == nil {
-		rawParams = make(map[string]string, len(captured))
+
+	merged := make(map[string]string, len(rawParams)+len(captured))
+	for k, v := range rawParams {
+		merged[k] = v
 	}
 
 	for ck, cv := range captured {
@@ -547,7 +549,7 @@ func MergeCapturedParameters(rawParams map[string]string, captured map[string]st
 		// 3. 原生已有同名/同义参数保护 (闭环 R5)
 		hasExact := false
 		hasNormSynonym := false
-		for k := range rawParams {
+		for k := range merged {
 			if strings.EqualFold(k, ck) {
 				hasExact = true
 				break
@@ -564,9 +566,9 @@ func MergeCapturedParameters(rawParams map[string]string, captured map[string]st
 			continue
 		}
 
-		rawParams[ck] = cv
+		merged[ck] = cv
 	}
 
-	return rawParams
+	return merged
 }
 

@@ -294,3 +294,27 @@ func TestExtractParameters_LeadingTagTightening(t *testing.T) {
 		t.Fatalf("official protocol tag [WLAN_STA_INFO_OFFLINE] should be preserved: %v", protoParams)
 	}
 }
+
+// TestExtractParameters_NoPollutionRegression 验证 B1 缺陷修复：无参数日志返回 nil，不可修改，且绝不发生全局共享污染
+func TestExtractParameters_NoPollutionRegression(t *testing.T) {
+	msg1 := "BGP session authentication failed with no parameters"
+	p1 := logparser.ExtractParameters(msg1)
+	if len(p1) != 0 {
+		t.Fatalf("expected 0 params for plain log, got %v", p1)
+	}
+
+	// 模拟外部尝试修改 p1（若 p1 非 nil）
+	if p1 != nil {
+		p1["injected"] = "malicious_value"
+	}
+
+	// 提取第二条日志，断言决不能读到上一条注入的值
+	msg2 := "System initialized completely without parameters"
+	p2 := logparser.ExtractParameters(msg2)
+	if len(p2) != 0 {
+		t.Fatalf("B1 REGRESSION DETECTED: sentinel polluted, got %v", p2)
+	}
+	if p2["injected"] != "" {
+		t.Fatalf("B1 REGRESSION: leaked injected key")
+	}
+}

@@ -15,3 +15,8 @@ func CalcFeatureScoreForTest(norm *model.NormalizedLog, cand *model.Knowledge) i
 	return calcFeatureScore(norm, cand)
 }
 
+// ShouldAdmitTier4ForTest 暴露 shouldAdmitTier4，用于验证 Tier 4 全文检索准入规则与中文支持。
+func ShouldAdmitTier4ForTest(module, brief, messageBody string) bool {
+	return shouldAdmitTier4(module, brief, messageBody)
+}
+

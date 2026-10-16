@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -568,10 +569,11 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	var processedTotal int64 = 0
 	for _, bundle := range bundles {
 		base := processedTotal
+		var fileCtx context.Context = context.Background()
 		if tr != nil {
-			tr.SetStage("SAVE_DB", fmt.Sprintf("正在写入文件 %s 的解析结果...", bundle.cleanName))
+			fileCtx = tr.Context()
 		}
-		ingestErr := s.persistFileBundle(taskID, taskDB, bundle, taskInfo.DeviceType, deviceVersion, func(processed int) {
+		ingestErr := s.persistFileBundle(fileCtx, taskID, taskDB, bundle, taskInfo.DeviceType, deviceVersion, func(processed int) {
 			cur := base + int64(processed)
 			processedTotal = cur
 			if tr != nil {
@@ -2414,23 +2416,48 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			go func() {
 				defer wg.Done()
 				for idx := range jobs {
-					rec := &records[idx]
-					cleanRaw := logparser.SanitizeLogLine(rec.RawLog)
-					if cleanRaw == "" {
-						parsedItems[idx] = reanalyzeItem{isGarbage: true, record: model.LogRecord{ID: rec.ID}}
-						continue
-					}
+					func() {
+						defer func() {
+							if r := recover(); r != nil {
+								logger.Log.Errorf("[Reanalyze Worker] panic recovered on record idx %d: %v", idx, r)
+								rec := &records[idx]
+								parsedItems[idx] = reanalyzeItem{
+									isGarbage: false,
+									record: model.LogRecord{
+										ID:              rec.ID,
+										DeviceID:        rec.DeviceID,
+										Module:          "UNKNOWN",
+										Severity:        8,
+										Brief:           "PARSE_PANIC",
+										SourceFile:      rec.SourceFile,
+										RawLog:          rec.RawLog,
+										MessageBody:     rec.RawLog,
+										ParametersJSON:  "{}",
+										MatchTier:       matcher.TierUnmatch,
+										MatchConfidence: 0.0,
+									},
+								}
+							}
+						}()
 
-					parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
-					if parsed.KnowledgeID > 0 {
-						atomic.AddInt64(&matchedCount, 1)
-					}
-					// 保留主键与归属信息，覆盖解析产出的字段及已清洗的 RawLog
-					parsed.ID = rec.ID
-					parsed.DeviceID = rec.DeviceID
-					parsed.SourceFile = rec.SourceFile
-					parsed.RawLog = cleanRaw
-					parsedItems[idx] = reanalyzeItem{isGarbage: false, record: parsed}
+						rec := &records[idx]
+						cleanRaw := logparser.SanitizeLogLine(rec.RawLog)
+						if cleanRaw == "" {
+							parsedItems[idx] = reanalyzeItem{isGarbage: true, record: model.LogRecord{ID: rec.ID}}
+							return
+						}
+
+						parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
+						if parsed.KnowledgeID > 0 {
+							atomic.AddInt64(&matchedCount, 1)
+						}
+						// 保留主键与归属信息，覆盖解析产出的字段及已清洗的 RawLog
+						parsed.ID = rec.ID
+						parsed.DeviceID = rec.DeviceID
+						parsed.SourceFile = rec.SourceFile
+						parsed.RawLog = cleanRaw
+						parsedItems[idx] = reanalyzeItem{isGarbage: false, record: parsed}
+					}()
 				}
 			}()
 		}

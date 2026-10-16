@@ -200,19 +200,17 @@ func scanSemicolonSegments(segments []string, emit func(key, value string)) {
 	}
 }
 
-// emptyParamsMap 用于无提取参数时的不可变零分配哨兵
-var emptyParamsMap = map[string]string{}
-
-// ExtractParameters 从日志正文中提取动态键值对参数
+// ExtractParameters 从日志正文中提取动态键值对参数。
+// 若无任何键值对参数，返回 nil（nil map 读安全、长度为 0，且彻底杜绝多协程全局 map 污染与并发崩溃）。
 func ExtractParameters(msg string) map[string]string {
 	if strings.IndexByte(msg, '=') == -1 && strings.IndexByte(msg, ':') == -1 {
-		return emptyParamsMap
+		return nil
 	}
 
 	params := make(map[string]string, 4)
 	ExtractParametersInto(msg, params)
 	if len(params) == 0 {
-		return emptyParamsMap
+		return nil
 	}
 	return params
 }

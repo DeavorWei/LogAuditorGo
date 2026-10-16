@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -283,3 +285,287 @@ func TestService_GetEffectiveParseWorkers(t *testing.T) {
 	// 恢复全局配置
 	config.GlobalConfig = nil
 }
+
+// TestPersistFileBundle_CompensateCleanup_OnFailure 验证 M1 缺陷修复：
+// 当导入中途出现读错误或管道故障时，补偿清理必须彻底删除 TaskFile 和已入库碎片，绝不残留幽灵记录
+func TestPersistFileBundle_CompensateCleanup_OnFailure(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bundle_cleanup_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "task-cleanup-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("task-cleanup-test")
+
+	// 创建一个坏文件：在第 50 行写入超过 1MB 的超长单行，触发 Scanner 错误
+	badFilePath := filepath.Join(tmpDir, "corrupted.log")
+	f, err := os.Create(badFilePath)
+	if err != nil {
+		t.Fatalf("create bad file failed: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		f.WriteString(fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", i%60, i+1))
+	}
+	// 写入超过 maxScanLineBytes (1MB) 的超长 token
+	superLongLine := strings.Repeat("X", 2*1024*1024) + "\n"
+	f.WriteString(superLongLine)
+	f.Close()
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "task-cleanup-test",
+		cleanName:  "corrupted.log",
+		totalLines: 100,
+		deviceID:   1,
+		item: FileUploadItem{
+			FileName: "corrupted.log",
+			FilePath: badFilePath,
+			FileSize: 2 * 1024 * 1024,
+		},
+	}
+
+	err = svc.persistFileBundle(context.Background(), "task-cleanup-test", taskDB, bundle, "CloudEngine", "", nil)
+	if err == nil {
+		t.Fatalf("expected persistFileBundle to fail on corrupted file, got nil")
+	}
+
+	// 关键断言 (M1 闭环)：无论 pipeline 内部是否创建了 TaskFile，补偿清理后 task_files 必须为 0 条！
+	var tfCount int64
+	taskDB.Model(&model.TaskFile{}).Where("task_id = ? AND file_name = ?", "task-cleanup-test", "corrupted.log").Count(&tfCount)
+	if tfCount != 0 {
+		t.Errorf("M1 regression: task_files has ghost records: count=%d, want 0", tfCount)
+	}
+
+	var recCount int64
+	taskDB.Model(&model.LogRecord{}).Where("source_file = ?", "corrupted.log").Count(&recCount)
+	if recCount != 0 {
+		t.Errorf("log_records not cleaned up: count=%d, want 0", recCount)
+	}
+}
+
+// TestIngestStreamingPipeline_ContextCancel 验证 N1 缺陷修复：
+// 外部取消 ctx 时，流水线必须返回 ctx.Err()，绝不能将其混同于正常 EOF
+func TestIngestStreamingPipeline_ContextCancel(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pipeline_cancel_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "pipe-cancel-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("pipe-cancel-test")
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "pipe-cancel-test",
+		cleanName:  "cancel.log",
+		totalLines: 1000,
+		deviceID:   1,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// 模拟流式读取：读到第 30 行时主动触发 cancel()
+	cancelSource := func(lineChan chan<- indexedLine, c context.Context) error {
+		for i := 0; i < 500; i++ {
+			if i == 30 {
+				cancel()
+			}
+			select {
+			case <-c.Done():
+				return c.Err()
+			case lineChan <- indexedLine{seq: i, text: fmt.Sprintf("Apr 15 2026 14:00:%02d SW %%%%01SYS/4/UP: up %d", i%60, i)}:
+			}
+		}
+		return nil
+	}
+
+	cfg := PipelineConfig{
+		WorkerNum:     4,
+		LineChanCap:   16,
+		RecordChanCap: 32,
+		BatchSize:     50,
+		FlushInterval: 100 * time.Millisecond,
+	}
+
+	pipeErr := svc.IngestStreamingPipeline(
+		ctx,
+		taskDB,
+		cancelSource,
+		bundle,
+		"CloudEngine",
+		"",
+		cfg,
+		nil,
+	)
+
+	// 必须返回 context.Canceled，证明取消与正常 EOF 明确区分
+	if !errors.Is(pipeErr, context.Canceled) {
+		t.Fatalf("N1 regression: expected context.Canceled error, got %v", pipeErr)
+	}
+}
+
+// TestIngestStreamingPipeline_LeadingCommentsTickFlush 验证 N2 缺陷修复：
+// 文件前部存在大量无时间戳注释行，且中途触发 Ticker 定时刷盘时，不得破坏时间戳向前借用对齐
+func TestIngestStreamingPipeline_LeadingCommentsTickFlush(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pipeline_tick_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "pipe-tick-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("pipe-tick-test")
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "pipe-tick-test",
+		cleanName:  "tick.log",
+		totalLines: 30,
+		deviceID:   1,
+	}
+
+	// 前 10 行是无时间戳注释行，后 20 行是带时间戳的日志
+	lines := make([]string, 30)
+	for i := 0; i < 10; i++ {
+		lines[i] = fmt.Sprintf("###### Comment Header Line %d without timestamp ######", i+1)
+	}
+	for i := 10; i < 30; i++ {
+		lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
+	}
+
+	// FlushInterval 设为极短 (10ms)，确保触发多次 Ticker 刷盘判断
+	cfg := PipelineConfig{
+		WorkerNum:     2,
+		LineChanCap:   16,
+		RecordChanCap: 32,
+		BatchSize:     100, // 大于 30，确保不会因为 BatchSize 触发提前 flush
+		FlushInterval: 10 * time.Millisecond,
+	}
+
+	slowSource := func(lineChan chan<- indexedLine, ctx context.Context) error {
+		for i, l := range lines {
+			if i < 10 {
+				// 前 10 行每行稍作停顿，故意触发 Ticker
+				time.Sleep(15 * time.Millisecond)
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case lineChan <- indexedLine{seq: i, text: l}:
+			}
+		}
+		return nil
+	}
+
+	err = svc.IngestStreamingPipeline(
+		context.Background(),
+		taskDB,
+		slowSource,
+		bundle,
+		"CloudEngine",
+		"",
+		cfg,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("pipeline failed: %v", err)
+	}
+
+	var records []model.LogRecord
+	if err := taskDB.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("find records failed: %v", err)
+	}
+	if len(records) != 30 {
+		t.Fatalf("expected 30 records, got %d", len(records))
+	}
+
+	// 验证：第 1~10 条前导注释行的时间戳必须成功对齐到第 11 条日志的时间戳，绝对不能为零值！
+	targetTS := records[10].Timestamp
+	if targetTS.IsZero() || targetTS.Year() <= 1970 {
+		t.Fatalf("record[10] timestamp is invalid: %v", targetTS)
+	}
+	for i := 0; i < 10; i++ {
+		if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
+			t.Errorf("N2 regression: record[%d] timestamp is zero (not aligned): %v", i, records[i].Timestamp)
+		}
+		if !records[i].Timestamp.Equal(targetTS) {
+			t.Errorf("record[%d] timestamp mismatch: got %v, want %v", i, records[i].Timestamp, targetTS)
+		}
+	}
+}
+
+// TestIngestStreamingPipeline_WorkerPanicRecovery 验证 M2 缺陷修复：
+// 当解析过程发生 panic 时，Worker 协程单行 recover 兜底生效，协程不退出，整进程不崩溃，落库行数守恒
+func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pipeline_panic_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "pipe-panic-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("pipe-panic-test")
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "pipe-panic-test",
+		cleanName:  "panic_recovery.log",
+		totalLines: 100,
+		deviceID:   1,
+	}
+
+	// 构造 100 行日志，其中包含正常行、畸形行、特殊字符行
+	lines := make([]string, 100)
+	for i := 0; i < 100; i++ {
+		if i == 50 {
+			// 极端畸形行（包含大量不可见控制字符和 ANSI 序列）
+			lines[i] = "\x1b[31;1m\x00\xff\xfe\x01\x02MALFORMED_SPECIAL_LINE\x1b[0m"
+		} else {
+			lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
+		}
+	}
+
+	cfg := PipelineConfig{
+		WorkerNum:     4,
+		LineChanCap:   16,
+		RecordChanCap: 32,
+		BatchSize:     25,
+		FlushInterval: 50 * time.Millisecond,
+	}
+
+	err = svc.IngestStreamingPipeline(
+		context.Background(),
+		taskDB,
+		makeSliceLineSource(lines),
+		bundle,
+		"CloudEngine",
+		"",
+		cfg,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("pipeline failed with unexpected error: %v", err)
+	}
+
+	var count int64
+	taskDB.Model(&model.LogRecord{}).Count(&count)
+	if count != 100 {
+		t.Fatalf("line count not preserved: got %d, want 100", count)
+	}
+}
+
+

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -1090,3 +1091,36 @@ func TestTier4AdmissionGuard(t *testing.T) {
 		t.Errorf("expected tier unmatch on empty db, got %s", tier3)
 	}
 }
+
+// TestTier4AdmissionGuard_ChineseAndUTF8 验证 N3 缺陷修复：中文 Brief 能够正常准入 Tier 4，且超长报文 UTF-8 截断不破坏多字节边界
+func TestTier4AdmissionGuard_ChineseAndUTF8(t *testing.T) {
+	// 1. 中文 Brief 能够正常准入
+	if !matcher.ShouldAdmitTier4ForTest("DEV", "链路故障", "接口 GE0/0/1 发生故障告警") {
+		t.Errorf("expected Chinese brief to be admitted to Tier 4")
+	}
+
+	// 2. 纯标点符号/非法模块依然被阻断
+	if matcher.ShouldAdmitTier4ForTest("DEV", "---", "") {
+		t.Errorf("expected punctuation brief to be rejected")
+	}
+	if matcher.ShouldAdmitTier4ForTest("UNKNOWN", "LINK_DOWN", "Interface down") {
+		t.Errorf("expected UNKNOWN module to be rejected")
+	}
+
+	// 3. 构造恰好在 256 字节边界跨越中文字符的报文，验证 Match 不崩溃且截断合法
+	engine, _ := newIsolatedMatchEngine(t)
+	// 构造 254 字节 ASCII + 中文字符（每个汉字 3 字节，共跨越 254~257 字节）
+	prefix := strings.Repeat("A", 254)
+	chineseBody := prefix + "测试中文字符截断安全性"
+	normLong := &model.NormalizedLog{
+		Module:      "SYS",
+		Brief:       "TEST_BRIEF",
+		MessageBody: chineseBody,
+	}
+	// 不应发生 panic 或 UTF-8 损坏
+	_, tier, _ := engine.Match(normLong, "", "")
+	if tier != matcher.TierUnmatch {
+		t.Errorf("expected tier unmatch on empty db, got %s", tier)
+	}
+}
+

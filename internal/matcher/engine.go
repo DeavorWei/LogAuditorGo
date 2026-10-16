@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 
@@ -250,12 +252,12 @@ func shouldAdmitTier4(module, brief, messageBody string) bool {
 	}
 
 	if cleanBrief != "" {
-		if len(cleanBrief) < 2 {
+		if utf8.RuneCountInString(cleanBrief) < 2 && len(cleanBrief) < 2 {
 			return false
 		}
 		hasAlnum := false
 		for _, r := range cleanBrief {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
 				hasAlnum = true
 				break
 			}
@@ -266,7 +268,7 @@ func shouldAdmitTier4(module, brief, messageBody string) bool {
 	} else {
 		hasLetter := false
 		for _, r := range cleanBody {
-			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			if unicode.IsLetter(r) || unicode.IsDigit(r) {
 				hasLetter = true
 				break
 			}
@@ -448,7 +450,11 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			bodyText := norm.MessageBody
 			// 防止超长报文（如数百上千字节的 hex dump 或巨型参数）直接扔进全文索引造成倒排查询爆炸
 			if len(bodyText) > 256 {
-				bodyText = bodyText[:256]
+				trunc := 256
+				for trunc > 0 && !utf8.RuneStart(bodyText[trunc]) {
+					trunc--
+				}
+				bodyText = bodyText[:trunc]
 			}
 			if queryKeyword != "" {
 				queryKeyword = queryKeyword + " " + bodyText

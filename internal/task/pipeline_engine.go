@@ -12,7 +12,9 @@ import (
 	"gorm.io/gorm"
 
 	"logauditorgo/internal/logparser"
+	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
+	"logauditorgo/pkg/logger"
 )
 
 // PipelineConfig 管道参数配置
@@ -97,7 +99,27 @@ func (s *Service) IngestStreamingPipeline(
 		go func() {
 			defer workerWg.Done()
 			for il := range rawLineChan {
-				rec := s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
+				var rec model.LogRecord
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							logger.Log.Errorf("[Pipeline Worker] panic recovered on line seq %d: %v", il.seq, r)
+							rec = model.LogRecord{
+								DeviceID:        bundle.deviceID,
+								Module:          "UNKNOWN",
+								Severity:        8,
+								Brief:           "PARSE_PANIC",
+								SourceFile:      bundle.cleanName,
+								RawLog:          il.text,
+								MessageBody:     il.text,
+								ParametersJSON:  "{}",
+								MatchTier:       matcher.TierUnmatch,
+								MatchConfidence: 0.0,
+							}
+						}
+					}()
+					rec = s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
+				}()
 				select {
 				case <-ctx.Done():
 					return
@@ -186,6 +208,8 @@ func (s *Service) IngestStreamingPipeline(
 consumeLoop:
 	for {
 		select {
+		case <-ctx.Done():
+			break consumeLoop
 		case rec, ok := <-recordChan:
 			if !ok {
 				break consumeLoop
@@ -199,6 +223,11 @@ consumeLoop:
 			}
 		case <-ticker.C:
 			if len(batch) > 0 {
+				// N2 保护：若当前文件尚未获取到任何有效时间戳，且本批次内也全无有效时间戳，
+				// 则暂缓本次定时 flush，等待首条有效时间戳到达或达到满批次/EOF，防止头部无时间戳注释行因定时刷盘而无法完成时间戳向前借用对齐。
+				if lastValidTS.IsZero() && !hasAnyValidTimestamp(batch) {
+					continue
+				}
 				if err := flush(); err != nil {
 					commitErr = err
 					break consumeLoop
@@ -214,6 +243,20 @@ consumeLoop:
 		return commitErr
 	}
 
+	if ctx.Err() != nil {
+		cancel()
+		for range recordChan {
+		}
+		return ctx.Err()
+	}
+
+	if readErr != nil {
+		cancel()
+		for range recordChan {
+		}
+		return readErr
+	}
+
 	if len(reorderBuf) > 0 {
 		return fmt.Errorf("pipeline integrity violated: %d records stuck in reorder buffer", len(reorderBuf))
 	}
@@ -223,7 +266,17 @@ consumeLoop:
 		}
 	}
 
-	return readErr
+	return nil
+}
+
+// hasAnyValidTimestamp 检查日志切片中是否包含至少一条有效时间戳
+func hasAnyValidTimestamp(records []model.LogRecord) bool {
+	for i := range records {
+		if !records[i].Timestamp.IsZero() && records[i].Timestamp.Year() > 1970 {
+			return true
+		}
+	}
+	return false
 }
 
 // makeFileReaderLineSource 构建从 io.Reader 流式产出 indexedLine 的源函数
@@ -245,12 +298,18 @@ func makeFileReaderLineSource(r io.Reader) func(lineChan chan<- indexedLine, ctx
 			}
 			select {
 			case <-ctx.Done():
-				return nil
+				return ctx.Err()
 			case lineChan <- indexedLine{seq: seq, text: l}:
 				seq++
 			}
 		}
-		return scanner.Err()
+		if scanErr := scanner.Err(); scanErr != nil {
+			return scanErr
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return nil
 	}
 }
 
@@ -268,11 +327,15 @@ func makeSliceLineSource(lines []string) func(lineChan chan<- indexedLine, ctx c
 			}
 			select {
 			case <-ctx.Done():
-				return nil
+				return ctx.Err()
 			case lineChan <- indexedLine{seq: seq, text: clean}:
 				seq++
 			}
 		}
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return nil
 	}
 }
+

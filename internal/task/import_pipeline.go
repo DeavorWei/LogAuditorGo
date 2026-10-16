@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -245,75 +244,13 @@ func (s *Service) getEffectiveParseWorkers() int {
 	return workerNum
 }
 
-// parseAndMatchChunk 并发解析并匹配一个批次的日志行。
-//
-// TASK-17: 任务队列缓冲与批次对齐，且结果按 index 就地回填，
-// 单条日志处理变慢时只影响本批次，不会把整个 worker 池堵死。
-func (s *Service) parseAndMatchChunk(lines []string, cleanName string, deviceID uint, deviceType, deviceVersion string) []model.LogRecord {
-	records := make([]model.LogRecord, len(lines))
-	if len(lines) == 0 {
-		return records
-	}
-
-	workerNum := s.getEffectiveParseWorkers()
-	if workerNum > len(lines) {
-		workerNum = len(lines)
-	}
-
-	jobs := make(chan int, importJobBuffer)
-	var wg sync.WaitGroup
-
-	worker := func() {
-		defer wg.Done()
-		for idx := range jobs {
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						logger.Log.Errorf("[Task Service] Worker recovered from panic on line %d: %v", idx, r)
-						records[idx] = model.LogRecord{
-							DeviceID:   deviceID,
-							Module:     "UNKNOWN",
-							Severity:   8,
-							Brief:      "PARSE_PANIC",
-							SourceFile: cleanName,
-							RawLog:     lines[idx],
-						}
-					}
-				}()
-				records[idx] = s.parseLogLine(lines[idx], cleanName, deviceID, deviceType, deviceVersion)
-			}()
-		}
-	}
-
-	wg.Add(workerNum)
-	for i := 0; i < workerNum; i++ {
-		go worker()
-	}
-	for i := range lines {
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
-
-	validRecords := make([]model.LogRecord, 0, len(records))
-	for _, rec := range records {
-		if strings.TrimSpace(rec.RawLog) != "" {
-			validRecords = append(validRecords, rec)
-		}
-	}
-	return validRecords
-}
-
 // parseLogLine 解析单行日志并匹配知识库，返回可直接落库的 LogRecord。
 //
 // 9.1: 这是 ImportLogsWithDevice 与 ReanalyzeTask 原本各自复制一份的核心逻辑（约 45 行），
 // 抽取后两条链路共享同一实现，不会再出现"重分析结果与首次导入不一致"。
 func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType, deviceVersion string) (rec model.LogRecord) {
-	// 纵深防御：前置确保单行必定经过清洗。SanitizeLogLine 具备 Fast-Path（纯字节扫描零内存分配），
-	// 若前置 scanner 已清洗则直接瞬时幂等返回，保证 panic recover 和 ParseLine fallback 分支绝对安全。
-	line = logparser.SanitizeLogLine(line)
-
-	// 兜底：单行 panic 只影响这一行，绝不拖垮整个批次
+	// 兜底：单行 panic 只影响这一行，绝不拖垮整个批次或 Worker 协程
+	// 必须置于函数第一行，确保包含后续 SanitizeLogLine 的正则及字符串分配逻辑
 	defer func() {
 		if r := recover(); r != nil {
 			logger.Log.Errorf("[Task Service] Recovered panic while parsing line: %v", r)
@@ -331,6 +268,10 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 			}
 		}
 	}()
+
+	// 纵深防御：前置确保单行必定经过清洗。SanitizeLogLine 具备 Fast-Path（纯字节扫描零内存分配），
+	// 若前置 scanner 已清洗则直接瞬时幂等返回，保证 panic recover 和 ParseLine fallback 分支绝对安全。
+	line = logparser.SanitizeLogLine(line)
 
 	norm, err := logparser.ParseLine(line)
 	if err != nil {
@@ -485,6 +426,7 @@ func alignChunkTimestamps(records []model.LogRecord, lastFile *string, lastValid
 // 后续批次每 importChunkLines 行一个独立小事务（TASK-04：避免长事务持锁）；
 // 任一环节失败都执行补偿清理，把 TaskFile 与该文件的已入库碎片一并删除。
 func (s *Service) persistFileBundle(
+	ctx context.Context,
 	taskID string,
 	taskDB *gorm.DB,
 	bundle *fileBundle,
@@ -505,11 +447,14 @@ func (s *Service) persistFileBundle(
 		if delErr := taskDB.Where("source_file = ?", bundle.cleanName).Delete(&model.LogRecord{}).Error; delErr != nil {
 			logger.Log.Warnf("[Task Service] compensate delete log records of %s failed: %v", bundle.cleanName, delErr)
 		}
-		if taskFile.ID > 0 {
-			if delErr := taskDB.Delete(&model.TaskFile{}, taskFile.ID).Error; delErr != nil {
-				logger.Log.Warnf("[Task Service] compensate delete task file %s failed: %v", bundle.cleanName, delErr)
-			}
+		// 按业务主键 (task_id, file_name) 删除，不依赖局部变量 ID，天然幂等且与创建路径解耦 (M1)
+		if delErr := taskDB.Where("task_id = ? AND file_name = ?", taskID, bundle.cleanName).Delete(&model.TaskFile{}).Error; delErr != nil {
+			logger.Log.Warnf("[Task Service] compensate delete task file %s failed: %v", bundle.cleanName, delErr)
 		}
+	}
+
+	if ctx == nil {
+		ctx = context.Background()
 	}
 
 	cfg := PipelineConfig{
@@ -542,7 +487,7 @@ func (s *Service) persistFileBundle(
 
 		lineSource := makeFileReaderLineSource(dr)
 		ingestErr = s.IngestStreamingPipeline(
-			context.Background(),
+			ctx,
 			taskDB,
 			lineSource,
 			bundle,
@@ -555,7 +500,7 @@ func (s *Service) persistFileBundle(
 		// 3. 内存内容 / 一次性 Reader：切片流式接入 IngestStreamingPipeline
 		lineSource := makeSliceLineSource(bundle.lines)
 		ingestErr = s.IngestStreamingPipeline(
-			context.Background(),
+			ctx,
 			taskDB,
 			lineSource,
 			bundle,
