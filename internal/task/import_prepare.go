@@ -1,6 +1,8 @@
 package task
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,7 +27,13 @@ import (
 // 置 FAILED + 回写 ErrorMessage（双库） + 进度追踪器 Fail + 返回可上抛的 error。
 func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progress.JobTracker, cause error, message string) (*model.TaskInfo, error) {
 	errMsg := message
-	if cause != nil {
+	isCanceled := cause != nil && errors.Is(cause, context.Canceled)
+	if isCanceled {
+		errMsg = "用户主动终止任务"
+		if message == "" {
+			message = "用户主动终止任务"
+		}
+	} else if cause != nil {
 		errMsg = cause.Error()
 	} else if message != "" {
 		cause = fmt.Errorf("%s", message)
@@ -41,10 +49,15 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 		}
 	}
 	if tr != nil {
-		if message != "" {
-			tr.AddLog("error", "%s: %v", message, cause)
+		if isCanceled {
+			tr.AddLog("info", "用户主动终止任务")
+			tr.Cancel("用户主动终止任务")
+		} else {
+			if message != "" {
+				tr.AddLog("error", "%s: %v", message, cause)
+			}
+			tr.Fail(cause, message)
 		}
-		tr.Fail(cause, message)
 	}
 	return nil, cause
 }
@@ -101,6 +114,7 @@ func (s *Service) PersistTaskInfoForTest(taskDB *gorm.DB, taskInfo *model.TaskIn
 //          不再像旧实现那样"记一行 warning 后继续用被截断的半截数据"。
 // TASK-18: 设备前缀改用正则判断，避免不同设备的 [A]_x.log / [B]_x.log 混档。
 func (s *Service) prepareBundles(
+	ctx context.Context,
 	taskID string,
 	deviceID uint,
 	items []FileUploadItem,
@@ -109,7 +123,10 @@ func (s *Service) prepareBundles(
 	dbFilesMap map[string]model.TaskFile,
 	batchAssignedNames map[string]bool,
 	tr *progress.JobTracker,
-) (bundles []*fileBundle, totalLines int64, failedFiles []string) {
+) (bundles []*fileBundle, totalLines int64, failedFiles []string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	nameTaken := func(name string) bool {
 		return batchAssignedNames[name] || dbFilesMap[name].FileName != ""
 	}
@@ -121,6 +138,9 @@ func (s *Service) prepareBundles(
 	}
 
 	for _, item := range items {
+		if ctx.Err() != nil {
+			return nil, 0, nil, ctx.Err()
+		}
 		cleanName := filepath.Base(strings.TrimSpace(item.FileName))
 		if cleanName == "" {
 			cleanName = "uploaded_log.txt"
@@ -146,9 +166,12 @@ func (s *Service) prepareBundles(
 				addLog("error", "文件 %s 读取/转码失败，已跳过: %v", item.FileName, err)
 				continue
 			}
-			lineCount, sample, err = scanLineSource(dr, hostnameProbeLines)
+			lineCount, sample, err = scanLineSource(ctx, dr, hostnameProbeLines)
 			_ = f.Close()
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil, 0, nil, err
+				}
 				// TASK-06: 单行超 1MB 时 bufio.Scanner 会返回 ErrTooLong，
 				// 这里按产品决策把整个文件判为格式非法，绝不使用被截断的半截数据。
 				failedFiles = append(failedFiles, fmt.Sprintf("%s: 扫描失败，可能存在超过 %d 字节的超长行 (%v)",
@@ -171,9 +194,12 @@ func (s *Service) prepareBundles(
 				addLog("error", "文件 %s 读取/转码失败，已跳过: %v", item.FileName, err)
 				continue
 			}
-			allLines, sample, err = loadAllLines(dr, hostnameProbeLines)
+			allLines, sample, err = loadAllLines(ctx, dr, hostnameProbeLines)
 			_ = rc.Close()
 			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil, 0, nil, err
+				}
 				failedFiles = append(failedFiles, fmt.Sprintf("%s: 扫描失败，可能存在超过 %d 字节的超长行 (%v)",
 					item.FileName, maxScanLineBytes, err))
 				addLog("error", "文件 %s 扫描失败（可能存在超过 %d 字节的超长行），已跳过该文件: %v",
@@ -295,7 +321,7 @@ func (s *Service) prepareBundles(
 		})
 	}
 
-	return bundles, totalLines, failedFiles
+	return bundles, totalLines, failedFiles, nil
 }
 
 

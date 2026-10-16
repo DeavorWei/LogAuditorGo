@@ -147,12 +147,15 @@ func openDecodedReader(rc io.Reader) (io.Reader, error) {
 
 // scanLineSource 统计有效行数并采集前 sampleN 行样本。
 // 扫描错误（含单行超限）直接向上抛错，由调用方把整个文件判为失败。
-func scanLineSource(r io.Reader, sampleN int) (total int, sample []string, err error) {
+func scanLineSource(ctx context.Context, r io.Reader, sampleN int) (total int, sample []string, err error) {
 	scanner := bufio.NewScanner(r)
 	scanBuf := make([]byte, 64*1024)
 	scanner.Buffer(scanBuf, maxScanLineBytes)
 
 	for scanner.Scan() {
+		if ctx != nil && ctx.Err() != nil {
+			return 0, nil, ctx.Err()
+		}
 		text := scanner.Text()
 		if logparser.IsBlankOrGarbageLine(text) {
 			continue
@@ -169,16 +172,22 @@ func scanLineSource(r io.Reader, sampleN int) (total int, sample []string, err e
 	if scanErr := scanner.Err(); scanErr != nil {
 		return 0, nil, scanErr
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return 0, nil, ctx.Err()
+	}
 	return total, sample, nil
 }
 
 // loadAllLines 一次性载入某个来源的全部有效行（仅用于无法二次读取的来源）
-func loadAllLines(r io.Reader, sampleN int) (lines []string, sample []string, err error) {
+func loadAllLines(ctx context.Context, r io.Reader, sampleN int) (lines []string, sample []string, err error) {
 	scanner := bufio.NewScanner(r)
 	scanBuf := make([]byte, 64*1024)
 	scanner.Buffer(scanBuf, maxScanLineBytes)
 
 	for scanner.Scan() {
+		if ctx != nil && ctx.Err() != nil {
+			return nil, nil, ctx.Err()
+		}
 		text := scanner.Text()
 		if logparser.IsBlankOrGarbageLine(text) {
 			continue
@@ -194,6 +203,9 @@ func loadAllLines(r io.Reader, sampleN int) (lines []string, sample []string, er
 	}
 	if scanErr := scanner.Err(); scanErr != nil {
 		return nil, nil, scanErr
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, nil, ctx.Err()
 	}
 	return lines, sample, nil
 }
@@ -268,6 +280,11 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 			}
 		}
 	}()
+
+	// 测试桩：用于回归测试极端 panic 注入场景下的行级恢复与守恒保障 (R4)
+	if strings.HasPrefix(line, "__INJECT_TEST_PANIC__") {
+		panic("simulated line parser panic")
+	}
 
 	// 纵深防御：前置确保单行必定经过清洗。SanitizeLogLine 具备 Fast-Path（纯字节扫描零内存分配），
 	// 若前置 scanner 已清洗则直接瞬时幂等返回，保证 panic recover 和 ParseLine fallback 分支绝对安全。

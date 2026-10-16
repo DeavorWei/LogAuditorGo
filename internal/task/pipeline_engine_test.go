@@ -301,13 +301,14 @@ func TestPersistFileBundle_CompensateCleanup_OnFailure(t *testing.T) {
 	}
 	defer storage.ReleaseTaskDB("task-cleanup-test")
 
-	// 创建一个坏文件：在第 50 行写入超过 1MB 的超长单行，触发 Scanner 错误
+	// 创建一个坏文件：前 5100 行写入有效日志（跨过 BatchSize=5000 阈值触发一次真实 flush 建立 TaskFile 与日志碎片）
+	// 第 5101 行写入超过 1MB 的超长单行，触发 Scanner 错误中断流水线
 	badFilePath := filepath.Join(tmpDir, "corrupted.log")
 	f, err := os.Create(badFilePath)
 	if err != nil {
 		t.Fatalf("create bad file failed: %v", err)
 	}
-	for i := 0; i < 50; i++ {
+	for i := 0; i < 5100; i++ {
 		f.WriteString(fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", i%60, i+1))
 	}
 	// 写入超过 maxScanLineBytes (1MB) 的超长 token
@@ -319,7 +320,7 @@ func TestPersistFileBundle_CompensateCleanup_OnFailure(t *testing.T) {
 	bundle := &fileBundle{
 		taskID:     "task-cleanup-test",
 		cleanName:  "corrupted.log",
-		totalLines: 100,
+		totalLines: 5101,
 		deviceID:   1,
 		item: FileUploadItem{
 			FileName: "corrupted.log",
@@ -528,12 +529,15 @@ func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
 		deviceID:   1,
 	}
 
-	// 构造 100 行日志，其中包含正常行、畸形行、特殊字符行
+	// 构造 100 行日志，注入真实的解析 panic 与 Worker panic
 	lines := make([]string, 100)
 	for i := 0; i < 100; i++ {
-		if i == 50 {
-			// 极端畸形行（包含大量不可见控制字符和 ANSI 序列）
-			lines[i] = "\x1b[31;1m\x00\xff\xfe\x01\x02MALFORMED_SPECIAL_LINE\x1b[0m"
+		if i == 30 {
+			// 触发 parseLogLine 内部首行 defer recover
+			lines[i] = "__INJECT_TEST_PANIC__ simulated parser crash line 30"
+		} else if i == 60 {
+			// 触发 Worker 循环内的 defer recover
+			lines[i] = "__INJECT_WORKER_PANIC__ simulated worker crash line 60"
 		} else {
 			lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
 		}
@@ -566,6 +570,126 @@ func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
 	if count != 100 {
 		t.Fatalf("line count not preserved: got %d, want 100", count)
 	}
+
+	// 真实验证 (M2 闭环)：第 30 行产生 PARSE_ERROR，第 60 行产生 PARSE_PANIC
+	var recs []model.LogRecord
+	if err := taskDB.Order("id asc").Find(&recs).Error; err != nil {
+		t.Fatalf("query records failed: %v", err)
+	}
+	if recs[30].Brief != "PARSE_ERROR" {
+		t.Errorf("expected line 30 Brief to be PARSE_ERROR, got %s", recs[30].Brief)
+	}
+	if recs[60].Brief != "PARSE_PANIC" {
+		t.Errorf("expected line 60 Brief to be PARSE_PANIC, got %s", recs[60].Brief)
+	}
 }
+
+// TestIngestStreamingPipeline_AllCommentsTickFlush 验证 N2 边界场景：
+// 整文件全部由无时间戳注释行组成，且 Ticker 高频 (5ms) 触发，确保全部落库、无死锁卡死、无数据丢失
+func TestIngestStreamingPipeline_AllCommentsTickFlush(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pipeline_all_comments_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "all-comments-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("all-comments-test")
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "all-comments-test",
+		cleanName:  "all_comments.log",
+		totalLines: 20,
+		deviceID:   1,
+	}
+
+	lines := make([]string, 20)
+	for i := 0; i < 20; i++ {
+		lines[i] = fmt.Sprintf("###### Pure comment header line %d without timestamp ######", i+1)
+	}
+
+	cfg := PipelineConfig{
+		WorkerNum:     2,
+		LineChanCap:   8,
+		RecordChanCap: 16,
+		BatchSize:     100, // 远大于 20，纯依赖最终 flush 或 Ticker
+		FlushInterval: 5 * time.Millisecond,
+	}
+
+	err = svc.IngestStreamingPipeline(
+		context.Background(),
+		taskDB,
+		makeSliceLineSource(lines),
+		bundle,
+		"CloudEngine",
+		"",
+		cfg,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("expected all comments pipeline to succeed, got %v", err)
+	}
+
+	var count int64
+	taskDB.Model(&model.LogRecord{}).Count(&count)
+	if count != 20 {
+		t.Fatalf("expected 20 records for pure comment file, got %d", count)
+	}
+}
+
+// TestPrepareBundles_ContextCancel 验证 R3 预扫描取消链路：
+// 当外部在预扫描阶段终止任务时，必须迅速响应取消并返回 context.Canceled
+func TestPrepareBundles_ContextCancel(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "prepare_cancel_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	// 创建一个较大文件（1000 行）
+	filePath := filepath.Join(tmpDir, "large_pre.log")
+	f, err := os.Create(filePath)
+	if err != nil {
+		t.Fatalf("create file failed: %v", err)
+	}
+	for i := 0; i < 1000; i++ {
+		f.WriteString(fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", i%60, i+1))
+	}
+	f.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// 立即取消
+	cancel()
+
+	svc := &Service{}
+	items := []FileUploadItem{
+		{
+			FileName: "large_pre.log",
+			FilePath: filePath,
+			FileSize: 1000 * 80,
+		},
+	}
+
+	_, _, _, err = svc.prepareBundles(
+		ctx,
+		"test-task-cancel",
+		1,
+		items,
+		"skip",
+		nil,
+		make(map[string]model.TaskFile),
+		make(map[string]bool),
+		nil,
+	)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from prepareBundles, got %v", err)
+	}
+}
+
 
 

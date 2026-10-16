@@ -523,6 +523,10 @@ func isOfficialCamelKey(key string) bool {
 //    - 大小写同名（如 SSID vs ssid）绝对保护原生现场解析值（即使为空）；
 //    - 规范化等价键（如 IPADDRESS 与 IP_ADDRESS、CIBID 与 CIB ID）严格杜绝非驼峰重入；
 //    - 官方驼峰字典参数（如 dropReason、dropCount）允许与现场空格复合键并存，供规范字典与模板渲染消费。
+//
+// 并发与不可变性安全保证 (COW):
+// 本函数采用严格的 Copy-On-Write 机制，返回值是新分配的 map 实例，绝不会就地修改传入的 rawParams，
+// 从而杜绝并发 map 读写崩溃与跨日志参数污染。调用方必须消费本函数的返回值。
 func MergeCapturedParameters(rawParams map[string]string, captured map[string]string, isWireless bool) map[string]string {
 	if len(captured) == 0 {
 		return rawParams

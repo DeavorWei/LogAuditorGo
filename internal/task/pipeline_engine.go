@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,6 +119,9 @@ func (s *Service) IngestStreamingPipeline(
 							}
 						}
 					}()
+					if strings.HasPrefix(il.text, "__INJECT_WORKER_PANIC__") {
+						panic("simulated worker panic outside parseLogLine")
+					}
 					rec = s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
 				}()
 				select {

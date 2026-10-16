@@ -1,6 +1,7 @@
 package task
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -30,7 +31,7 @@ func TestScanLineSourceWithGarbageAndNUL(t *testing.T) {
 	}, "\n")
 
 	r := strings.NewReader(rawContent)
-	total, sample, err := scanLineSource(r, 10)
+	total, sample, err := scanLineSource(context.Background(), r, 10)
 	if err != nil {
 		t.Fatalf("scanLineSource failed: %v", err)
 	}

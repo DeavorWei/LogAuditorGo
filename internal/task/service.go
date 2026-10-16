@@ -538,9 +538,15 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	// 记录当前导入批次中已分配占用的文件名，防止同批次文件之间相互覆盖或命名冲突
 	batchAssignedNames := make(map[string]bool)
 
-	// ---------- 阶段 RECEIVE：逐文件预处理 ----------
-	bundles, totalValidLines, failedFiles := s.prepareBundles(
-		taskID, deviceID, items, conflictMode, taskDB, dbFilesMap, batchAssignedNames, tr)
+	var importCtx context.Context = context.Background()
+	if tr != nil {
+		importCtx = tr.Context()
+	}
+	bundles, totalValidLines, failedFiles, prepErr := s.prepareBundles(
+		importCtx, taskID, deviceID, items, conflictMode, taskDB, dbFilesMap, batchAssignedNames, tr)
+	if prepErr != nil {
+		return s.failTask(taskDB, &taskInfo, tr, prepErr, "任务预处理已中止")
+	}
 
 	if len(bundles) == 0 {
 		if len(failedFiles) == 0 {
@@ -569,6 +575,9 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 	var processedTotal int64 = 0
 	for _, bundle := range bundles {
 		base := processedTotal
+		if tr != nil {
+			tr.SetStage("SAVE_DB", fmt.Sprintf("正在写入文件 %s 的解析结果...", bundle.cleanName))
+		}
 		var fileCtx context.Context = context.Background()
 		if tr != nil {
 			fileCtx = tr.Context()
