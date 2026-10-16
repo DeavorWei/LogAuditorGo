@@ -305,6 +305,9 @@ func (h *TaskHandler) ImportLogs(c *gin.Context) {
 
 	// 1. 服务端本地路径模式
 	if len(req.Paths) > 0 {
+		if !guardPaths(c, req.Paths) {
+			return
+		}
 		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
 		if err != nil {
 			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
@@ -1047,6 +1050,9 @@ func (h *TaskHandler) ImportLogsToDevice(c *gin.Context) {
 
 	// 1. 服务端本地路径模式
 	if len(req.Paths) > 0 {
+		if !guardPaths(c, req.Paths) {
+			return
+		}
 		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
 		if err != nil {
 			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())

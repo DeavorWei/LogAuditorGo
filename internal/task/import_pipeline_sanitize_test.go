@@ -280,3 +280,32 @@ func TestReanalyzeCleansesInjectedGarbageRecordsAndRefreshesLineCount(t *testing
 		t.Errorf("refreshed task_file.LineCount got %d, want 2", refreshedTF.LineCount)
 	}
 }
+
+func TestTruncateIncompleteUTF8(t *testing.T) {
+	// "测试日志" 的 UTF-8 字节：每个字 3 个字节，共 12 字节
+	orig := []byte("测试日志")
+	if len(orig) != 12 {
+		t.Fatalf("expected 12 bytes, got %d", len(orig))
+	}
+
+	// 截断到 11 字节（最后一个汉字'志'只有前 2 字节）
+	truncated := orig[:11]
+	cleaned := truncateIncompleteUTF8(truncated)
+	// 预期裁减掉最后不完整的汉字，保留前 3 个汉字（9 字节）
+	if string(cleaned) != "测试日" {
+		t.Errorf("expected '测试日', got %q", string(cleaned))
+	}
+
+	// 截断到 10 字节（最后一个汉字'志'只有第 1 字节）
+	truncated10 := orig[:10]
+	cleaned10 := truncateIncompleteUTF8(truncated10)
+	if string(cleaned10) != "测试日" {
+		t.Errorf("expected '测试日', got %q", string(cleaned10))
+	}
+
+	// 完整 UTF-8
+	cleanedFull := truncateIncompleteUTF8(orig)
+	if string(cleanedFull) != "测试日志" {
+		t.Errorf("expected '测试日志', got %q", string(cleanedFull))
+	}
+}

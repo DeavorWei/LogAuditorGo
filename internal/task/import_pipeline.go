@@ -87,6 +87,36 @@ type fileBundle struct {
 // 旧实现直接 `bufio.NewScanner(rc)` 后按 UTF-8 解释字节，存在两个静默错误：
 //  1. UTF-8 BOM 残留在首行，导致首条日志必定解析失败；
 //  2. GBK 编码的设备日志全表乱码、知识库匹配率归零。
+// truncateIncompleteUTF8 裁切末尾可能因 Peek 截断产生的不完整 UTF-8 字符序列
+func truncateIncompleteUTF8(b []byte) []byte {
+	if len(b) == 0 {
+		return b
+	}
+	// 向后回退最多 3 个字节，定位末尾未闭合的多字节符起始点并剔除
+	for i := len(b) - 1; i >= 0 && i >= len(b)-4; i-- {
+		if utf8.RuneStart(b[i]) {
+			c := b[i]
+			expectedLen := 1
+			switch {
+			case c < 0x80:
+				expectedLen = 1
+			case c&0xE0 == 0xC0:
+				expectedLen = 2
+			case c&0xF0 == 0xE0:
+				expectedLen = 3
+			case c&0xF8 == 0xF0:
+				expectedLen = 4
+			}
+			if len(b)-i < expectedLen {
+				return b[:i]
+			}
+			break
+		}
+	}
+	return b
+}
+
+// openDecodedReader 打开带编码自动探测的 Reader。
 //
 // 这里先探测前 64KB：剥掉 BOM；若不是合法 UTF-8，则整流转码为 UTF-8 后再交给 Scanner。
 func openDecodedReader(rc io.Reader) (io.Reader, error) {
@@ -104,7 +134,10 @@ func openDecodedReader(rc io.Reader) (io.Reader, error) {
 	if err != nil && err != io.EOF && len(probe) == 0 {
 		return nil, fmt.Errorf("probe file encoding failed: %w", err)
 	}
-	if len(probe) > 0 && !utf8.Valid(probe) {
+	// TASK-03: 若样本长度达到探测上限，末尾汉字多字节字符可能被截断导致 utf8.Valid 误判为 false；
+	// 先行剔除末尾未完整字符后再进行合法性判定
+	cleanProbe := truncateIncompleteUTF8(probe)
+	if len(cleanProbe) > 0 && !utf8.Valid(cleanProbe) {
 		// GBK/GB18030 日志：整流按行转码，避免一次性载入整个文件
 		return transform.NewReader(bufReader, simplifiedchinese.GB18030.NewDecoder()), nil
 	}
@@ -212,13 +245,23 @@ func (s *Service) parseAndMatchChunk(lines []string, cleanName string, deviceID 
 
 	worker := func() {
 		defer wg.Done()
-		defer func() {
-			if r := recover(); r != nil {
-				logger.Log.Errorf("[Task Service] Unexpected panic in log parse worker: %v", r)
-			}
-		}()
 		for idx := range jobs {
-			records[idx] = s.parseLogLine(lines[idx], cleanName, deviceID, deviceType, deviceVersion)
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						logger.Log.Errorf("[Task Service] Worker recovered from panic on line %d: %v", idx, r)
+						records[idx] = model.LogRecord{
+							DeviceID:   deviceID,
+							Module:     "UNKNOWN",
+							Severity:   8,
+							Brief:      "PARSE_PANIC",
+							SourceFile: cleanName,
+							RawLog:     lines[idx],
+						}
+					}
+				}()
+				records[idx] = s.parseLogLine(lines[idx], cleanName, deviceID, deviceType, deviceVersion)
+			}()
 		}
 	}
 

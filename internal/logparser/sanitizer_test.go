@@ -145,3 +145,46 @@ func TestSanitizeLogLine(t *testing.T) {
 		})
 	}
 }
+
+func TestMaskSensitiveCredentials(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Huawei local-user password cipher",
+			input:    "local-user admin password cipher $ver=0$#~Admin123#~",
+			expected: "local-user admin password cipher ******",
+		},
+		{
+			name:     "Huawei simple password",
+			input:    "password simple MySecretKey123",
+			expected: "password simple ******",
+		},
+		{
+			name:     "SNMP community read",
+			input:    "snmp-agent community read public",
+			expected: "snmp-agent community read ******",
+		},
+		{
+			name:     "Key value password parameter",
+			input:    "User login failed: user=admin password=SecretPassword123 ip=192.168.1.1",
+			expected: "User login failed: user=admin password=****** ip=192.168.1.1",
+		},
+		{
+			name:     "Error status message containing password must not be masked",
+			input:    "%%01BGP/4/BGP_AUTH_FAILED: md5 password error",
+			expected: "%%01BGP/4/BGP_AUTH_FAILED: md5 password error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MaskSensitiveCredentials(tt.input)
+			if got != tt.expected {
+				t.Errorf("MaskSensitiveCredentials() = %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}

@@ -83,7 +83,7 @@ func SanitizeLogLine(s string) string {
 	}
 
 	if !needsClean {
-		return strings.TrimSpace(s)
+		return MaskSensitiveCredentials(strings.TrimSpace(s))
 	}
 
 	// 4. Slow-Path 慢路径清洗：使用 strings.Builder 规范化字符
@@ -110,5 +110,44 @@ func SanitizeLogLine(s string) string {
 		i += size
 	}
 
-	return strings.TrimSpace(b.String())
+	return MaskSensitiveCredentials(strings.TrimSpace(b.String()))
+}
+
+var (
+	// 匹配命令行及正文中明文口令、密文与 Community
+	credCmdRegex = regexp.MustCompile(`(?i)\b(password\s+(?:simple|cipher)|password|cipher|community\s+(?:read|write|simple|cipher)|shared-key\s+(?:simple|cipher)|pre-shared-key\s+(?:simple|cipher)?)\s+([^\s,;]+)`)
+	// 匹配键值对参数中的口令
+	credKVRegex = regexp.MustCompile(`(?i)\b(pass(?:word)?|pwd|secret|token|key|shared-key|pre-shared-key)\s*=\s*([^,;\s\)]+)`)
+)
+
+// MaskSensitiveCredentials 对日志中暴露的密码、密文散列与只读/读写共同体进行脱敏遮盖 (ISSUE-LOG-01)
+func MaskSensitiveCredentials(s string) string {
+	lower := strings.ToLower(s)
+	if strings.IndexByte(s, '=') == -1 &&
+		!strings.Contains(lower, "password") &&
+		!strings.Contains(lower, "cipher") &&
+		!strings.Contains(lower, "community") &&
+		!strings.Contains(lower, "key") &&
+		!strings.Contains(lower, "secret") &&
+		!strings.Contains(lower, "token") {
+		return s
+	}
+
+	s = credKVRegex.ReplaceAllString(s, "$1=******")
+
+	s = credCmdRegex.ReplaceAllStringFunc(s, func(m string) string {
+		parts := strings.Fields(m)
+		if len(parts) >= 2 {
+			last := strings.ToLower(parts[len(parts)-1])
+			if last == "error" || last == "failed" || last == "mismatch" || last == "invalid" ||
+				last == "expired" || last == "changed" || last == "policy" || last == "required" {
+				return m
+			}
+			parts[len(parts)-1] = "******"
+			return strings.Join(parts, " ")
+		}
+		return m
+	})
+
+	return s
 }

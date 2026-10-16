@@ -144,15 +144,25 @@ func (idx *Indexer) swapIndexDir(indexPath, tempPath string) error {
 		return fmt.Errorf("promote new index failed: %w", err)
 	}
 
-	// 老目录已经安全归档，删除备份释放磁盘（失败不影响主流程）
+	// SRCH-01: 必须在验证新索引可以正常成功打开后，才能删除老索引备份
+	reopened, openErr := bleve.Open(indexPath)
+	if openErr != nil {
+		// 新索引打开失败：立刻清理损坏的新目录并回滚老索引
+		_ = os.RemoveAll(indexPath)
+		if rbErr := os.Rename(backupPath, indexPath); rbErr != nil {
+			logger.Log.Errorf("[Bleve Indexer] CRITICAL: rollback after open failure failed: %v (backup at %s)", rbErr, backupPath)
+		} else if oldReopened, oldErr := bleve.Open(indexPath); oldErr == nil {
+			idx.index = oldReopened
+			idx.path = indexPath
+		}
+		return fmt.Errorf("reopen rebuilt index failed, rolled back to original: %w", openErr)
+	}
+
+	// 成功打开新索引后，安全释放老备份磁盘空间（失败不影响主流程）
 	if err := os.RemoveAll(backupPath); err != nil {
 		logger.Log.Warnf("[Bleve Indexer] remove old index backup %s failed: %v", backupPath, err)
 	}
 
-	reopened, openErr := bleve.Open(indexPath)
-	if openErr != nil {
-		return fmt.Errorf("reopen rebuilt index failed: %w", openErr)
-	}
 	idx.index = reopened
 	idx.path = indexPath
 

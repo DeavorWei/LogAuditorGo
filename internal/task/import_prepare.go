@@ -24,9 +24,18 @@ import (
 // 现在所有错误出口都必须走这里：
 // 置 FAILED + 回写 ErrorMessage（双库） + 进度追踪器 Fail + 返回可上抛的 error。
 func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progress.JobTracker, cause error, message string) (*model.TaskInfo, error) {
+	errMsg := message
+	if cause != nil {
+		errMsg = cause.Error()
+	} else if message != "" {
+		cause = fmt.Errorf("%s", message)
+	} else {
+		cause = fmt.Errorf("unknown task failure")
+		errMsg = cause.Error()
+	}
 	if taskInfo != nil {
 		taskInfo.Status = model.TaskStatusFailed
-		taskInfo.ErrorMessage = cause.Error()
+		taskInfo.ErrorMessage = errMsg
 		s.persistTaskInfo(taskDB, taskInfo)
 	}
 	if tr != nil {

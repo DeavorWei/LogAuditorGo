@@ -294,14 +294,33 @@ func (s *Service) BatchTagLogs(taskID string, tagID uint, req model.LogQueryRequ
 	const batchChunkSize = 20000
 	if matchedTotal > 50000 || (tracker != nil && matchedTotal > batchChunkSize) {
 		var totalTagged int64
-		for offset := int64(0); offset < matchedTotal; offset += batchChunkSize {
+		var lastID uint = 0
+		var processed int64
+		for processed < matchedTotal {
 			if tracker != nil && tracker.IsCanceled() {
 				return totalTagged, matchedTotal, fmt.Errorf("batch tag canceled")
 			}
-			chunkQuery := query.Session(&gorm.Session{}).Select("id").Order("id ASC").Limit(int(batchChunkSize)).Offset(int(offset))
+			var idList []uint
+			err := query.Session(&gorm.Session{}).
+				Where("id > ?", lastID).
+				Select("id").
+				Order("id ASC").
+				Limit(int(batchChunkSize)).
+				Pluck("id", &idList).Error
+			if err != nil {
+				if tracker != nil {
+					tracker.Fail(err)
+				}
+				return totalTagged, matchedTotal, fmt.Errorf("batch tag select chunk failed: %w", err)
+			}
+			if len(idList) == 0 {
+				break
+			}
+			lastID = idList[len(idList)-1]
+
 			res := taskDB.Exec(
-				"INSERT OR IGNORE INTO log_tag_relations (tag_id, log_id, created_at) SELECT ?, id, ? FROM (?)",
-				tagID, time.Now(), chunkQuery,
+				"INSERT OR IGNORE INTO log_tag_relations (tag_id, log_id, created_at) SELECT ?, id, ? FROM log_records WHERE id IN (?)",
+				tagID, time.Now(), idList,
 			)
 			if res.Error != nil {
 				if tracker != nil {
@@ -310,10 +329,7 @@ func (s *Service) BatchTagLogs(taskID string, tagID uint, req model.LogQueryRequ
 				return totalTagged, matchedTotal, fmt.Errorf("batch tag insert chunk failed: %w", res.Error)
 			}
 			totalTagged += res.RowsAffected
-			processed := offset + batchChunkSize
-			if processed > matchedTotal {
-				processed = matchedTotal
-			}
+			processed += int64(len(idList))
 			if tracker != nil {
 				tracker.UpdateProgress(processed, matchedTotal, fmt.Sprintf("已处理 %d / %d 条日志", processed, matchedTotal))
 			}
@@ -430,14 +446,33 @@ func (s *Service) BatchUntagLogs(taskID string, tagID uint, req model.LogQueryRe
 	const batchChunkSize = 20000
 	if matchedTotal > 50000 || (tracker != nil && matchedTotal > batchChunkSize) {
 		var totalUntagged int64
-		for offset := int64(0); offset < matchedTotal; offset += batchChunkSize {
+		var lastID uint = 0
+		var processed int64
+		for processed < matchedTotal {
 			if tracker != nil && tracker.IsCanceled() {
 				return totalUntagged, fmt.Errorf("batch untag canceled")
 			}
-			chunkQuery := query.Session(&gorm.Session{}).Select("id").Order("id ASC").Limit(int(batchChunkSize)).Offset(int(offset))
+			var idList []uint
+			err := query.Session(&gorm.Session{}).
+				Where("id > ?", lastID).
+				Select("id").
+				Order("id ASC").
+				Limit(int(batchChunkSize)).
+				Pluck("id", &idList).Error
+			if err != nil {
+				if tracker != nil {
+					tracker.Fail(err)
+				}
+				return totalUntagged, fmt.Errorf("batch untag select chunk failed: %w", err)
+			}
+			if len(idList) == 0 {
+				break
+			}
+			lastID = idList[len(idList)-1]
+
 			res := taskDB.Exec(
-				"DELETE FROM log_tag_relations WHERE tag_id = ? AND log_id IN (SELECT id FROM (?))",
-				tagID, chunkQuery,
+				"DELETE FROM log_tag_relations WHERE tag_id = ? AND log_id IN (?)",
+				tagID, idList,
 			)
 			if res.Error != nil {
 				if tracker != nil {
@@ -446,10 +481,7 @@ func (s *Service) BatchUntagLogs(taskID string, tagID uint, req model.LogQueryRe
 				return totalUntagged, fmt.Errorf("batch untag chunk failed: %w", res.Error)
 			}
 			totalUntagged += res.RowsAffected
-			processed := offset + batchChunkSize
-			if processed > matchedTotal {
-				processed = matchedTotal
-			}
+			processed += int64(len(idList))
 			if tracker != nil {
 				tracker.UpdateProgress(processed, matchedTotal, fmt.Sprintf("已处理 %d / %d 条日志", processed, matchedTotal))
 			}
