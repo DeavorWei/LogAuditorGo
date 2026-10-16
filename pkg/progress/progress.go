@@ -212,6 +212,11 @@ func (t *JobTracker) SetStage(key string, message ...string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// 终态守卫：任务已处于终态（Failed/Completed）时禁止阶段流转，防止覆盖终止状态 (N-F)
+	if t.status != JobRunning {
+		return
+	}
+
 	now := time.Now()
 	msg := ""
 	if len(message) > 0 {
@@ -346,6 +351,11 @@ func (t *JobTracker) UpdateProgress(current int64, total int64, message ...strin
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// 终态守卫：任务已终态时直接忽略后续进度更新 (N-F)
+	if t.status != JobRunning {
+		return
+	}
+
 	t.current = current
 	t.total = total
 	if t.stageIndex >= 0 && t.stageIndex < len(t.stages) {
@@ -372,6 +382,11 @@ func (t *JobTracker) Increment(delta int64, message ...string) {
 	// 节流处理，避免高频锁竞争
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// 终态守卫：任务已终态时直接忽略增量更新 (N-F)
+	if t.status != JobRunning {
+		return
+	}
 
 	t.current += delta
 	if t.stageIndex >= 0 && t.stageIndex < len(t.stages) {
@@ -403,6 +418,11 @@ func (t *JobTracker) AddLog(level string, format string, args ...interface{}) {
 func (t *JobTracker) Complete(result interface{}, message ...string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	// 终态守卫：若任务已处于终态（例如已被 Cancel/Fail 标记为 Failed），禁止重新写成 Completed (N-B)
+	if t.status != JobRunning {
+		return
+	}
 
 	now := time.Now()
 	// 完成最后一个阶段

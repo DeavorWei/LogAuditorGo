@@ -44,6 +44,16 @@ func (s *Service) failTask(taskDB *gorm.DB, taskInfo *model.TaskInfo, tr *progre
 	if taskInfo != nil {
 		taskInfo.Status = model.TaskStatusFailed
 		taskInfo.ErrorMessage = errMsg
+		// N-C 强化：若任务库中此前已有成功落库的文件，重新聚合实际行数与文件数，
+		// 保证 task_info 上的统计与数据库实际记录严格一致，避免多文件中途终止时前端显示"0行"
+		if taskDB != nil {
+			totalLogs, matched := recountTaskLogs(taskDB)
+			taskInfo.LogCount = int(totalLogs)
+			taskInfo.MatchedCount = int(matched)
+			var fileCount int64
+			_ = taskDB.Model(&model.TaskFile{}).Count(&fileCount).Error
+			taskInfo.FileCount = int(fileCount)
+		}
 		if pErr := s.persistTaskInfo(taskDB, taskInfo); pErr != nil {
 			logger.Log.Errorf("[Task Service] failTask persistTaskInfo failed: %v", pErr)
 		}
@@ -86,9 +96,11 @@ func (s *Service) persistTaskInfo(taskDB *gorm.DB, taskInfo *model.TaskInfo) err
 	}
 
 	var firstErr error
-	if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
-		logger.Log.Errorf("[Task Service] save task info to global db failed: %v", err)
-		firstErr = fmt.Errorf("update global db failed: %w", err)
+	if s.globalDB != nil {
+		if err := s.globalDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {
+			logger.Log.Errorf("[Task Service] save task info to global db failed: %v", err)
+			firstErr = fmt.Errorf("update global db failed: %w", err)
+		}
 	}
 	if taskDB != nil {
 		if err := taskDB.Model(&model.TaskInfo{}).Where("task_id = ?", taskInfo.TaskID).Updates(updates).Error; err != nil {

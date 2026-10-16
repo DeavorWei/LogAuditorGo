@@ -281,14 +281,14 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 		}
 	}()
 
-	// 测试桩：用于回归测试极端 panic 注入场景下的行级恢复与守恒保障 (R4)
-	if strings.HasPrefix(line, "__INJECT_TEST_PANIC__") {
-		panic("simulated line parser panic")
-	}
-
 	// 纵深防御：前置确保单行必定经过清洗。SanitizeLogLine 具备 Fast-Path（纯字节扫描零内存分配），
 	// 若前置 scanner 已清洗则直接瞬时幂等返回，保证 panic recover 和 ParseLine fallback 分支绝对安全。
 	line = logparser.SanitizeLogLine(line)
+
+	// 测试桩：仅在单元测试注入 hook 存在时调用，生产环境零魔数、零性能损耗 (N-A)
+	if testParserPanicHook != nil {
+		testParserPanicHook(line)
+	}
 
 	norm, err := logparser.ParseLine(line)
 	if err != nil {

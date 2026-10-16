@@ -138,3 +138,46 @@ DONE:
 		t.Fatalf("expected last received event to be JobCompleted, got %s", lastSnap.Status)
 	}
 }
+
+// TestJobTracker_TerminalGuard 验证 N-F/N-B 终态守卫：
+// 当任务被 Cancel/Fail 置为终态后，后续的 SetStage、UpdateProgress、Increment、Complete 绝不能覆盖终态与取消文案
+func TestJobTracker_TerminalGuard(t *testing.T) {
+	stages := []StageDef{
+		{Key: "STAGE_1", Name: "阶段一"},
+		{Key: "STAGE_2", Name: "阶段二"},
+	}
+	tracker := NewJobTracker("test_terminal_guard", "task_term", "log", stages)
+
+	tracker.SetStage("STAGE_1", "正在进行阶段一")
+	tracker.UpdateProgress(30, 100, "处理 30%")
+
+	// 用户点击终止
+	canceled := tracker.Cancel("用户主动终止任务")
+	if !canceled {
+		t.Fatalf("expected Cancel to succeed")
+	}
+
+	snap := tracker.GetSnapshot()
+	if snap.Status != JobFailed {
+		t.Fatalf("expected status failed, got %s", snap.Status)
+	}
+	if snap.Message != "用户主动终止任务" {
+		t.Fatalf("expected message '用户主动终止任务', got %q", snap.Message)
+	}
+
+	// 模拟后续异步操作尝试切换阶段、更新进度或标记完成
+	tracker.SetStage("STAGE_2", "尝试覆盖阶段")
+	tracker.UpdateProgress(100, 100, "尝试覆盖进度")
+	tracker.Increment(10, "尝试增量")
+	tracker.Complete(nil, "尝试标记完成")
+
+	// 断言：终态完全受保护，状态依然是 JobFailed，消息未被污染
+	finalSnap := tracker.GetSnapshot()
+	if finalSnap.Status != JobFailed {
+		t.Errorf("terminal guard failed: status was overridden to %s", finalSnap.Status)
+	}
+	if finalSnap.Message != "用户主动终止任务" {
+		t.Errorf("terminal guard failed: message was overridden to %q", finalSnap.Message)
+	}
+}
+

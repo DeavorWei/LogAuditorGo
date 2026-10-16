@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -15,6 +16,7 @@ import (
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
+	"logauditorgo/pkg/progress"
 )
 
 // TestIngestStreamingPipeline_OrderAndTimestamp 验证乱序 Worker 场景下 ReorderBuffer 严格保序与时间戳继承
@@ -529,15 +531,29 @@ func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
 		deviceID:   1,
 	}
 
+	testParserPanicHook = func(line string) {
+		if strings.Contains(line, "simulated parser crash") {
+			panic("simulated parser crash")
+		}
+	}
+	defer func() { testParserPanicHook = nil }()
+
+	testWorkerPanicHook = func(text string) {
+		if strings.Contains(text, "simulated worker crash") {
+			panic("simulated worker crash")
+		}
+	}
+	defer func() { testWorkerPanicHook = nil }()
+
 	// 构造 100 行日志，注入真实的解析 panic 与 Worker panic
 	lines := make([]string, 100)
 	for i := 0; i < 100; i++ {
 		if i == 30 {
 			// 触发 parseLogLine 内部首行 defer recover
-			lines[i] = "__INJECT_TEST_PANIC__ simulated parser crash line 30"
+			lines[i] = "Apr 15 2026 14:00:30 CORE-SW-01 %%%%01SYS/4/CRASH: simulated parser crash line 30"
 		} else if i == 60 {
 			// 触发 Worker 循环内的 defer recover
-			lines[i] = "__INJECT_WORKER_PANIC__ simulated worker crash line 60"
+			lines[i] = "Apr 15 2026 14:00:00 CORE-SW-01 %%%%01SYS/4/CRASH: simulated worker crash line 60"
 		} else {
 			lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
 		}
@@ -641,55 +657,194 @@ func TestIngestStreamingPipeline_AllCommentsTickFlush(t *testing.T) {
 	}
 }
 
-// TestPrepareBundles_ContextCancel 验证 R3 预扫描取消链路：
-// 当外部在预扫描阶段终止任务时，必须迅速响应取消并返回 context.Canceled
+// testCancelReader 模拟流式读取并在读取特定行数后触发回调的 Reader
+type testCancelReader struct {
+	lines  []string
+	idx    int
+	onRead func(int)
+}
+
+func (r *testCancelReader) Read(p []byte) (n int, err error) {
+	if r.idx >= len(r.lines) {
+		return 0, io.EOF
+	}
+	line := r.lines[r.idx] + "\n"
+	if r.onRead != nil {
+		r.onRead(r.idx)
+	}
+	r.idx++
+	n = copy(p, []byte(line))
+	return n, nil
+}
+
+// TestPrepareBundles_ContextCancel 验证 R3/N-D 预扫描取消链路：
+// 当外部在逐行扫描采样过程中终止任务时，scanLineSource 循环内能秒级感知并退出，不把全量文件读完
 func TestPrepareBundles_ContextCancel(t *testing.T) {
-	tmpDir, err := os.MkdirTemp("", "prepare_cancel_test_*")
+	ctx, cancel := context.WithCancel(context.Background())
+
+	lines := make([]string, 500)
+	for i := 0; i < 500; i++ {
+		lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
+	}
+
+	readerCalled := 0
+	cancelReader := &testCancelReader{
+		lines: lines,
+		onRead: func(lineIdx int) {
+			if lineIdx == 10 {
+				cancel()
+			}
+			readerCalled = lineIdx
+		},
+	}
+
+	_, _, err := scanLineSource(ctx, cancelReader, 100)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled from scanLineSource, got %v", err)
+	}
+	if readerCalled >= 500 {
+		t.Fatalf("scanLineSource did not cancel promptly: read %d lines", readerCalled)
+	}
+}
+
+// TestFailTask_CanceledMappingAndRecount 验证 R2/N-C 缺陷修复：
+// 1. context.Canceled 错误映射为中文"用户主动终止任务"
+// 2. tr 状态调用 Cancel 避免覆盖为红色失败
+// 3. 在库已有数据正确回填 task_info，避免多文件导入中途取消显示 0 行
+func TestFailTask_CanceledMappingAndRecount(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "fail_task_test_*")
 	if err != nil {
 		t.Fatalf("create temp dir failed: %v", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	// 创建一个较大文件（1000 行）
-	filePath := filepath.Join(tmpDir, "large_pre.log")
-	f, err := os.Create(filePath)
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "task-fail-test")
 	if err != nil {
-		t.Fatalf("create file failed: %v", err)
+		t.Fatalf("init task db failed: %v", err)
 	}
-	for i := 0; i < 1000; i++ {
-		f.WriteString(fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.\n", i%60, i+1))
-	}
-	f.Close()
+	defer storage.ReleaseTaskDB("task-fail-test")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	// 立即取消
-	cancel()
+	// 模拟已存在 1 个成功导入的文件（50 条记录）
+	taskDB.Create(&model.TaskFile{
+		TaskID:    "task-fail-test",
+		FileName:  "success.log",
+		LineCount: 50,
+	})
+	for i := 0; i < 50; i++ {
+		taskDB.Create(&model.LogRecord{
+			SourceFile: "success.log",
+			RawLog:     "log line",
+		})
+	}
 
 	svc := &Service{}
-	items := []FileUploadItem{
-		{
-			FileName: "large_pre.log",
-			FilePath: filePath,
-			FileSize: 1000 * 80,
-		},
+	taskInfo := model.TaskInfo{
+		TaskID:   "task-fail-test",
+		TaskName: "TestFailTask",
+		Status:   model.TaskStatusProcessing,
 	}
 
-	_, _, _, err = svc.prepareBundles(
-		ctx,
-		"test-task-cancel",
-		1,
-		items,
-		"skip",
-		nil,
-		make(map[string]model.TaskFile),
-		make(map[string]bool),
-		nil,
-	)
+	tr := progress.NewJobTracker("job-test", "task-fail-test", "log", []progress.StageDef{
+		{Key: "PARSE_NORM", Name: "解析"},
+	})
 
+	_, err = svc.failTask(taskDB, &taskInfo, tr, context.Canceled, "导入中途取消")
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled from prepareBundles, got %v", err)
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// 验证 1：taskInfo.ErrorMessage 为中文
+	if taskInfo.ErrorMessage != "用户主动终止任务" {
+		t.Errorf("expected ErrorMessage to be '用户主动终止任务', got %q", taskInfo.ErrorMessage)
+	}
+	if taskInfo.Status != model.TaskStatusFailed {
+		t.Errorf("expected status Failed, got %s", taskInfo.Status)
+	}
+
+	// 验证 2：N-C 在库已有数据被正确回写，不为 0
+	if taskInfo.LogCount != 50 {
+		t.Errorf("expected LogCount to be 50, got %d", taskInfo.LogCount)
+	}
+	if taskInfo.FileCount != 1 {
+		t.Errorf("expected FileCount to be 1, got %d", taskInfo.FileCount)
+	}
+
+	// 验证 3：tracker 状态为 failed（已调用 Cancel，终态）
+	snap := tr.GetSnapshot()
+	if snap.Status != progress.JobFailed {
+		t.Errorf("expected tracker status failed, got %s", snap.Status)
+	}
+	if snap.Message != "用户主动终止任务" {
+		t.Errorf("expected tracker message '用户主动终止任务', got %q", snap.Message)
 	}
 }
+
+// TestReanalyzeTask_ContextCancel 验证 N-B 缺陷修复：
+// 当重分析过程中外部触发取消时，任务迅速响应退出，置为 FAILED 并显示"用户主动终止任务"，绝不被 Complete() 覆盖为 COMPLETED
+func TestReanalyzeTask_ContextCancel(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "reanalyze_cancel_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "task-reanalyze-cancel")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("task-reanalyze-cancel")
+
+	// 插入一批测试日志
+	for i := 0; i < 200; i++ {
+		taskDB.Create(&model.LogRecord{
+			SourceFile: "test.log",
+			RawLog:     fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1),
+		})
+	}
+
+	svc := &Service{
+		taskDir: tmpDir,
+	}
+
+	taskInfo := model.TaskInfo{
+		TaskID:     "task-reanalyze-cancel",
+		TaskName:   "ReanalyzeCancelTest",
+		DeviceType: "CloudEngine",
+		Status:     model.TaskStatusCompleted,
+	}
+	taskDB.Create(&taskInfo)
+
+	tr := progress.NewJobTracker("job-reanalyze", "task-reanalyze-cancel", "log", []progress.StageDef{
+		{Key: "PARSE_NORM", Name: "解析"},
+		{Key: "COMPLETE", Name: "完成"},
+	})
+
+	// 模拟用户在开始重分析前或刚启动时点击了取消
+	tr.Cancel("用户主动终止任务")
+
+	resTask, err := svc.ReanalyzeTask("task-reanalyze-cancel", tr)
+	if err == nil {
+		t.Fatalf("expected error from canceled ReanalyzeTask, got nil")
+	}
+
+	// 验证：任务绝不能是 Completed，必须是 Failed
+	var dbTask model.TaskInfo
+	if err := taskDB.First(&dbTask, "task_id = ?", "task-reanalyze-cancel").Error; err != nil {
+		t.Fatalf("query task failed: %v", err)
+	}
+	if dbTask.Status == model.TaskStatusCompleted {
+		t.Errorf("N-B regression: task status was marked Completed despite cancellation!")
+	}
+	if dbTask.Status != model.TaskStatusFailed {
+		t.Errorf("expected task status Failed, got %s", dbTask.Status)
+	}
+	if dbTask.ErrorMessage != "用户主动终止任务" {
+		t.Errorf("expected ErrorMessage '用户主动终止任务', got %q", dbTask.ErrorMessage)
+	}
+
+	_ = resTask
+}
+
 
 
 

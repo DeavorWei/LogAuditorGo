@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +40,12 @@ type seqRecord struct {
 	seq int
 	rec model.LogRecord
 }
+
+// 仅供包内单元测试故障注入使用；生产环境恒为 nil，避免数据路径硬编码测试魔数 (N-A)
+var (
+	testParserPanicHook func(line string)
+	testWorkerPanicHook func(text string)
+)
 
 // IngestStreamingPipeline 执行三级流式流水线导入。
 //
@@ -119,8 +124,8 @@ func (s *Service) IngestStreamingPipeline(
 							}
 						}
 					}()
-					if strings.HasPrefix(il.text, "__INJECT_WORKER_PANIC__") {
-						panic("simulated worker panic outside parseLogLine")
+					if testWorkerPanicHook != nil {
+						testWorkerPanicHook(il.text)
 					}
 					rec = s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
 				}()

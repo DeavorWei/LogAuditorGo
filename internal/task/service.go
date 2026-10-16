@@ -600,6 +600,11 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		}
 	}
 
+	// N-E: 若在所有文件导入完成时外部发出了终止请求，快速响应退出，避免进入耗时的后置聚合统计
+	if importCtx != nil && importCtx.Err() != nil {
+		return s.failTask(taskDB, &taskInfo, tr, importCtx.Err(), "任务导入已中止")
+	}
+
 	// ---------- 设备归属与统计刷新 ----------
 	if _, assignErr := s.AutoAssignDevices(taskID); assignErr != nil {
 		logger.Log.Errorf("[Task Service] Auto assign devices failed: %v", assignErr)
@@ -2310,8 +2315,14 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	defer storage.ReleaseTaskDB(taskID)
 
 	var taskInfo model.TaskInfo
-	if err := s.globalDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
-		return nil, fmt.Errorf("task not found: %w", err)
+	if s.globalDB != nil {
+		if err := s.globalDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
+			return nil, fmt.Errorf("task not found: %w", err)
+		}
+	} else {
+		if err := taskDB.Where("task_id = ?", taskID).First(&taskInfo).Error; err != nil {
+			return nil, fmt.Errorf("task not found: %w", err)
+		}
 	}
 
 	// 覆盖判定：调用方显式提供了非空字段时生效 (闭环 D4 & R2 & P2-3)
@@ -2372,6 +2383,11 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 
 	deviceVersion := strings.TrimSpace(effectiveDeviceVersion)
 
+	var reanalyzeCtx context.Context = context.Background()
+	if tr != nil {
+		reanalyzeCtx = tr.Context()
+	}
+
 	var totalLogCount int64
 	if err := taskDB.Model(&model.LogRecord{}).Count(&totalLogCount).Error; err != nil {
 		return s.failTask(taskDB, &taskInfo, tr, fmt.Errorf("count task log records failed: %w", err), "统计任务日志失败")
@@ -2397,6 +2413,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	workerNum := s.getEffectiveParseWorkers()
 
 	for {
+		if reanalyzeCtx.Err() != nil {
+			return s.failTask(taskDB, &taskInfo, tr, reanalyzeCtx.Err(), "重新分析已中止")
+		}
 		var records []model.LogRecord
 		if err := taskDB.Where("id > ?", lastID).Order("id asc").Limit(reanalyzeBatchSize).Find(&records).Error; err != nil {
 			// REANA-02: 原实现 break 后继续走完流程，把只处理了一部分的任务标记为 COMPLETED。
@@ -2513,6 +2532,11 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		}
 	}
 
+	// N-B: 检查外部取消状态，避免在已终止任务上继续执行耗时的设备归属与统计聚合
+	if reanalyzeCtx.Err() != nil {
+		return s.failTask(taskDB, &taskInfo, tr, reanalyzeCtx.Err(), "重新分析已中止")
+	}
+
 	// ---------- 阶段二：设备归属与统计刷新 ----------
 	if tr != nil {
 		tr.SetStage("AUTO_ASSIGN", "正在根据重新解析的设备主机名同步设备归属与统计指标...")
@@ -2563,6 +2587,11 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	}
 
 	finalLogCount, finalMatched := recountTaskLogs(taskDB)
+
+	// N-B: 检查外部取消状态，避免将已取消任务提交为 Completed
+	if reanalyzeCtx.Err() != nil {
+		return s.failTask(taskDB, &taskInfo, tr, reanalyzeCtx.Err(), "重新分析已中止")
+	}
 
 	// ---------- 阶段三：收尾 (主流程极速就绪) ----------
 	if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), model.TaskStatusCompleted, ""); fErr != nil {
