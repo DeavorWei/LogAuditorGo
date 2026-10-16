@@ -33,8 +33,12 @@ type matchCacheItem struct {
 // 各字段用 strconv.Quote 编码，避免产品名/版本号中出现的 ':' 造成跨字段碰撞 (PARSE-17)。
 
 // buildExactBestKey 构建候选选优缓存 Key (闭环 S1 & S5):
-// 选优逻辑 (FindBestKnowledgeMatchPtr) 仅依赖 module, brief, product, version 以及是否具备无线/有线协议特征。
+// 选优逻辑 (findBestCore) 仅依赖 module, brief, product, version 以及是否具备无线/有线协议特征。
 // 它与具体日志的正文变动、严重级别完全解耦，可被同一 brief 的海量不同正文日志 100% 跨行复用！
+//
+// 不变式 (闭环 FAMILY-EXCLUSIVITY)：候选过滤 (filterExcludedCandidates) 与可疑判定
+// (isSuspectWinner) 同样只依赖 (候选产品族, isWireless, isWired)，因此本 Key 依然完备。
+// 若未来把过滤条件扩展到依赖更多正文特征（如具体 token），必须同步扩展本 Key，否则会缓存串档。
 func buildExactBestKey(module, upperBrief, product, version string, isWireless, isWired bool) string {
 	trimmedProd := strings.ToUpper(strings.TrimSpace(product))
 	trimmedVer := strings.ToUpper(strings.TrimSpace(version))
@@ -367,6 +371,8 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	// ---------------- Tier 1~3: 纯内存索引匹配（受 indexMu 保护） ----------------
 	var fallbackK *model.Knowledge
 	var fallbackConf float64
+	// fallbackSuspect 记录 Tier1 保底候选是否为"互斥族豁免保留"，供 Tier5 保底返回时封顶置信度
+	var fallbackSuspect bool
 
 	matchedK, matchedTier, matchedConf := func() (*model.Knowledge, string, float64) {
 		m.indexMu.RLock()
@@ -387,20 +393,28 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				}
 			}
 			if best == nil {
-				best = FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
+				// 闭环 FAMILY-EXCLUSIVITY：复用 Match 已按同一对布尔构建缓存 Key 的 isWireless/isWired，
+				// 保证"缓存键语义"与"候选过滤语义"物理同源
+				best = findBestCore(exactCandidates, product, version, norm, isWireless, isWired)
 				if best != nil && m.exactBestCache != nil {
 					m.exactBestCache.Put(exactBestKey, best)
 				}
 			}
 
 			if best != nil {
+				// suspect 必须在取得 best 之后判定：best 可能来自 exactBestCache 命中（未执行选优函数），
+				// 若把 suspect 作为选优返回值，缓存命中路径会把它丢成 false，
+				// 导致豁免条目以原 Tier、原置信度返回并写入结果缓存。
+				suspect := isSuspectWinner(best, isWireless, isWired)
 				consistency := Tier1Consistency(norm, best, m.matchTemplate)
 				if consistency >= MinTier1Confidence {
 					conf := ConfidenceExact * consistency
-					return best, TierExact, conf
+					tier1, conf1 := applySuspectCap(TierExact, conf, suspect)
+					return best, tier1, conf1
 				}
 				fallbackK = best
 				fallbackConf = ConfidenceExact * consistency
+				fallbackSuspect = suspect
 				logger.Log.Debugf("[Matcher] Tier1 candidate '%s' consistency %.2f < %.2f, degrade to lower tiers (module=%s brief=%s)",
 					best.Brief, consistency, MinTier1Confidence, module, brief)
 			}
@@ -415,11 +429,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			// 优先查去掉后缀后的 exactMap (仅当 logStem != upperBrief 时才真正剥离了状态后缀)
 			if logStem != upperBrief {
 				if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
-					best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
+					best := findBestCore(mnemCandidates, product, version, norm, isWireless, isWired)
 					if best != nil {
 						_, candPol := mnemonicStem(best.Brief)
 						if polarityAllowed(logPol, candPol) {
-							return best, TierMnemonic, ConfidenceMnemonic
+							tier2, conf2 := applySuspectCap(TierMnemonic, ConfidenceMnemonic, isSuspectWinner(best, isWireless, isWired))
+							return best, tier2, conf2
 						}
 					}
 				}
@@ -440,9 +455,10 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 					}
 				}
 				if len(mnemonicCandidates) > 0 {
-					best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
+					best := findBestCore(mnemonicCandidates, product, version, norm, isWireless, isWired)
 					if best != nil {
-						return best, TierMnemonic, ConfidenceMnemonic
+						tier2, conf2 := applySuspectCap(TierMnemonic, ConfidenceMnemonic, isSuspectWinner(best, isWireless, isWired))
+						return best, tier2, conf2
 					}
 				}
 			}
@@ -455,9 +471,10 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		// 以及"模板以占位符开头（首 token 不确定）"两类候选做正则匹配。
 		if norm.MessageBody != "" {
 			if matchedCandidates := m.matchTemplateCandidates(module, norm.MessageBody); len(matchedCandidates) > 0 {
-				best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version, norm)
+				best := findBestCore(matchedCandidates, product, version, norm, isWireless, isWired)
 				if best != nil {
-					return best, TierTemplate, ConfidenceTemplate
+					tier3, conf3 := applySuspectCap(TierTemplate, ConfidenceTemplate, isSuspectWinner(best, isWireless, isWired))
+					return best, tier3, conf3
 				}
 			}
 		}
@@ -514,6 +531,10 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 			}
 			m.indexMu.RUnlock()
 
+			// 闭环 FAMILY-EXCLUSIVITY：Tier4 属全文模糊召回，跨族噪音大，执行严格剔除（不设豁免）。
+			// 严格剔除后为空即视为本轮无候选，自然回落到 Tier5 保底/负缓存路径。
+			bleveCandidates = filterExcludedCandidates(bleveCandidates, isWireless, isWired, true)
+
 			if len(bleveCandidates) > 0 {
 				// PARSE-07: 原实现只按产品/版本打分选优，完全忽略 Bleve 相关度，
 				// 会导致"文本最相关但产品族稍远"的条目被淘汰，反而召回语义无关的条目。
@@ -550,11 +571,13 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 				best := ranked[0].k
 				if best != nil {
 					confidence := CalculateConfidence(TierBleve, hitScoreMap[best.ID])
+					// 严格剔除后胜出者必为合规候选，此处仍统一判定以防御未来变更
+					tier4, conf4 := applySuspectCap(TierBleve, confidence, isSuspectWinner(best, isWireless, isWired))
 					// Tier4 依赖正文，必须写入带正文指纹的 bodyKey
 					if m.cache != nil {
-						m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierBleve, conf: confidence})
+						m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: tier4, conf: conf4})
 					}
-					return best, TierBleve, confidence
+					return best, tier4, conf4
 				}
 			}
 		}
@@ -566,10 +589,11 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	// 仍然退回该候选并给出被一致性折扣后的置信度。
 	// 这比直接判 UNMATCHED 更有诊断价值，同时置信度真实反映了"只是模块+助记符相同"。
 	if fallbackK != nil {
+		tierFallback, confFallback := applySuspectCap(TierExact, fallbackConf, fallbackSuspect)
 		if m.cache != nil {
-			m.cache.Put(bodyKey, &matchCacheItem{k: fallbackK, tier: TierExact, conf: fallbackConf})
+			m.cache.Put(bodyKey, &matchCacheItem{k: fallbackK, tier: tierFallback, conf: confFallback})
 		}
-		return fallbackK, TierExact, fallbackConf
+		return fallbackK, tierFallback, confFallback
 	}
 
 	// 按正文粒度记账：某条正文未命中，不代表同 module:brief 的另一条正文也匹配不上

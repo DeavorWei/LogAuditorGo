@@ -30,3 +30,22 @@ func BuildBodyKeyForTest(bestKey string, severity int, messageBody string) strin
 	return buildBodyKey(bestKey, severity, messageBody)
 }
 
+// FilterExcludedCandidatesForTest 暴露 filterExcludedCandidates，用于回归互斥族候选过滤（宽松/严格双模式）。
+func FilterExcludedCandidatesForTest(candidates []*model.Knowledge, isWireless, isWired, strict bool) []*model.Knowledge {
+	return filterExcludedCandidates(candidates, isWireless, isWired, strict)
+}
+
+// IsSuspectWinnerForTest 暴露 isSuspectWinner，用于回归互斥族豁免保留判定。
+func IsSuspectWinnerForTest(winner *model.Knowledge, isWireless, isWired bool) bool {
+	return isSuspectWinner(winner, isWireless, isWired)
+}
+
+// ApplySuspectCapForTest 暴露 applySuspectCap，用于回归豁免条目的 Tier 降级与置信度封顶。
+func ApplySuspectCapForTest(tier string, conf float64, suspect bool) (string, float64) {
+	return applySuspectCap(tier, conf, suspect)
+}
+
+// BestVersionMappingForTest 暴露 bestVersionMapping，用于回归"打分与文档归属同源"。
+func BestVersionMappingForTest(k *model.Knowledge, targetProduct, targetVersion string) (int, *model.KnowledgeVersionMapping) {
+	return bestVersionMapping(k, targetProduct, targetVersion)
+}

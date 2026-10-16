@@ -21,7 +21,7 @@ type NormalizedLog struct {
 
 	// 匹配结果
 	KnowledgeID     uint    `json:"knowledge_id,omitempty"`
-	MatchTier       string  `json:"match_tier,omitempty"`       // EXACT, MNEMONIC, TEMPLATE, BLEVE, UNMATCHED
+	MatchTier       string  `json:"match_tier,omitempty"`       // EXACT, MNEMONIC, TEMPLATE, BLEVE, FAMILY_SUSPECT, UNMATCHED
 	MatchConfidence float64 `json:"match_confidence,omitempty"` // 0.0 ~ 1.0
 
 	DeviceID uint `json:"device_id,omitempty"` // 关联设备ID
