@@ -84,4 +84,33 @@ assert.notEqual(res1, res_reanalyzed, '新对象引用必须自动失效旧缓�
 assert.ok(res_reanalyzed.renderedKnowledgeHtml.description.includes('UPDATED_KB'), '应解析出重新分析后的最新知识库内容')
 console.log('✓ 7. 重新分析对象引用失效与缓存自动隔离验证通过')
 
-console.log('\n🎉 logFormatter 全部 7 项单元断言测试 100% 通过！\n')
+// 8. 测试匹配产品文档名称提取 (getMatchedDocName)
+import { getMatchedDocName } from '../src/utils/logFormatter.js'
+assert.equal(getMatchedDocName(null), '-', '空日志对象应返回 -')
+assert.equal(getMatchedDocName({}), '-', '无文档信息的空日志应返回 -')
+assert.equal(getMatchedDocName({ matched_doc_name: 'CloudEngine 16800 产品文档' }), 'CloudEngine 16800 产品文档', '优先提取 matched_doc_name')
+assert.equal(
+  getMatchedDocName({
+    knowledge: {
+      versions: [
+        { doc_name: 'USG6000E 产品文档', product_type: 'USG6000E' }
+      ]
+    }
+  }),
+  'USG6000E 产品文档',
+  '若无 matched_doc_name，应从 versions[0].doc_name 获取'
+)
+assert.equal(
+  getMatchedDocName({
+    knowledge: {
+      versions: [
+        { product_type: 'AirEngine 9700-M' }
+      ]
+    }
+  }),
+  'AirEngine 9700-M',
+  '若 doc_name 为空，应回退到 product_type'
+)
+console.log('✓ 8. 匹配产品文档名称 (getMatchedDocName) 优先级与回退策略测试通过')
+
+console.log('\n🎉 logFormatter 全部 8 项单元断言测试 100% 通过！\n')

@@ -150,22 +150,60 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--sp-3);
+  gap: var(--sp-2);
+  min-width: 0;
 }
 
 .param-card .p-key {
   color: var(--brand-600);
   font-weight: 600;
   font-size: var(--fs-sm);
+  flex-shrink: 0;
+  max-width: 50%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .param-card .p-desc,
 .p-desc-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: var(--fs-xs);
   color: var(--brand-700);
   background: var(--brand-50);
   padding: 1px var(--sp-1);
   border-radius: var(--radius-xs);
+  max-width: 140px;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  line-height: 1.4;
+}
+
+.p-desc-badge .el-icon {
+  flex-shrink: 0;
+  font-size: 12px;
+}
+
+.p-desc-badge .p-desc-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.matched-doc-name-text {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: middle;
 }
 
 .param-card .p-val,

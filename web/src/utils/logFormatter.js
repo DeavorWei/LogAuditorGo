@@ -348,6 +348,7 @@ export function formatLogDetail(log, contextualizeMode = true) {
 
   const kbParamDefs = extractKbParamDefs(log, enrichedParameters, parsedParameters)
   const matchedParamCount = enrichedParameters.filter((p) => p.matched).length
+  const matchedDocName = getMatchedDocName(log)
 
   const result = {
     parsedParameters,
@@ -355,11 +356,39 @@ export function formatLogDetail(log, contextualizeMode = true) {
     renderedTemplateHtml,
     renderedKnowledgeHtml,
     kbParamDefs,
-    matchedParamCount
+    matchedParamCount,
+    matchedDocName
   }
 
   modeMap.set(modeKey, result)
   return result
 }
 
+/**
+ * 提取日志命中的官方产品文档全称
+ * 优先取后端富化的 matched_doc_name，其次遍历 versions 中的 doc_name，若无全称则回退为 product_type
+ * 未匹配返回 '-'
+ */
+export const getMatchedDocName = (log) => {
+  if (!log) return '-'
+  if (log.matched_doc_name && typeof log.matched_doc_name === 'string' && log.matched_doc_name.trim()) {
+    return log.matched_doc_name.trim()
+  }
+  const versions = log.knowledge?.versions
+  if (Array.isArray(versions) && versions.length > 0) {
+    for (const v of versions) {
+      if (v?.doc_name && String(v.doc_name).trim()) {
+        return String(v.doc_name).trim()
+      }
+    }
+    for (const v of versions) {
+      if (v?.product_type && String(v.product_type).trim()) {
+        return String(v.product_type).trim()
+      }
+    }
+  }
+  return '-'
+}
+
 export default formatLogDetail
+

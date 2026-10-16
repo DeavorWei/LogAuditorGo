@@ -1100,21 +1100,80 @@ func (s *Service) ScanHDXPaths(paths []string) (*hdx.ScanResult, error) {
 	return res, nil
 }
 
+// populateVersionDocNames 批量从 Document 表加载文档全称 (LibName) 并回填至 Versions 中
+func (s *Service) populateVersionDocNames(knowledges ...*model.Knowledge) {
+	if s.db == nil || len(knowledges) == 0 {
+		return
+	}
+	docIDSet := make(map[uint]bool)
+	for _, k := range knowledges {
+		if k == nil {
+			continue
+		}
+		for _, v := range k.Versions {
+			if v.DocumentID > 0 {
+				docIDSet[v.DocumentID] = true
+			}
+		}
+	}
+	if len(docIDSet) == 0 {
+		return
+	}
+	docIDs := make([]uint, 0, len(docIDSet))
+	for id := range docIDSet {
+		docIDs = append(docIDs, id)
+	}
+
+	type docNameResult struct {
+		ID      uint   `gorm:"column:id"`
+		LibName string `gorm:"column:lib_name"`
+	}
+	var docNames []docNameResult
+	if err := s.db.Model(&model.Document{}).Select("id, lib_name").Where("id IN ?", docIDs).Scan(&docNames).Error; err == nil {
+		nameMap := make(map[uint]string, len(docNames))
+		for _, dn := range docNames {
+			nameMap[dn.ID] = dn.LibName
+		}
+		for _, k := range knowledges {
+			if k == nil {
+				continue
+			}
+			for j := range k.Versions {
+				if name, ok := nameMap[k.Versions[j].DocumentID]; ok && name != "" {
+					k.Versions[j].DocName = name
+				}
+			}
+		}
+	}
+}
+
 // GetKnowledgeByID 根据 ID 获取单条知识详情
 func (s *Service) GetKnowledgeByID(id uint) (*model.Knowledge, error) {
 	var k model.Knowledge
 	err := s.db.Preload("Versions").First(&k, id).Error
-	return &k, err
+	if err != nil {
+		return nil, err
+	}
+	s.populateVersionDocNames(&k)
+	return &k, nil
 }
 
-// GetKnowledgeByIDs 根据 ID 列表批量获取知识详情（含 Versions 关联），优化 N+1 查询
+// GetKnowledgeByIDs 根据 ID 列表批量获取知识详情（含 Versions 关联与文档名称填充），优化 N+1 查询
 func (s *Service) GetKnowledgeByIDs(ids []uint) ([]model.Knowledge, error) {
 	if len(ids) == 0 {
 		return []model.Knowledge{}, nil
 	}
 	var list []model.Knowledge
 	err := s.db.Preload("Versions").Where("id IN ?", ids).Find(&list).Error
-	return list, err
+	if err != nil {
+		return nil, err
+	}
+	ptrs := make([]*model.Knowledge, len(list))
+	for i := range list {
+		ptrs[i] = &list[i]
+	}
+	s.populateVersionDocNames(ptrs...)
+	return list, nil
 }
 
 // GetKnowledgeMapByIDs 根据 ID 列表批量获取知识详情并组装为 ID->*Knowledge 映射表

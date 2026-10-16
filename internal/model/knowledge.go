@@ -54,4 +54,5 @@ type KnowledgeVersionMapping struct {
 	ProductType    string `gorm:"size:128" json:"product_type"`
 	ProductVersion string `gorm:"size:64" json:"product_version"`
 	HtmlPath       string `gorm:"size:255" json:"html_path"`
+	DocName        string `gorm:"-" json:"doc_name,omitempty"` // 关联的产品文档名称 (LibName)
 }

@@ -146,6 +146,9 @@
             </el-descriptions-item>
             <el-descriptions-item label="来源文件">{{ log.source_file || '-' }}</el-descriptions-item>
             <el-descriptions-item label="槽位/序列号">{{ log.slot_info || '-' }}</el-descriptions-item>
+            <el-descriptions-item label="匹配产品文档">
+              <span class="matched-doc-name-text" :title="matchedDocName">{{ matchedDocName }}</span>
+            </el-descriptions-item>
           </el-descriptions>
         </div>
 
@@ -167,7 +170,10 @@
               <div class="param-card-top">
                 <span class="p-key">{{ p.name }}</span>
                 <el-tooltip v-if="p.description" placement="top" raw-content :content="formatTooltipHtml(p.description)">
-                  <span class="p-desc-badge"><el-icon><Reading /></el-icon> {{ p.description }}</span>
+                  <span class="p-desc-badge">
+                    <el-icon><Reading /></el-icon>
+                    <span class="p-desc-text">{{ p.description }}</span>
+                  </span>
                 </el-tooltip>
               </div>
               <div class="p-val-box">
@@ -334,7 +340,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import RcaGraph from '@/components/RcaGraph.vue'
 import { useTagStore } from '@/stores/tag'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
-import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
+import { LOG_DETAIL_CONTEXT_KEY, getMatchedDocName } from '@/utils/logFormatter'
 import SeverityTag from '@/components/SeverityTag.vue'
 
 const props = defineProps({
@@ -428,6 +434,10 @@ const kbParamDefs = computed(() => {
 const matchedParamCount = computed(() => {
   if (props.matchedParamCount) return props.matchedParamCount
   return logContext?.formattedDetail?.value?.matchedParamCount || 0
+})
+
+const matchedDocName = computed(() => {
+  return logContext?.formattedDetail?.value?.matchedDocName || getMatchedDocName(props.log)
 })
 
 const contextualizeMode = computed({

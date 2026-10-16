@@ -104,6 +104,9 @@
           </el-descriptions-item>
           <el-descriptions-item label="来源文件">{{ log.source_file || '-' }}</el-descriptions-item>
           <el-descriptions-item label="槽位/序列号">{{ log.slot_info || '-' }}</el-descriptions-item>
+          <el-descriptions-item label="匹配产品文档">
+            <span class="matched-doc-name-text" :title="matchedDocName">{{ matchedDocName }}</span>
+          </el-descriptions-item>
         </el-descriptions>
       </div>
 
@@ -130,7 +133,10 @@
                 raw-content
                 :content="formatTooltipHtml(p.description)"
               >
-                <span class="p-desc-badge"><el-icon><Reading /></el-icon> {{ p.description }}</span>
+                <span class="p-desc-badge">
+                  <el-icon><Reading /></el-icon>
+                  <span class="p-desc-text">{{ p.description }}</span>
+                </span>
               </el-tooltip>
             </div>
             <div class="p-val-box">
@@ -177,7 +183,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Aim, ArrowRight, InfoFilled, Close, Plus, Document, PriceTag, Reading, Tickets, WarningFilled } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import { useTagStore } from '@/stores/tag'
-import { LOG_DETAIL_CONTEXT_KEY, formatTooltipHtml } from '@/utils/logFormatter'
+import { LOG_DETAIL_CONTEXT_KEY, formatTooltipHtml, getMatchedDocName } from '@/utils/logFormatter'
 import api from '@/api'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import SeverityTag from '@/components/SeverityTag.vue'
@@ -214,6 +220,10 @@ const detail = computed(() => {
     matchedParamCount: 0,
     renderedTemplateHtml: ''
   }
+})
+
+const matchedDocName = computed(() => {
+  return detail.value?.matchedDocName || getMatchedDocName(props.log)
 })
 
 const isTagAssigned = (tagId) => {

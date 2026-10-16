@@ -24,6 +24,7 @@ type Record struct {
 	ContextualizedKB   *ContextualizedKnowledge `json:"contextualized_knowledge,omitempty"`
 	EnrichedParameters []EnrichedParameter      `json:"enriched_parameters,omitempty"`
 	RenderedMessage    string                   `json:"rendered_message,omitempty"`
+	MatchedDocName     string                   `json:"matched_doc_name,omitempty"`
 }
 
 // Service 日志富化服务
@@ -90,12 +91,31 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 			if kb.Message != "" {
 				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
 			}
+			er.MatchedDocName = extractMatchedDocName(kb)
 		} else if mergedParamsJSON != "" {
 			er.EnrichedParameters = EnrichParameters(mergedParamsJSON, nil)
 		}
 		enrichedList = append(enrichedList, er)
 	}
 	return enrichedList
+}
+
+// extractMatchedDocName 提取命中的官方产品文档全称，优先取 DocName，若无则回退取 ProductType
+func extractMatchedDocName(kb *model.Knowledge) string {
+	if kb == nil || len(kb.Versions) == 0 {
+		return ""
+	}
+	for _, v := range kb.Versions {
+		if s := strings.TrimSpace(v.DocName); s != "" {
+			return s
+		}
+	}
+	for _, v := range kb.Versions {
+		if s := strings.TrimSpace(v.ProductType); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // marshalSortedParamsJSON 将参数 map 按键名升序排序后序列化为 JSON，杜绝键序随机造成的 diff 噪音 (Audit B13)

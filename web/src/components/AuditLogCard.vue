@@ -58,15 +58,12 @@
       {{ record.event_summary || record.raw_log }}
     </div>
 
-    <!-- 底部: 时戳 + 主机名 + 来源文件 + 槽位 -->
+    <!-- 底部: 时戳 + 主机名 + 槽位 (移除来源文件，仅在详情面板中保留) -->
     <div class="log-card-footer">
       <span class="log-time">{{ displayTime }}</span>
       <div class="log-meta-tags">
         <span v-if="record.hostname" class="host-tag" :title="`主机: ${record.hostname}`">
           {{ record.hostname }}
-        </span>
-        <span v-if="record.source_file" class="file-tag" :title="`来源文件: ${record.source_file}`">
-          <el-icon><Document /></el-icon> {{ record.source_file }}
         </span>
         <span v-if="record.slot_info" class="slot-tag" :title="`槽位: ${record.slot_info}`">
           {{ record.slot_info }}
@@ -99,7 +96,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Document, Filter, CirclePlus, Remove, Monitor, Timer } from '@element-plus/icons-vue'
+import { Filter, CirclePlus, Remove, Monitor, Timer } from '@element-plus/icons-vue'
 import { formatTime } from '@/utils/format'
 import { useSeverity } from '@/composables/useSeverity'
 import SeverityTag from '@/components/SeverityTag.vue'
@@ -265,18 +262,7 @@ const displayTime = computed(() => {
   color: var(--brand-700);
   padding: 0 4px;
   border-radius: var(--radius-xs);
-  max-width: 90px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-tag {
-  background: var(--gray-100);
-  color: var(--gray-600);
-  padding: 0 4px;
-  border-radius: var(--radius-xs);
-  max-width: 110px;
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
