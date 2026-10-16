@@ -1051,3 +1051,42 @@ func TestMatcherEmptyDB(t *testing.T) {
 		t.Fatalf("expected unmatch on empty db, got tier=%s, k=%v", tier2, k2)
 	}
 }
+
+// TestTier4AdmissionGuard 验证 Tier 4 Bleve 全文检索准入过滤与超长报文保护
+func TestTier4AdmissionGuard(t *testing.T) {
+	engine, _ := newIsolatedMatchEngine(t)
+
+	// 1. 纯杂散符号 brief / 异常模块，应被准入阻断
+	normGarbage := &model.NormalizedLog{
+		Module:      "UNKNOWN",
+		Brief:       "-",
+		MessageBody: "...",
+	}
+	k, tier, _ := engine.Match(normGarbage, "", "")
+	if k != nil || tier != matcher.TierUnmatch {
+		t.Errorf("expected garbage log to be blocked before Tier 4, got tier=%s", tier)
+	}
+
+	// 2. 单字符 brief 且无有效正文
+	normSingleChar := &model.NormalizedLog{
+		Module:      "SYS",
+		Brief:       "A",
+		MessageBody: "",
+	}
+	k2, tier2, _ := engine.Match(normSingleChar, "", "")
+	if k2 != nil || tier2 != matcher.TierUnmatch {
+		t.Errorf("expected single char brief to be blocked, got tier=%s", tier2)
+	}
+
+	// 3. 合法 brief 与语义正文，允许准入
+	normValid := &model.NormalizedLog{
+		Module:      "SYS",
+		Brief:       "SYS_REBOOT",
+		MessageBody: "System rebooting by user command",
+	}
+	_, tier3, _ := engine.Match(normValid, "", "")
+	// 空库下不会命中，但流程应正常完成返回 TierUnmatch 而非崩溃
+	if tier3 != matcher.TierUnmatch {
+		t.Errorf("expected tier unmatch on empty db, got %s", tier3)
+	}
+}

@@ -2,6 +2,8 @@ package task
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -10,7 +12,10 @@ import (
 	"gorm.io/gorm"
 	gormlogger "gorm.io/gorm/logger"
 
+	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/rootcause"
+	"logauditorgo/internal/storage"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
@@ -134,5 +139,96 @@ func TestBatchUpdateLogRecords(t *testing.T) {
 	}
 	if rec300.Hostname != "new-host-299" || rec300.KnowledgeID != 399 {
 		t.Errorf("record 300 data mismatch: host=%s, kid=%d", rec300.Hostname, rec300.KnowledgeID)
+	}
+}
+
+// TestReanalyzeTaskConcurrentOrderPreservation 验证并发重分析下的严格保序性与时间戳继承正确性
+func TestReanalyzeTaskConcurrentOrderPreservation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "reanalyze_order_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	globalDB, err := storage.InitKnowledgeDB(dbPath)
+	if err != nil {
+		t.Fatalf("InitKnowledgeDB failed: %v", err)
+	}
+
+	matchEngine := matcher.NewMatchEngine(globalDB, nil)
+	rcaEngine := rootcause.NewEngine(nil)
+	taskDir := filepath.Join(tmpDir, "tasks")
+	svc := NewService(globalDB, taskDir, matchEngine, rcaEngine)
+
+	task, err := svc.CreateEmptyTask("ConcurrentOrderTest", "CloudEngine")
+	if err != nil {
+		t.Fatalf("create task failed: %v", err)
+	}
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(taskDir, task.TaskID)
+	if err != nil {
+		t.Fatalf("get task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB(task.TaskID)
+
+	// 插入混合日志：注释行（无时间戳） + 有效行 + 散漫行 + 纯 NUL 坏块
+	rawLogs := []string{
+		"# This is a file header comment without timestamp",
+		"Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface GigabitEthernet0/0/1 turned to down.",
+		"Interface GigabitEthernet0/0/1 speed changed to 1000M", // 无时间戳行，应继承前序有效时间戳
+		"\x00\x00\x00",                                          // 纯垃圾坏块行，应被物理删除
+		"Apr 15 2026 14:00:05 CORE-SW-01 %%01IFNET/4/IF_UP(l)[2]: Interface GigabitEthernet0/0/1 turned to up.",
+	}
+
+	var initRecords []model.LogRecord
+	for _, l := range rawLogs {
+		initRecords = append(initRecords, model.LogRecord{
+			SourceFile: "test_order.log",
+			RawLog:     l,
+		})
+	}
+	if err := taskDB.CreateInBatches(initRecords, 10).Error; err != nil {
+		t.Fatalf("insert init records failed: %v", err)
+	}
+
+	// 执行并发重分析
+	reanalyzed, err := svc.ReanalyzeTask(task.TaskID, nil)
+	if err != nil {
+		t.Fatalf("reanalyze task failed: %v", err)
+	}
+
+	if reanalyzed.Status != model.TaskStatusCompleted {
+		t.Fatalf("expected completed status, got %s", reanalyzed.Status)
+	}
+
+	var results []model.LogRecord
+	if err := taskDB.Order("id asc").Find(&results).Error; err != nil {
+		t.Fatalf("query results failed: %v", err)
+	}
+
+	// 垃圾行应被清理，剩余 4 行
+	if len(results) != 4 {
+		t.Fatalf("expected 4 records after garbage deletion, got %d", len(results))
+	}
+
+	// 验证时间戳对齐正确性：
+	// 首行注释行向前借用了第 2 行的首个有效时间戳 14:00:01
+	// 第 2 行有效行自身时间戳 14:00:01
+	// 第 3 行无时间戳行继承了前序有效时间戳 14:00:01
+	// 第 4 行有效行自身时间戳 14:00:05
+	t1 := results[0].Timestamp
+	t2 := results[1].Timestamp
+	t3 := results[2].Timestamp
+	t4 := results[3].Timestamp
+
+	if !t1.Equal(t2) {
+		t.Errorf("expected header comment to borrow first valid timestamp: t1=%v, t2=%v", t1, t2)
+	}
+	if !t3.Equal(t2) {
+		t.Errorf("expected trailing log without timestamp to inherit last valid timestamp: t3=%v, t2=%v", t3, t2)
+	}
+	if !t4.After(t3) {
+		t.Errorf("expected t4 to be after t3: t3=%v, t4=%v", t3, t4)
 	}
 }

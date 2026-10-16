@@ -7,10 +7,12 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -2376,11 +2378,18 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	// 9.1: 解析与匹配复用导入链路的 parseLogLine，两条链路的行为不可能再漂移。
 	// REANA-09: 落库从"逐行 UPDATE"改为"每 500 行一个 CASE WHEN 批量 UPDATE"，
 	//           百万级重分析的 SQL 往返次数从百万级降到千级。
-	matchedCount := 0
+	var matchedCount int64 = 0
 	var processedCount int64 = 0
 	var lastID uint = 0
 	var reanalyzeLastFile string
 	var reanalyzeLastTS time.Time
+
+	workerNum := runtime.NumCPU()
+	if workerNum < minParseWorkers {
+		workerNum = minParseWorkers
+	} else if workerNum > maxParseWorkers {
+		workerNum = maxParseWorkers
+	}
 
 	for {
 		var records []model.LogRecord
@@ -2393,30 +2402,62 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			break
 		}
 
+		type reanalyzeItem struct {
+			isGarbage bool
+			record    model.LogRecord
+		}
+		parsedItems := make([]reanalyzeItem, len(records))
+
+		actualWorkers := workerNum
+		if actualWorkers > len(records) {
+			actualWorkers = len(records)
+		}
+		jobs := make(chan int, importJobBuffer)
+		var wg sync.WaitGroup
+		wg.Add(actualWorkers)
+
+		for w := 0; w < actualWorkers; w++ {
+			go func() {
+				defer wg.Done()
+				for idx := range jobs {
+					rec := &records[idx]
+					cleanRaw := logparser.SanitizeLogLine(rec.RawLog)
+					if cleanRaw == "" {
+						parsedItems[idx] = reanalyzeItem{isGarbage: true, record: model.LogRecord{ID: rec.ID}}
+						continue
+					}
+
+					parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
+					if parsed.KnowledgeID > 0 {
+						atomic.AddInt64(&matchedCount, 1)
+					}
+					// 保留主键与归属信息，覆盖解析产出的字段及已清洗的 RawLog
+					parsed.ID = rec.ID
+					parsed.DeviceID = rec.DeviceID
+					parsed.SourceFile = rec.SourceFile
+					parsed.RawLog = cleanRaw
+					parsedItems[idx] = reanalyzeItem{isGarbage: false, record: parsed}
+				}
+			}()
+		}
+
+		for idx := range records {
+			jobs <- idx
+		}
+		close(jobs)
+		wg.Wait()
+
+		lastID = records[len(records)-1].ID
+
 		validRecords := make([]model.LogRecord, 0, len(records))
 		var garbageIDs []uint
-
-		for i := range records {
-			rec := &records[i]
-			lastID = rec.ID
-
-			cleanRaw := logparser.SanitizeLogLine(rec.RawLog)
-			if cleanRaw == "" {
-				// 存量坏块/纯 NUL 垃圾行：清洗后为空，收集并在下方物理删除，避免行数虚高
-				garbageIDs = append(garbageIDs, rec.ID)
-				continue
+		for idx := range parsedItems {
+			item := &parsedItems[idx]
+			if item.isGarbage {
+				garbageIDs = append(garbageIDs, item.record.ID)
+			} else {
+				validRecords = append(validRecords, item.record)
 			}
-
-			parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
-			if parsed.KnowledgeID > 0 {
-				matchedCount++
-			}
-			// 保留主键与归属信息，覆盖解析产出的字段及已清洗的 RawLog
-			parsed.ID = rec.ID
-			parsed.DeviceID = rec.DeviceID
-			parsed.SourceFile = rec.SourceFile
-			parsed.RawLog = cleanRaw
-			validRecords = append(validRecords, parsed)
 		}
 
 		// 物理删除存量坏块行（若有）
@@ -2438,7 +2479,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		processedCount += int64(len(records))
 		if tr != nil {
 			tr.UpdateProgress(processedCount, totalLogCount,
-				fmt.Sprintf("已全量重新解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalLogCount, matchedCount))
+				fmt.Sprintf("已全量重新解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalLogCount, atomic.LoadInt64(&matchedCount)))
 		}
 	}
 

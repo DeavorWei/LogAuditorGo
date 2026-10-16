@@ -230,6 +230,55 @@ func (m *MatchEngine) ensureIndex() {
 	}
 }
 
+// shouldAdmitTier4 判定日志是否满足进入 Tier 4 Bleve 全文检索的准入要求 (Admission Guard)。
+//
+// 性能背景与设计：
+// 若日志在 Tier 1~3 均未命中，无条件调用 Bleve 全文搜索会将单行解析耗时从几微秒拉长至数毫秒。
+// 对大批量非标/未收录/调试日志，会引发 Worker 队列大面积阻塞。
+// 准入规则：
+// 1. 模块非空且合法（排除 UNKNOWN、COMMENT、空模块）；
+// 2. Brief 具备有效语义特征（长度 >= 2，包含英文字母或数字，排除纯符号或纯占位符）；
+// 3. 搜索内容（Brief 或 MessageBody）包含实质有效字符（长度 >= 3），且避免超长 payload 拖慢检索。
+func shouldAdmitTier4(module, brief, messageBody string) bool {
+	if module == "" || module == "UNKNOWN" || module == "COMMENT" {
+		return false
+	}
+	cleanBrief := strings.TrimSpace(brief)
+	cleanBody := strings.TrimSpace(messageBody)
+	if cleanBrief == "" && len(cleanBody) < 6 {
+		return false
+	}
+
+	if cleanBrief != "" {
+		if len(cleanBrief) < 2 {
+			return false
+		}
+		hasAlnum := false
+		for _, r := range cleanBrief {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+				hasAlnum = true
+				break
+			}
+		}
+		if !hasAlnum {
+			return false
+		}
+	} else {
+		hasLetter := false
+		for _, r := range cleanBody {
+			if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter {
+			return false
+		}
+	}
+
+	return true
+}
+
 // Match 执行四级流水线知识匹配（纯内存极速检索）
 func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version string) (matchedK *model.Knowledge, tier string, conf float64) {
 	defer func() {
@@ -393,10 +442,19 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	}
 
 	// ---------------- Tier 4: BLEVE 语义搜索召回 ----------------
-	if m.indexer != nil && (norm.MessageBody != "" || brief != "") {
+	if m.indexer != nil && shouldAdmitTier4(module, brief, norm.MessageBody) {
 		queryKeyword := brief
 		if norm.MessageBody != "" {
-			queryKeyword = brief + " " + norm.MessageBody
+			bodyText := norm.MessageBody
+			// 防止超长报文（如数百上千字节的 hex dump 或巨型参数）直接扔进全文索引造成倒排查询爆炸
+			if len(bodyText) > 256 {
+				bodyText = bodyText[:256]
+			}
+			if queryKeyword != "" {
+				queryKeyword = queryKeyword + " " + bodyText
+			} else {
+				queryKeyword = bodyText
+			}
 		}
 
 		res, err := m.indexer.Search(search.SearchFilter{
