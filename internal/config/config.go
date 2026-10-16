@@ -16,6 +16,11 @@ type Config struct {
 	Storage StorageConfig `mapstructure:"storage" json:"storage" yaml:"storage"`
 	Log     LogConfig     `mapstructure:"log" json:"log" yaml:"log"`
 	RCA     RCAConfig     `mapstructure:"rca" json:"rca" yaml:"rca"`
+	Task    TaskConfig    `mapstructure:"task" json:"task" yaml:"task"`
+}
+
+type TaskConfig struct {
+	ParseWorkers int `mapstructure:"parse_workers" json:"parse_workers" yaml:"parse_workers"`
 }
 
 type RCAConfig struct {
@@ -99,6 +104,9 @@ log:
 rca:
   timeout: 300              # 根因分析单任务执行超时时间(秒), 默认 300
   concurrency: 2            # 全局最大并行分析任务数, 默认 2
+
+task:
+  parse_workers: 0          # 日志分行解析与参数提取并发协程数, 0 表示自适应当前宿主机 CPU 核心数
 `
 
 func Load(configPath string) (*Config, error) {
@@ -123,6 +131,7 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("log.max_days", 180)
 	v.SetDefault("rca.timeout", 300)
 	v.SetDefault("rca.concurrency", 2)
+	v.SetDefault("task.parse_workers", 0)
 
 	targetConfigFile := configPath
 	if targetConfigFile == "" {

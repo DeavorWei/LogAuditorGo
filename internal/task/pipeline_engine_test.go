@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"logauditorgo/internal/config"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
 )
@@ -246,4 +247,39 @@ func TestIngestStreamingPipeline_ConcurrentStress(t *testing.T) {
 	if tf.LineCount != 1200 {
 		t.Errorf("task file line count mismatch: got %d, want 1200", tf.LineCount)
 	}
+}
+
+// TestService_GetEffectiveParseWorkers 验证 worker 数量配置与上下限钳制
+func TestService_GetEffectiveParseWorkers(t *testing.T) {
+	svc := &Service{}
+
+	// 1. 未配置时（GlobalConfig 为空或 0），自适应 NumCPU 并夹在 [2, 32]
+	config.GlobalConfig = nil
+	wDefault := svc.getEffectiveParseWorkers()
+	if wDefault < minParseWorkers || wDefault > maxParseWorkers {
+		t.Errorf("expected wDefault in [%d, %d], got %d", minParseWorkers, maxParseWorkers, wDefault)
+	}
+
+	// 2. 配置生效
+	config.GlobalConfig = &config.Config{
+		Task: config.TaskConfig{ParseWorkers: 12},
+	}
+	if got := svc.getEffectiveParseWorkers(); got != 12 {
+		t.Errorf("expected configured 12, got %d", got)
+	}
+
+	// 3. 超过上限被钳制为 maxParseWorkers (32)
+	config.GlobalConfig.Task.ParseWorkers = 128
+	if got := svc.getEffectiveParseWorkers(); got != maxParseWorkers {
+		t.Errorf("expected capped at %d, got %d", maxParseWorkers, got)
+	}
+
+	// 4. 小于下限被钳制为 minParseWorkers (2)
+	config.GlobalConfig.Task.ParseWorkers = 1
+	if got := svc.getEffectiveParseWorkers(); got != minParseWorkers {
+		t.Errorf("expected capped at %d, got %d", minParseWorkers, got)
+	}
+
+	// 恢复全局配置
+	config.GlobalConfig = nil
 }

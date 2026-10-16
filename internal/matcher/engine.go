@@ -313,16 +313,16 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	exactBestKey := buildExactBestKey(module, upperBrief, product, version, isWireless, isWired)
 	bodyKey := buildBodyKey(exactBestKey, severity, norm.MessageBody)
 
-	// 1. 查询结果缓存（统一按包含正文指纹与属性维度的 bodyKey 粒度查询，相同报文 0 耗时秒回，闭环 R1）
+	// 1. 查询结果缓存（Peek 走 RLock 读锁快路径，多 Worker 100% 并发无锁争用）
 	if m.cache != nil {
-		if item, exists := m.cache.Get(bodyKey); exists && item != nil {
+		if item, exists := m.cache.Peek(bodyKey); exists && item != nil {
 			return item.k, item.tier, item.conf
 		}
 	}
 
-	// 2. 检查负缓存：按正文粒度记账，避免"首条未命中即永久毒化同类日志"
+	// 2. 检查负缓存：Peek 走 RLock 读锁快路径
 	if m.negativeCache != nil {
-		if _, exists := m.negativeCache.Get(bodyKey); exists {
+		if _, exists := m.negativeCache.Peek(bodyKey); exists {
 			return nil, TierUnmatch, 0.0
 		}
 	}
@@ -345,7 +345,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
 		var best *model.Knowledge
 		if m.exactBestCache != nil {
-			if cached, ok := m.exactBestCache.Get(exactBestKey); ok {
+			if cached, ok := m.exactBestCache.Peek(exactBestKey); ok {
 				best = cached
 			}
 		}
@@ -632,9 +632,6 @@ func (m *MatchEngine) matchTemplate(template string, actualMsg string) bool {
 	// 这里先用 Peek()（只拿读锁，可并发）走快路径，未命中时才升级为 Get/Put。
 	if m.regexCache != nil {
 		if re, ok := m.regexCache.Peek(trimmedTpl); ok && re != nil {
-			return re.MatchString(actualMsg)
-		}
-		if re, ok := m.regexCache.Get(trimmedTpl); ok && re != nil {
 			return re.MatchString(actualMsg)
 		}
 	}

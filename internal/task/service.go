@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -2384,12 +2383,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	var reanalyzeLastFile string
 	var reanalyzeLastTS time.Time
 
-	workerNum := runtime.NumCPU()
-	if workerNum < minParseWorkers {
-		workerNum = minParseWorkers
-	} else if workerNum > maxParseWorkers {
-		workerNum = maxParseWorkers
-	}
+	workerNum := s.getEffectiveParseWorkers()
 
 	for {
 		var records []model.LogRecord

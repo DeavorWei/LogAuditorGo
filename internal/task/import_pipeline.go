@@ -20,6 +20,7 @@ import (
 	"golang.org/x/text/transform"
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/config"
 	"logauditorgo/internal/logparser"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
@@ -221,6 +222,29 @@ func resolveRenameCandidate(cleanName string, taken func(string) bool) (string, 
 	return "", false
 }
 
+// getEffectiveParseWorkers 计算当前有效的解析 worker 协程数。
+// 优先采用全局配置 task.parse_workers；未配置时自适应当前宿主机 CPU 逻辑核心数，并钳制在 [minParseWorkers, maxParseWorkers]。
+func (s *Service) getEffectiveParseWorkers() int {
+	if config.GlobalConfig != nil && config.GlobalConfig.Task.ParseWorkers > 0 {
+		w := config.GlobalConfig.Task.ParseWorkers
+		if w < minParseWorkers {
+			return minParseWorkers
+		}
+		if w > maxParseWorkers {
+			return maxParseWorkers
+		}
+		return w
+	}
+	workerNum := runtime.NumCPU()
+	if workerNum < minParseWorkers {
+		return minParseWorkers
+	}
+	if workerNum > maxParseWorkers {
+		return maxParseWorkers
+	}
+	return workerNum
+}
+
 // parseAndMatchChunk 并发解析并匹配一个批次的日志行。
 //
 // TASK-17: 任务队列缓冲与批次对齐，且结果按 index 就地回填，
@@ -231,12 +255,7 @@ func (s *Service) parseAndMatchChunk(lines []string, cleanName string, deviceID 
 		return records
 	}
 
-	workerNum := runtime.NumCPU()
-	if workerNum < minParseWorkers {
-		workerNum = minParseWorkers
-	} else if workerNum > maxParseWorkers {
-		workerNum = maxParseWorkers
-	}
+	workerNum := s.getEffectiveParseWorkers()
 	if workerNum > len(lines) {
 		workerNum = len(lines)
 	}
@@ -494,7 +513,7 @@ func (s *Service) persistFileBundle(
 	}
 
 	cfg := PipelineConfig{
-		WorkerNum:     0, // 自动取 NumCPU
+		WorkerNum:     s.getEffectiveParseWorkers(),
 		BatchSize:     importChunkLines,
 		FlushInterval: 500 * time.Millisecond,
 	}
