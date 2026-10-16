@@ -508,6 +508,76 @@ func TestIngestStreamingPipeline_LeadingCommentsTickFlush(t *testing.T) {
 	}
 }
 
+// TestIngestStreamingPipeline_LeadingCommentsBatchFlush 验证 P1-2 缺陷修复：
+// 当 BatchSize 小于前导无时间戳注释行数时，BatchSize 刷盘分支不得提前将零值时间戳固化落库
+func TestIngestStreamingPipeline_LeadingCommentsBatchFlush(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "pipeline_batch_ts_test_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	taskDB, _, err := storage.GetOrCreateTaskDB(tmpDir, "pipe-batch-ts-test")
+	if err != nil {
+		t.Fatalf("init task db failed: %v", err)
+	}
+	defer storage.ReleaseTaskDB("pipe-batch-ts-test")
+
+	svc := &Service{}
+	bundle := &fileBundle{
+		taskID:     "pipe-batch-ts-test",
+		cleanName:  "batch_ts.log",
+		totalLines: 30,
+		deviceID:   1,
+	}
+
+	// 前 10 行是无时间戳注释行，后 20 行是带时间戳的日志
+	lines := make([]string, 30)
+	for i := 0; i < 10; i++ {
+		lines[i] = fmt.Sprintf("###### Batch Comment Header Line %d without timestamp ######", i+1)
+	}
+	for i := 10; i < 30; i++ {
+		lines[i] = fmt.Sprintf("Apr 15 2026 14:00:%02d CORE-SW-01 %%%%01IFNET/4/IF_DOWN(l)[%d]: Interface down.", i%60, i+1)
+	}
+
+	// BatchSize 设为 5（小于 10 条前导注释行），FlushInterval 设为长周期 (1分钟)，
+	// 验证在没有 Ticker 介入的情况下，BatchSize 分支能正确暂缓落盘直到首条有效时间戳到达。
+	cfg := PipelineConfig{
+		WorkerNum:     2,
+		LineChanCap:   16,
+		RecordChanCap: 32,
+		BatchSize:     5,
+		FlushInterval: 1 * time.Minute,
+	}
+
+	sourceFunc := makeSliceLineSource(lines)
+	err = svc.IngestStreamingPipeline(context.Background(), taskDB, sourceFunc, bundle, "CloudEngine", "V200R019C00", cfg, nil)
+	if err != nil {
+		t.Fatalf("IngestStreamingPipeline failed: %v", err)
+	}
+
+	var records []model.LogRecord
+	if err := taskDB.Order("id asc").Find(&records).Error; err != nil {
+		t.Fatalf("find records failed: %v", err)
+	}
+	if len(records) != 30 {
+		t.Fatalf("expected 30 records, got %d", len(records))
+	}
+
+	targetTS := records[10].Timestamp
+	if targetTS.IsZero() || targetTS.Year() <= 1970 {
+		t.Fatalf("record[10] timestamp is invalid: %v", targetTS)
+	}
+	for i := 0; i < 10; i++ {
+		if records[i].Timestamp.IsZero() || records[i].Timestamp.Year() <= 1970 {
+			t.Errorf("P1-2 regression: record[%d] timestamp is zero (prematurely flushed by BatchSize): %v", i, records[i].Timestamp)
+		}
+		if !records[i].Timestamp.Equal(targetTS) {
+			t.Errorf("record[%d] timestamp mismatch: got %v, want %v", i, records[i].Timestamp, targetTS)
+		}
+	}
+}
+
 // TestIngestStreamingPipeline_WorkerPanicRecovery 验证 M2 缺陷修复：
 // 当解析过程发生 panic 时，Worker 协程单行 recover 兜底生效，协程不退出，整进程不崩溃，落库行数守恒
 func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {

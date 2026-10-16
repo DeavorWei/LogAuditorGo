@@ -1124,3 +1124,26 @@ func TestTier4AdmissionGuard_ChineseAndUTF8(t *testing.T) {
 	}
 }
 
+func BenchmarkBuildExactBestKey(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BuildExactBestKeyForTest("IFNET", "IF_DOWN", "CloudEngine", "V200R019C00", false, true)
+	}
+}
+
+func BenchmarkBuildBodyKey(b *testing.B) {
+	key := `"IFNET":"IF_DOWN":"CLOUDENGINE":"V200R019C00":W=0:Wired=1`
+	msg := "Interface GigabitEthernet0/0/1 change state to down, peer link dropped"
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.BuildBodyKeyForTest(key, 4, msg)
+	}
+}
+
+func BenchmarkShouldAdmitTier4(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = matcher.ShouldAdmitTier4ForTest("IFNET", "IF_DOWN", "Interface down")
+	}
+}
+

@@ -480,8 +480,11 @@ func (s *Service) persistFileBundle(
 		FlushInterval: 500 * time.Millisecond,
 	}
 
-	// 1. 空文件特判（无行）：仅登记 TaskFile
+	// 1. 空文件特判（无行）：仅登记 TaskFile (P3-3 防御性检查 ctx)
 	if bundle.totalLines == 0 && len(bundle.lines) == 0 {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return taskDB.Transaction(func(tx *gorm.DB) error {
 			return tx.Create(&taskFile).Error
 		})

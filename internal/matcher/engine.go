@@ -1,7 +1,6 @@
 package matcher
 
 import (
-	"hash/fnv"
 	"regexp"
 	"sort"
 	"strconv"
@@ -37,25 +36,59 @@ type matchCacheItem struct {
 // 选优逻辑 (FindBestKnowledgeMatchPtr) 仅依赖 module, brief, product, version 以及是否具备无线/有线协议特征。
 // 它与具体日志的正文变动、严重级别完全解耦，可被同一 brief 的海量不同正文日志 100% 跨行复用！
 func buildExactBestKey(module, upperBrief, product, version string, isWireless, isWired bool) string {
-	wFlag := "0"
+	trimmedProd := strings.ToUpper(strings.TrimSpace(product))
+	trimmedVer := strings.ToUpper(strings.TrimSpace(version))
+
+	var b strings.Builder
+	b.Grow(len(module) + len(upperBrief) + len(trimmedProd) + len(trimmedVer) + 36)
+
+	var buf [128]byte
+	b.Write(strconv.AppendQuote(buf[:0], module))
+	b.WriteByte(':')
+	b.Write(strconv.AppendQuote(buf[:0], upperBrief))
+	b.WriteByte(':')
+	b.Write(strconv.AppendQuote(buf[:0], trimmedProd))
+	b.WriteByte(':')
+	b.Write(strconv.AppendQuote(buf[:0], trimmedVer))
+
 	if isWireless {
-		wFlag = "1"
+		b.WriteString(":W=1")
+	} else {
+		b.WriteString(":W=0")
 	}
-	wiredFlag := "0"
 	if isWired {
-		wiredFlag = "1"
+		b.WriteString(":Wired=1")
+	} else {
+		b.WriteString(":Wired=0")
 	}
-	return strconv.Quote(module) + ":" + strconv.Quote(upperBrief) + ":" +
-		strconv.Quote(strings.ToUpper(strings.TrimSpace(product))) + ":" +
-		strconv.Quote(strings.ToUpper(strings.TrimSpace(version))) + ":W=" + wFlag + ":Wired=" + wiredFlag
+	return b.String()
+}
+
+// fnv1aString 纯字符串零堆分配 64 位 FNV-1a 哈希
+func fnv1aString(s string) uint64 {
+	const offset64 = 14695981039346656037
+	const prime64 = 1099511628211
+	var h uint64 = offset64
+	for i := 0; i < len(s); i++ {
+		h ^= uint64(s[i])
+		h *= prime64
+	}
+	return h
 }
 
 // buildBodyKey 构建正文级终端匹配置信度缓存 Key (闭环 R1 & S5):
 // 融合选优特征、严重级别以及正文哈希指纹，用于相同报文秒级回放，同时绝不跨正文污染一致性判定。
 func buildBodyKey(bestKey string, severity int, messageBody string) string {
-	h := fnv.New64a()
-	_, _ = h.Write([]byte(messageBody))
-	return bestKey + ":S=" + strconv.Itoa(severity) + ":" + strconv.FormatUint(h.Sum64(), 36)
+	h := fnv1aString(messageBody)
+	var b strings.Builder
+	b.Grow(len(bestKey) + 24)
+	b.WriteString(bestKey)
+	b.WriteString(":S=")
+	var buf [32]byte
+	b.Write(strconv.AppendInt(buf[:0], int64(severity), 10))
+	b.WriteByte(':')
+	b.Write(strconv.AppendUint(buf[:0], h, 36))
+	return b.String()
 }
 
 // ---------------- 助记符后缀归一化 (PARSE-13) ----------------
@@ -125,11 +158,11 @@ type MatchEngine struct {
 	// 有了它，Tier3 不再需要对模块内全量候选逐条跑正则。
 	templateBuckets map[string]map[string][]*model.Knowledge
 
-	// 运行时结果缓存与负缓存 (LRU Bounded)
-	cache          *cache.LRUCache[string, *matchCacheItem]
-	exactBestCache *cache.LRUCache[string, *model.Knowledge] // 选优结果缓存 (闭环 S1)
-	negativeCache  *cache.LRUCache[string, struct{}]
-	regexCache     *cache.LRUCache[string, *regexp.Regexp]
+	// 运行时结果缓存与负缓存 (并发分片 LRU Bounded，彻底消除全局互斥写锁争用)
+	cache          *cache.ShardedLRUCache[*matchCacheItem]
+	exactBestCache *cache.ShardedLRUCache[*model.Knowledge] // 选优结果缓存 (闭环 S1)
+	negativeCache  *cache.ShardedLRUCache[struct{}]
+	regexCache     *cache.ShardedLRUCache[*regexp.Regexp]
 }
 
 func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
@@ -139,10 +172,10 @@ func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
 		exactMap:       make(map[string][]*model.Knowledge),
 		moduleMap:      make(map[string][]*model.Knowledge),
 		idMap:          make(map[uint]*model.Knowledge),
-		cache:          cache.NewLRUCache[string, *matchCacheItem](defaultMatchCacheCap),
-		exactBestCache: cache.NewLRUCache[string, *model.Knowledge](defaultExactBestCacheCap),
-		negativeCache:  cache.NewLRUCache[string, struct{}](defaultNegativeCacheCap),
-		regexCache:     cache.NewLRUCache[string, *regexp.Regexp](defaultRegexCacheCap),
+		cache:          cache.NewShardedLRUCache[*matchCacheItem](defaultMatchCacheCap, 32),
+		exactBestCache: cache.NewShardedLRUCache[*model.Knowledge](defaultExactBestCacheCap, 32),
+		negativeCache:  cache.NewShardedLRUCache[struct{}](defaultNegativeCacheCap, 32),
+		regexCache:     cache.NewShardedLRUCache[*regexp.Regexp](defaultRegexCacheCap, 16),
 	}
 	if db != nil {
 		engine.loadIndexLocked()
@@ -239,20 +272,20 @@ func (m *MatchEngine) ensureIndex() {
 // 对大批量非标/未收录/调试日志，会引发 Worker 队列大面积阻塞。
 // 准入规则：
 // 1. 模块非空且合法（排除 UNKNOWN、COMMENT、空模块）；
-// 2. Brief 具备有效语义特征（长度 >= 2，包含英文字母或数字，排除纯符号或纯占位符）；
-// 3. 搜索内容（Brief 或 MessageBody）包含实质有效字符（长度 >= 3），且避免超长 payload 拖慢检索。
+// 2. Brief 具备有效语义特征（字符数 >= 2，包含英文字母或数字，排除纯符号或纯占位符）；
+// 3. 搜索内容（Brief 或 MessageBody）包含实质有效字符（字符数 >= 3），且避免超长 payload 拖慢检索。
 func shouldAdmitTier4(module, brief, messageBody string) bool {
 	if module == "" || module == "UNKNOWN" || module == "COMMENT" {
 		return false
 	}
 	cleanBrief := strings.TrimSpace(brief)
 	cleanBody := strings.TrimSpace(messageBody)
-	if cleanBrief == "" && len(cleanBody) < 6 {
+	if cleanBrief == "" && utf8.RuneCountInString(cleanBody) < 3 {
 		return false
 	}
 
 	if cleanBrief != "" {
-		if utf8.RuneCountInString(cleanBrief) < 2 && len(cleanBrief) < 2 {
+		if utf8.RuneCountInString(cleanBrief) < 2 {
 			return false
 		}
 		hasAlnum := false
@@ -331,119 +364,117 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 
 	m.ensureIndex()
 
-	m.indexMu.RLock()
-	defer m.indexMu.RUnlock()
-
-	// ---------------- Tier 1: EXACT 内存精确匹配 ----------------
-	//
-	// PARSE-06 / S1 优化:
-	// 1. 候选选优缓存 (exactBestCache): FindBestKnowledgeMatchPtr 仅依赖 (module, brief, product, version, W, Wired)，
-	//    与具体正文和严重级别无关。同 brief 日志的选优结果 100% 共享，消灭 99.9% 的候选打分冷路径开销！
-	// 2. 正文一致性逐行校验 (Tier1Consistency): 选优后逐行计算严重级差与模板匹配扣分，达到阈值立即软短路返回；
-	//    既彻底杜绝正文间的一致性缓存污染，又将每行开销降至单次轻量校验级别。
+	// ---------------- Tier 1~3: 纯内存索引匹配（受 indexMu 保护） ----------------
 	var fallbackK *model.Knowledge
 	var fallbackConf float64
 
-	if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
-		var best *model.Knowledge
-		if m.exactBestCache != nil {
-			if cached, ok := m.exactBestCache.Peek(exactBestKey); ok {
-				best = cached
-			}
-		}
-		if best == nil {
-			best = FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
-			if best != nil && m.exactBestCache != nil {
-				m.exactBestCache.Put(exactBestKey, best)
-			}
-		}
+	matchedK, matchedTier, matchedConf := func() (*model.Knowledge, string, float64) {
+		m.indexMu.RLock()
+		defer m.indexMu.RUnlock()
 
-		if best != nil {
-			consistency := Tier1Consistency(norm, best, m.matchTemplate)
-			if consistency >= MinTier1Confidence {
-				conf := ConfidenceExact * consistency
-				if m.cache != nil {
-					m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierExact, conf: conf})
+		// ---------------- Tier 1: EXACT 内存精确匹配 ----------------
+		// PARSE-06 / S1 优化:
+		// 1. 候选选优缓存 (exactBestCache): FindBestKnowledgeMatchPtr 仅依赖 (module, brief, product, version, W, Wired)，
+		//    与具体正文和严重级别无关。同 brief 日志的选优结果 100% 共享，消灭 99.9% 的候选打分冷路径开销！
+		// 2. 正文一致性逐行校验 (Tier1Consistency): 选优后逐行计算严重级差与模板匹配扣分，达到阈值立即软短路返回；
+		//    既彻底杜绝正文间的一致性缓存污染，又将每行开销降至单次轻量校验级别。
+		if exactCandidates, ok := m.exactMap[module+":"+upperBrief]; ok && len(exactCandidates) > 0 {
+			var best *model.Knowledge
+			if m.exactBestCache != nil {
+				// 闭环 P2-2：在 32 分片并发架构下，安全使用 Get 刷新 MRU 访问时序，杜绝高频热键被 LRU 尾部淘汰
+				if cached, ok := m.exactBestCache.Get(exactBestKey); ok {
+					best = cached
 				}
-				return best, TierExact, conf
 			}
-			fallbackK = best
-			fallbackConf = ConfidenceExact * consistency
-			logger.Log.Debugf("[Matcher] Tier1 candidate '%s' consistency %.2f < %.2f, degrade to lower tiers (module=%s brief=%s)",
-				best.Brief, consistency, MinTier1Confidence, module, brief)
-		}
-	}
+			if best == nil {
+				best = FindBestKnowledgeMatchPtr(exactCandidates, product, version, norm)
+				if best != nil && m.exactBestCache != nil {
+					m.exactBestCache.Put(exactBestKey, best)
+				}
+			}
 
-	// ---------------- Tier 2: MNEMONIC 助记符别名/前后缀匹配 ----------------
-	// 审计修复 ISSUE-MAT-02: Tier 2 选优过程依赖正文特征（无线/有线），
-	// 故严禁使用不含正文哈希的 exactBestKey 跨正文复用，统一在命中后写入 bodyKey。
-	// PARSE-13: 统一转大写后剥离状态后缀，并对互斥极性后缀建立黑名单
-	logStem, logPol := mnemonicStem(brief)
-	if logStem != "" {
-		// 优先查去掉后缀后的 exactMap (仅当 logStem != upperBrief 时才真正剥离了状态后缀)
-		if logStem != upperBrief {
-			if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
-				best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
-				if best != nil {
-					_, candPol := mnemonicStem(best.Brief)
-					if polarityAllowed(logPol, candPol) {
-						if m.cache != nil {
-							item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
-							m.cache.Put(bodyKey, item)
+			if best != nil {
+				consistency := Tier1Consistency(norm, best, m.matchTemplate)
+				if consistency >= MinTier1Confidence {
+					conf := ConfidenceExact * consistency
+					return best, TierExact, conf
+				}
+				fallbackK = best
+				fallbackConf = ConfidenceExact * consistency
+				logger.Log.Debugf("[Matcher] Tier1 candidate '%s' consistency %.2f < %.2f, degrade to lower tiers (module=%s brief=%s)",
+					best.Brief, consistency, MinTier1Confidence, module, brief)
+			}
+		}
+
+		// ---------------- Tier 2: MNEMONIC 助记符别名/前后缀匹配 ----------------
+		// 审计修复 ISSUE-MAT-02: Tier 2 选优过程依赖正文特征（无线/有线），
+		// 故严禁使用不含正文哈希的 exactBestKey 跨正文复用，统一在命中后写入 bodyKey。
+		// PARSE-13: 统一转大写后剥离状态后缀，并对互斥极性后缀建立黑名单
+		logStem, logPol := mnemonicStem(brief)
+		if logStem != "" {
+			// 优先查去掉后缀后的 exactMap (仅当 logStem != upperBrief 时才真正剥离了状态后缀)
+			if logStem != upperBrief {
+				if mnemCandidates, ok := m.exactMap[module+":"+logStem]; ok && len(mnemCandidates) > 0 {
+					best := FindBestKnowledgeMatchPtr(mnemCandidates, product, version, norm)
+					if best != nil {
+						_, candPol := mnemonicStem(best.Brief)
+						if polarityAllowed(logPol, candPol) {
+							return best, TierMnemonic, ConfidenceMnemonic
 						}
+					}
+				}
+			}
+
+			// 其次扫描该模块下的候选：仅当候选条目剥离对称后缀后与日志词干严格一致时才判定为别名命中，
+			// 严禁随意前缀包含，且极性相反时禁止互配，以杜绝反义词条误召回；
+			// 严格排除与日志 brief 完全相同的同名候选，杜绝绕过 Tier1 软短路一致性保护降级。
+			if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
+				var mnemonicCandidates []*model.Knowledge
+				for _, cand := range moduleCandidates {
+					if strings.ToUpper(cand.Brief) == upperBrief {
+						continue // 排除 Tier1 已处理的同名候选，避免破坏软短路降级
+					}
+					candStem, candPol := mnemonicStem(cand.Brief)
+					if candStem == logStem && polarityAllowed(logPol, candPol) {
+						mnemonicCandidates = append(mnemonicCandidates, cand)
+					}
+				}
+				if len(mnemonicCandidates) > 0 {
+					best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
+					if best != nil {
 						return best, TierMnemonic, ConfidenceMnemonic
 					}
 				}
 			}
 		}
 
-		// 其次扫描该模块下的候选：仅当候选条目剥离对称后缀后与日志词干严格一致时才判定为别名命中，
-		// 严禁随意前缀包含，且极性相反时禁止互配，以杜绝反义词条误召回；
-		// 严格排除与日志 brief 完全相同的同名候选，杜绝绕过 Tier1 软短路一致性保护降级。
-		if moduleCandidates, ok := m.moduleMap[module]; ok && len(moduleCandidates) > 0 {
-			var mnemonicCandidates []*model.Knowledge
-			for _, cand := range moduleCandidates {
-				if strings.ToUpper(cand.Brief) == upperBrief {
-					continue // 排除 Tier1 已处理的同名候选，避免破坏软短路降级
-				}
-				candStem, candPol := mnemonicStem(cand.Brief)
-				if candStem == logStem && polarityAllowed(logPol, candPol) {
-					mnemonicCandidates = append(mnemonicCandidates, cand)
-				}
-			}
-			if len(mnemonicCandidates) > 0 {
-				best := FindBestKnowledgeMatchPtr(mnemonicCandidates, product, version, norm)
+		// ---------------- Tier 3: TEMPLATE 消息模板反向匹配 ----------------
+		// PARSE-15: 原实现对模块内全量候选逐条跑正则，
+		// IFNET/BGP 这类大模块在百万行日志下会退化成 O(行数 × 模块条目数)。
+		// 这里改用首 token 倒排分桶预筛，只对"模板首 token 与正文首 token 一致"
+		// 以及"模板以占位符开头（首 token 不确定）"两类候选做正则匹配。
+		if norm.MessageBody != "" {
+			if matchedCandidates := m.matchTemplateCandidates(module, norm.MessageBody); len(matchedCandidates) > 0 {
+				best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version, norm)
 				if best != nil {
-					if m.cache != nil {
-						item := &matchCacheItem{k: best, tier: TierMnemonic, conf: ConfidenceMnemonic}
-						m.cache.Put(bodyKey, item)
-					}
-					return best, TierMnemonic, ConfidenceMnemonic
+					return best, TierTemplate, ConfidenceTemplate
 				}
 			}
 		}
-	}
 
-	// ---------------- Tier 3: TEMPLATE 消息模板反向匹配 ----------------
-	//
-	// PARSE-15: 原实现对模块内全量候选逐条跑正则，
-	// IFNET/BGP 这类大模块在百万行日志下会退化成 O(行数 × 模块条目数)。
-	// 这里改用首 token 倒排分桶预筛，只对"模板首 token 与正文首 token 一致"
-	// 以及"模板以占位符开头（首 token 不确定）"两类候选做正则匹配。
-	if norm.MessageBody != "" {
-		if matchedCandidates := m.matchTemplateCandidates(module, norm.MessageBody); len(matchedCandidates) > 0 {
-			best := FindBestKnowledgeMatchPtr(matchedCandidates, product, version, norm)
-			if best != nil {
-				// Tier3 依赖正文，必须写入带正文指纹的 bodyKey
-				if m.cache != nil {
-					m.cache.Put(bodyKey, &matchCacheItem{k: best, tier: TierTemplate, conf: ConfidenceTemplate})
-				}
-				return best, TierTemplate, ConfidenceTemplate
-			}
+		return nil, "", 0.0
+	}()
+
+	if matchedK != nil {
+		if m.cache != nil {
+			m.cache.Put(bodyKey, &matchCacheItem{k: matchedK, tier: matchedTier, conf: matchedConf})
 		}
+		return matchedK, matchedTier, matchedConf
 	}
 
 	// ---------------- Tier 4: BLEVE 语义搜索召回 ----------------
+	// 锁收窄优化 (闭环 P2-4)：Bleve 倒排检索开销在毫秒级，且搜索过程线程安全，
+	// 绝不在持有 indexMu 读锁期间调用 m.indexer.Search，防止知识库热重载 (Reload) 时导致全量 Worker 解析级联阻塞。
 	if m.indexer != nil && shouldAdmitTier4(module, brief, norm.MessageBody) {
 		queryKeyword := brief
 		if norm.MessageBody != "" {
@@ -471,6 +502,8 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 		if err == nil && res.Total > 0 && len(res.Hits) > 0 {
 			var bleveCandidates []*model.Knowledge
 			hitScoreMap := make(map[uint]float64)
+
+			m.indexMu.RLock()
 			for _, h := range res.Hits {
 				if h.Score >= BleveMinScoreThreshold {
 					if cand, exists := m.idMap[h.KnowledgeID]; exists {
@@ -479,6 +512,7 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 					}
 				}
 			}
+			m.indexMu.RUnlock()
 
 			if len(bleveCandidates) > 0 {
 				// PARSE-07: 原实现只按产品/版本打分选优，完全忽略 Bleve 相关度，
@@ -633,11 +667,9 @@ func (m *MatchEngine) matchTemplate(template string, actualMsg string) bool {
 
 	trimmedTpl := strings.TrimSpace(template)
 
-	// PARSE-15: LRU 的 Get() 会更新 LRU 队列，必须拿写锁；
-	// 32 个 worker 并发匹配时所有 goroutine 串行争抢同一把锁，是实打实的热点。
-	// 这里先用 Peek()（只拿读锁，可并发）走快路径，未命中时才升级为 Get/Put。
+	// 闭环 P1-6/P2-2: regexCache 已升级为分片 LRU，Get() 仅锁单一分片，既能刷新 LRU recency 杜绝热点模板正则被误淘汰，又消除全局写争用
 	if m.regexCache != nil {
-		if re, ok := m.regexCache.Peek(trimmedTpl); ok && re != nil {
+		if re, ok := m.regexCache.Get(trimmedTpl); ok && re != nil {
 			return re.MatchString(actualMsg)
 		}
 	}

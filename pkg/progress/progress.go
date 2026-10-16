@@ -268,11 +268,16 @@ func (t *JobTracker) SetStage(key string, message ...string) {
 		}
 	}
 
-	if !found && len(t.stages) > 0 {
-		t.stageIndex = 0
-		t.stages[0].Status = StageRunning
-		t.stages[0].startTime = now
-		t.stages[0].Detail = msg
+	if !found {
+		// 防御性保护 (闭环 P1-1)：若传入未预设的阶段 Key，绝不回退 stageIndex 到 0，也不清零已累积进度；
+		// 仅更新描述文本并记录告警，维持现有阶段与进度不变。
+		if msg != "" {
+			t.message = msg
+			t.appendLogLocked(msg, "warning")
+		}
+		t.updatedAt = now
+		t.broadcastLocked()
+		return
 	}
 
 	if msg != "" {

@@ -563,20 +563,23 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		for _, ff := range failedFiles {
 			tr.AddLog("error", "文件处理失败: %s", ff)
 		}
+		// 闭环 P2-1: 阶段流合理化展示，流水线启动时置 PARSE_NORM，首批落库消费时无缝切至 MATCH_KB
 		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在并发分词与标准化解析 %d 行日志...", totalValidLines))
 		tr.UpdateProgress(0, totalValidLines, fmt.Sprintf("已解析 0 / %d 行", totalValidLines))
 	}
 
-	// ---------- 阶段 PARSE_NORM / MATCH_KB / SAVE_DB：逐文件流式落库 ----------
+	// ---------- 阶段 MATCH_KB / 流式落库：逐文件并发流水线处理 ----------
 	//
 	// TASK-04: 不再预分配一个装下全部日志的大切片，改为逐文件按批次解析并落库，
 	// 常驻内存与单批大小（5000 行）同阶，与导入文件总量无关；
 	// 每个批次一个独立小事务，避免 SQLite 长时间持有 WAL 锁。
+	// P2-1 加固：不再在每个文件循环内部重复调用 SetStage("SAVE_DB")，防止重置进度条与阶段计时器。
 	var processedTotal int64 = 0
+	var matchStageOnce sync.Once
 	for _, bundle := range bundles {
 		base := processedTotal
 		if tr != nil {
-			tr.SetStage("SAVE_DB", fmt.Sprintf("正在写入文件 %s 的解析结果...", bundle.cleanName))
+			tr.AddLog("info", "开始导入并匹配文件 %s...", bundle.cleanName)
 		}
 		var fileCtx context.Context = context.Background()
 		if tr != nil {
@@ -586,6 +589,9 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 			cur := base + int64(processed)
 			processedTotal = cur
 			if tr != nil {
+				matchStageOnce.Do(func() {
+					tr.SetStage("MATCH_KB", fmt.Sprintf("正在并发解析、知识库多级匹配与流式入库 %d 行日志...", totalValidLines))
+				})
 				tr.UpdateProgress(cur, totalValidLines,
 					fmt.Sprintf("正在解析与入库: %d / %d 行 (%s)", cur, totalValidLines, bundle.cleanName))
 			}
@@ -605,7 +611,10 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		return s.failTask(taskDB, &taskInfo, tr, importCtx.Err(), "任务导入已中止")
 	}
 
-	// ---------- 设备归属与统计刷新 ----------
+	// ---------- 阶段 SAVE_DB：设备归属与统计指标落库刷新 ----------
+	if tr != nil {
+		tr.SetStage("SAVE_DB", "正在执行设备自动归集与统计指标刷新持久化...")
+	}
 	if _, assignErr := s.AutoAssignDevices(taskID); assignErr != nil {
 		logger.Log.Errorf("[Task Service] Auto assign devices failed: %v", assignErr)
 		if tr != nil {
@@ -2395,6 +2404,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 
 	if tr != nil {
 		tr.AddLog("info", "启动任务【%s】全流程重新分析，将严格按照导入全流程重新执行解析、匹配与根因诊断 (共 %d 条原始日志)", taskInfo.TaskName, totalLogCount)
+		// 闭环 P2-1: 阶段流合理化展示，启动时进入 PARSE_NORM，首批更新完成时无缝切至 MATCH_KB
 		tr.SetStage("PARSE_NORM", fmt.Sprintf("正在对 %d 条日志重新执行原始文本分行解析与标准化...", totalLogCount))
 		tr.UpdateProgress(0, totalLogCount, "准备执行全量日志解析与匹配...")
 	}
@@ -2411,6 +2421,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	var reanalyzeLastTS time.Time
 
 	workerNum := s.getEffectiveParseWorkers()
+	var matchStageOnce sync.Once
 
 	for {
 		if reanalyzeCtx.Err() != nil {
@@ -2444,6 +2455,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			go func() {
 				defer wg.Done()
 				for idx := range jobs {
+					if reanalyzeCtx.Err() != nil {
+						continue
+					}
 					func() {
 						defer func() {
 							if r := recover(); r != nil {
@@ -2490,11 +2504,20 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 			}()
 		}
 
+	dispatchLoop:
 		for idx := range records {
-			jobs <- idx
+			select {
+			case <-reanalyzeCtx.Done():
+				break dispatchLoop
+			case jobs <- idx:
+			}
 		}
 		close(jobs)
 		wg.Wait()
+
+		if reanalyzeCtx.Err() != nil {
+			return s.failTask(taskDB, &taskInfo, tr, reanalyzeCtx.Err(), "重新分析已中止")
+		}
 
 		lastID = records[len(records)-1].ID
 
@@ -2527,6 +2550,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 
 		processedCount += int64(len(records))
 		if tr != nil {
+			matchStageOnce.Do(func() {
+				tr.SetStage("MATCH_KB", fmt.Sprintf("正在并发重新匹配知识库与流式更新 %d 条日志...", totalLogCount))
+			})
 			tr.UpdateProgress(processedCount, totalLogCount,
 				fmt.Sprintf("已全量重新解析与匹配: %d / %d 行 (命中知识库 %d 条)", processedCount, totalLogCount, atomic.LoadInt64(&matchedCount)))
 		}
@@ -2537,9 +2563,9 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		return s.failTask(taskDB, &taskInfo, tr, reanalyzeCtx.Err(), "重新分析已中止")
 	}
 
-	// ---------- 阶段二：设备归属与统计刷新 ----------
+	// ---------- 阶段二：设备归属与统计刷新持久化 ----------
 	if tr != nil {
-		tr.SetStage("AUTO_ASSIGN", "正在根据重新解析的设备主机名同步设备归属与统计指标...")
+		tr.SetStage("SAVE_DB", "正在根据重新解析的设备主机名同步设备归属与统计指标...")
 		tr.AddLog("info", "同步设备归属与统计指标...")
 	}
 	if _, assignErr := s.AutoAssignDevices(taskID); assignErr != nil {

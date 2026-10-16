@@ -201,7 +201,7 @@ func scanSemicolonSegments(segments []string, emit func(key, value string)) {
 }
 
 // ExtractParameters 从日志正文中提取动态键值对参数。
-// 若无任何键值对参数，返回 nil（nil map 读安全、长度为 0，且彻底杜绝多协程全局 map 污染与并发崩溃）。
+// 若无任何键值对参数，返回 nil（nil map 支持安全的只读与 len 检查；禁止直接向返回值写入，必须通过 MergeCapturedParameters 的 Copy-On-Write 机制，彻底杜绝多协程全局 map 污染与并发崩溃）。
 func ExtractParameters(msg string) map[string]string {
 	if strings.IndexByte(msg, '=') == -1 && strings.IndexByte(msg, ':') == -1 {
 		return nil

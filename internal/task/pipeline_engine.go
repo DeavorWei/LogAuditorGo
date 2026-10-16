@@ -225,6 +225,13 @@ consumeLoop:
 			}
 			deliver(rec)
 			if len(batch) >= cfg.BatchSize {
+				// N2 加固 (闭环 P1-2)：若当前文件尚未获取到任何有效时间戳，且本批次内全无有效时间戳，
+				// 暂缓本次满批落库，等待首条有效时间戳到达，防止文件头部无时间戳注释行因达到 BatchSize 提前刷盘
+				// 而导致首批记录以 0001-01-01 零值固化落库（后续批次即使产生有效时间戳也无法回溯修正已提交记录）。
+				// 为避免极端全无时间戳的病态文件导致 batch 无限增长，设置安全上限（cfg.BatchSize * 10）兜底防爆内存。
+				if lastValidTS.IsZero() && !hasAnyValidTimestamp(batch) && len(batch) < cfg.BatchSize*10 {
+					continue
+				}
 				if err := flush(); err != nil {
 					commitErr = err
 					break consumeLoop
@@ -233,8 +240,8 @@ consumeLoop:
 		case <-ticker.C:
 			if len(batch) > 0 {
 				// N2 保护：若当前文件尚未获取到任何有效时间戳，且本批次内也全无有效时间戳，
-				// 则暂缓本次定时 flush，等待首条有效时间戳到达或达到满批次/EOF，防止头部无时间戳注释行因定时刷盘而无法完成时间戳向前借用对齐。
-				if lastValidTS.IsZero() && !hasAnyValidTimestamp(batch) {
+				// 则暂缓本次定时 flush，等待首条有效时间戳到达或达到安全上限/EOF，防止头部无时间戳注释行因定时刷盘而无法完成时间戳向前借用对齐。
+				if lastValidTS.IsZero() && !hasAnyValidTimestamp(batch) && len(batch) < cfg.BatchSize*10 {
 					continue
 				}
 				if err := flush(); err != nil {

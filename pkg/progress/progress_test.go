@@ -181,3 +181,41 @@ func TestJobTracker_TerminalGuard(t *testing.T) {
 	}
 }
 
+// TestJobTracker_UnknownStageDoesNotRewind 验证 P1-1 缺陷修复：
+// 当调用 SetStage 传入未预设的 key 时，绝不回退到 stageIndex 0，也不清零 current / total
+func TestJobTracker_UnknownStageDoesNotRewind(t *testing.T) {
+	stages := []StageDef{
+		{Key: "RECEIVE", Name: "预处理"},
+		{Key: "PARSE_NORM", Name: "解析"},
+		{Key: "SAVE_DB", Name: "入库"},
+	}
+	tracker := NewJobTracker("test_unknown_stage", "task_unknown", "log", stages)
+
+	tracker.SetStage("PARSE_NORM", "正在解析")
+	tracker.UpdateProgress(50, 100, "处理 50 条")
+
+	snap1 := tracker.GetSnapshot()
+	if snap1.StageIndex != 1 {
+		t.Fatalf("expected StageIndex 1, got %d", snap1.StageIndex)
+	}
+	if snap1.Current != 50 || snap1.Total != 100 {
+		t.Fatalf("expected progress 50/100, got %d/%d", snap1.Current, snap1.Total)
+	}
+
+	// 传入未预设的阶段 Key (如曾经误用的 AUTO_ASSIGN)
+	tracker.SetStage("AUTO_ASSIGN", "正在同步归属")
+
+	snap2 := tracker.GetSnapshot()
+	// 验证：绝不倒退回 0（RECEIVE），且进度 50/100 绝不清零
+	if snap2.StageIndex != 1 {
+		t.Errorf("regression P1-1: StageIndex rewound to %d (expected 1)", snap2.StageIndex)
+	}
+	if snap2.Current != 50 || snap2.Total != 100 {
+		t.Errorf("regression P1-1: progress wiped to %d/%d (expected 50/100)", snap2.Current, snap2.Total)
+	}
+	if snap2.Message != "正在同步归属" {
+		t.Errorf("expected message to be updated to '正在同步归属', got %q", snap2.Message)
+	}
+}
+
+

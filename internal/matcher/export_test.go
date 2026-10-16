@@ -20,3 +20,13 @@ func ShouldAdmitTier4ForTest(module, brief, messageBody string) bool {
 	return shouldAdmitTier4(module, brief, messageBody)
 }
 
+// BuildExactBestKeyForTest 暴露 buildExactBestKey 用于基准与单测
+func BuildExactBestKeyForTest(module, upperBrief, product, version string, isWireless, isWired bool) string {
+	return buildExactBestKey(module, upperBrief, product, version, isWireless, isWired)
+}
+
+// BuildBodyKeyForTest 暴露 buildBodyKey 用于基准与单测
+func BuildBodyKeyForTest(bestKey string, severity int, messageBody string) string {
+	return buildBodyKey(bestKey, severity, messageBody)
+}
+
