@@ -35,10 +35,11 @@ func TestIngestStreamingPipeline_OrderAndTimestamp(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-order-test",
-		cleanName:  "order_test.log",
-		totalLines: 5,
-		deviceID:   1,
+		taskID:        "pipe-order-test",
+		cleanName:     "order_test.log",
+		totalLines:    5,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	lines := []string{
@@ -63,8 +64,6 @@ func TestIngestStreamingPipeline_OrderAndTimestamp(t *testing.T) {
 		taskDB,
 		lineSource,
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -118,10 +117,11 @@ func TestIngestStreamingPipeline_ErrorCancelAndDrain(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-err-test",
-		cleanName:  "err_test.log",
-		totalLines: 100,
-		deviceID:   1,
+		taskID:        "pipe-err-test",
+		cleanName:     "err_test.log",
+		totalLines:    100,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	// 模拟产出 500 行的 Reader
@@ -160,8 +160,6 @@ func TestIngestStreamingPipeline_ErrorCancelAndDrain(t *testing.T) {
 		taskDB,
 		faultySource,
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -196,10 +194,11 @@ func TestIngestStreamingPipeline_ConcurrentStress(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-stress-test",
-		cleanName:  "stress.log",
-		totalLines: 1200,
-		deviceID:   1,
+		taskID:        "pipe-stress-test",
+		cleanName:     "stress.log",
+		totalLines:    1200,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	lines := make([]string, 1200)
@@ -228,8 +227,6 @@ func TestIngestStreamingPipeline_ConcurrentStress(t *testing.T) {
 		taskDB,
 		makeSliceLineSource(lines),
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		onProgress,
 	)
@@ -320,10 +317,11 @@ func TestPersistFileBundle_CompensateCleanup_OnFailure(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "task-cleanup-test",
-		cleanName:  "corrupted.log",
-		totalLines: 5101,
-		deviceID:   1,
+		taskID:        "task-cleanup-test",
+		cleanName:     "corrupted.log",
+		totalLines:    5101,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 		item: FileUploadItem{
 			FileName: "corrupted.log",
 			FilePath: badFilePath,
@@ -331,7 +329,7 @@ func TestPersistFileBundle_CompensateCleanup_OnFailure(t *testing.T) {
 		},
 	}
 
-	err = svc.persistFileBundle(context.Background(), "task-cleanup-test", taskDB, bundle, "CloudEngine", "", nil)
+	err = svc.persistFileBundle(context.Background(), "task-cleanup-test", taskDB, bundle, nil)
 	if err == nil {
 		t.Fatalf("expected persistFileBundle to fail on corrupted file, got nil")
 	}
@@ -367,10 +365,11 @@ func TestIngestStreamingPipeline_ContextCancel(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-cancel-test",
-		cleanName:  "cancel.log",
-		totalLines: 1000,
-		deviceID:   1,
+		taskID:        "pipe-cancel-test",
+		cleanName:     "cancel.log",
+		totalLines:    1000,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -403,8 +402,6 @@ func TestIngestStreamingPipeline_ContextCancel(t *testing.T) {
 		taskDB,
 		cancelSource,
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -432,10 +429,11 @@ func TestIngestStreamingPipeline_LeadingCommentsTickFlush(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-tick-test",
-		cleanName:  "tick.log",
-		totalLines: 30,
-		deviceID:   1,
+		taskID:        "pipe-tick-test",
+		cleanName:     "tick.log",
+		totalLines:    30,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	// 前 10 行是无时间戳注释行，后 20 行是带时间戳的日志
@@ -476,8 +474,6 @@ func TestIngestStreamingPipeline_LeadingCommentsTickFlush(t *testing.T) {
 		taskDB,
 		slowSource,
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -525,10 +521,12 @@ func TestIngestStreamingPipeline_LeadingCommentsBatchFlush(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-batch-ts-test",
-		cleanName:  "batch_ts.log",
-		totalLines: 30,
-		deviceID:   1,
+		taskID:        "pipe-batch-ts-test",
+		cleanName:     "batch_ts.log",
+		totalLines:    30,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
+		targetVersion: "V200R019C00",
 	}
 
 	// 前 10 行是无时间戳注释行，后 20 行是带时间戳的日志
@@ -551,7 +549,7 @@ func TestIngestStreamingPipeline_LeadingCommentsBatchFlush(t *testing.T) {
 	}
 
 	sourceFunc := makeSliceLineSource(lines)
-	err = svc.IngestStreamingPipeline(context.Background(), taskDB, sourceFunc, bundle, "CloudEngine", "V200R019C00", cfg, nil)
+	err = svc.IngestStreamingPipeline(context.Background(), taskDB, sourceFunc, bundle, cfg, nil)
 	if err != nil {
 		t.Fatalf("IngestStreamingPipeline failed: %v", err)
 	}
@@ -595,10 +593,11 @@ func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "pipe-panic-test",
-		cleanName:  "panic_recovery.log",
-		totalLines: 100,
-		deviceID:   1,
+		taskID:        "pipe-panic-test",
+		cleanName:     "panic_recovery.log",
+		totalLines:    100,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	testParserPanicHook = func(line string) {
@@ -642,8 +641,6 @@ func TestIngestStreamingPipeline_WorkerPanicRecovery(t *testing.T) {
 		taskDB,
 		makeSliceLineSource(lines),
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -687,10 +684,11 @@ func TestIngestStreamingPipeline_AllCommentsTickFlush(t *testing.T) {
 
 	svc := &Service{}
 	bundle := &fileBundle{
-		taskID:     "all-comments-test",
-		cleanName:  "all_comments.log",
-		totalLines: 20,
-		deviceID:   1,
+		taskID:        "all-comments-test",
+		cleanName:     "all_comments.log",
+		totalLines:    20,
+		deviceID:      1,
+		targetProduct: "CloudEngine",
 	}
 
 	lines := make([]string, 20)
@@ -711,8 +709,6 @@ func TestIngestStreamingPipeline_AllCommentsTickFlush(t *testing.T) {
 		taskDB,
 		makeSliceLineSource(lines),
 		bundle,
-		"CloudEngine",
-		"",
 		cfg,
 		nil,
 	)
@@ -914,7 +910,3 @@ func TestReanalyzeTask_ContextCancel(t *testing.T) {
 
 	_ = resTask
 }
-
-
-
-

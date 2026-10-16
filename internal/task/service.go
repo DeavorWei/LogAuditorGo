@@ -244,7 +244,9 @@ func (s *Service) CreateEmptyTask(taskName string, deviceType string, deviceVers
 		taskName = fmt.Sprintf("Audit-%s", time.Now().Format("20060102-150405"))
 	}
 	if deviceType == "" {
-		deviceType = "CloudEngine"
+		// 中性兜底：任务级型号不再参与匹配（权威下沉至 Device），
+		// 保留该字段仅为展示元数据；硬编码 CloudEngine 会形成系统性产品偏置 (本方案 1.1 节 D2)。
+		deviceType = matcher.NeutralProductName
 	}
 
 	taskDB, dbPath, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
@@ -492,10 +494,10 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		return nil, fmt.Errorf("task not found: %w", err)
 	}
 
-	// PARSE-04: 设备软件版本必须在此处取出并透传给匹配引擎。
-	// 闭包内直接读 taskInfo 也可以，但显式取值能避免后续把 taskInfo 改成指针/副本时踩坑。
-	deviceVersion := strings.TrimSpace(taskInfo.DeviceVersion)
-
+	// PARSE-04 → 本方案 §6.1：匹配上下文不再取自任务级 taskInfo.DeviceType/DeviceVersion，
+	// 而是由 prepareBundles 按文件逐束决议（设备行属性 > 主机名嗅探 > 中性兜底）后
+	// 注入 fileBundle.targetProduct/targetVersion。此处不再保留任务级上下文变量，
+	// 从根上杜绝"任务级单一型号被当作全局上下文"的错配 (1.1 节 D1)。
 	if conflictMode == "" {
 		conflictMode = "overwrite"
 	}
@@ -585,7 +587,7 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		if tr != nil {
 			fileCtx = tr.Context()
 		}
-		ingestErr := s.persistFileBundle(fileCtx, taskID, taskDB, bundle, taskInfo.DeviceType, deviceVersion, func(processed int) {
+		ingestErr := s.persistFileBundle(fileCtx, taskID, taskDB, bundle, func(processed int) {
 			cur := base + int64(processed)
 			processedTotal = cur
 			if tr != nil {
@@ -730,7 +732,6 @@ func (s *Service) UpdateTask(taskID string, req TaskUpdateRequest) (*model.TaskI
 	}
 	return &taskInfo, nil
 }
-
 
 // SetTaskDeviceVersion 更新任务的设备软件版本 (PARSE-04)。
 // 补充导入时若用户在请求里携带了版本，需要先回写到任务元信息，
@@ -1480,7 +1481,13 @@ func (s *Service) CreateDevice(taskID string, device *model.Device) (*model.Devi
 		device.DeviceName = fmt.Sprintf("Device-%s", strings.ToUpper(uuid.New().String()[:6]))
 	}
 	if device.DeviceType == "" {
-		device.DeviceType = "Router"
+		// 语义变更 (本方案 1.1 节 D3)：device_type 不再是 Router/Switch 形态分类，
+		// 而是"产品族或具体型号"，直接决定该设备日志匹配哪一族官方文档。
+		// 未显式指定时按主机名嗅探，最终中性兜底。
+		device.DeviceType = matcher.ResolveSpecificModelOrFamily(device.Hostname)
+		if device.DeviceType == "" {
+			device.DeviceType = matcher.NeutralProductName
+		}
 	}
 	if device.Color == "" {
 		device.Color = nextDeviceColor(taskDB)
@@ -1516,10 +1523,13 @@ func nextDeviceColor(taskDB *gorm.DB) string {
 
 // getOrCreateDevice 按名称或主机名查找设备，不存在则创建。
 //
-// DEV-16: 这段"查不到就造一个 Router + 配色 + 时间戳"的逻辑原本在三处各写一遍
+// DEV-16: 这段"查不到就造一个设备 + 配色 + 时间戳"的逻辑原本在三处各写一遍
 // （AutoAssignDevices、ImportLogsWithDevice、CreateDevice），
 // 任何一处的行为漂移都会让设备归属出现不一致。
-func getOrCreateDevice(taskDB *gorm.DB, taskID, name, hostname string) (model.Device, error) {
+//
+// resolvedProduct 为调用方已经决议好的权威型号/产品族（可为空）。
+// 设备行即权威：新建设备时把真实型号直接落库，绝不写死 "Router"（本方案 1.1 节 D3）。
+func getOrCreateDevice(taskDB *gorm.DB, taskID, name, hostname, resolvedProduct string) (model.Device, error) {
 	var dev model.Device
 	err := taskDB.Where("task_id = ? AND (device_name = ? OR hostname = ?)", taskID, name, name).First(&dev).Error
 	if err == nil {
@@ -1539,10 +1549,18 @@ func getOrCreateDevice(taskDB *gorm.DB, taskID, name, hostname string) (model.De
 		return model.Device{}, err
 	}
 
+	actualType := strings.TrimSpace(resolvedProduct)
+	if actualType == "" {
+		actualType = matcher.ResolveSpecificModelOrFamily(hostname)
+	}
+	if actualType == "" {
+		actualType = matcher.NeutralProductName
+	}
+
 	dev = model.Device{
 		TaskID:     taskID,
 		DeviceName: name,
-		DeviceType: "Router",
+		DeviceType: actualType,
 		Hostname:   hostname,
 		Color:      nextDeviceColor(taskDB),
 		CreatedAt:  time.Now(),
@@ -1552,6 +1570,36 @@ func getOrCreateDevice(taskDB *gorm.DB, taskID, name, hostname string) (model.De
 		return model.Device{}, createErr
 	}
 	return dev, nil
+}
+
+// resolveLineContext 重分析链路的单行匹配上下文决议（本方案 §4.5）。
+//
+// 优先级：**设备库内属性 > 主机名嗅探 > 调用方显式覆盖 > 中性兜底**。
+// 型号与版本独立决议：型号为空不影响版本生效（例如设备只填了版本）。
+//
+// 与导入链路 fileBundle 决议的差异仅在于"调用方覆盖"这一级：
+// 导入链路的覆盖来自用户显式指定的目标设备，重分析链路的覆盖来自 ReanalyzeOptions，
+// 且仅对 device_id == 0 的未归属日志有意义。
+func resolveLineContext(rec *model.LogRecord, devMap map[uint]model.Device, overrideProduct, overrideVersion string) (string, string) {
+	product, version := "", ""
+	if rec.DeviceID > 0 {
+		if d, ok := devMap[rec.DeviceID]; ok {
+			product = strings.TrimSpace(d.DeviceType)
+			version = strings.TrimSpace(d.DeviceVersion)
+		}
+	}
+	if product == "" && rec.Hostname != "" {
+		product = matcher.ResolveSpecificModelOrFamily(rec.Hostname)
+	}
+	// 兼容既有 API 契约：ReanalyzeOptions 的覆盖仅对"未归属日志"生效
+	// （ResolveSpecificModelOrFamily 在无法识别时返回空串，正是为了让这一步可达）。
+	if product == "" && overrideProduct != "" {
+		product, version = overrideProduct, overrideVersion
+	}
+	if product == "" {
+		product = matcher.NeutralProductName
+	}
+	return product, version
 }
 
 // syncTaskDeviceCount 同步任务的设备数量到全局库与任务库。
@@ -1819,7 +1867,7 @@ func (s *Service) AutoAssignDevices(taskID string) ([]model.Device, error) {
 			if h == "" {
 				continue
 			}
-			dev, devErr := getOrCreateDevice(tx, taskID, h, h)
+			dev, devErr := getOrCreateDevice(tx, taskID, h, h, matcher.ResolveSpecificModelOrFamily(h))
 			if devErr != nil {
 				return fmt.Errorf("prepare device for hostname %q failed: %w", h, devErr)
 			}
@@ -2335,24 +2383,29 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	}
 
 	// 覆盖判定：调用方显式提供了非空字段时生效 (闭环 D4 & R2 & P2-3)
+	//
+	// 语义收敛 (本方案 §6.2)：ReanalyzeOptions.DeviceType/DeviceVersion 不再是"任务级匹配上下文"，
+	// 仅作为 device_id == 0 的**未归属日志**兜底上下文；已归属日志一律以设备行属性为准。
+	// 这里刻意只取**本次显式传入**的值，不回落任务级存量 device_type，
+	// 否则历史遗留型号会重新泄漏进匹配链，正是本方案要根除的 D1 缺陷。
 	overrideUpdates := make(map[string]interface{})
+	overrideProduct, overrideVersion := "", ""
 	if len(opt) > 0 {
 		if opt[0].DeviceType != "" {
 			taskInfo.DeviceType = strings.TrimSpace(opt[0].DeviceType)
 			overrideUpdates["device_type"] = taskInfo.DeviceType
+			overrideProduct = taskInfo.DeviceType
 		}
 		if opt[0].DeviceVersion != "" {
 			taskInfo.DeviceVersion = strings.TrimSpace(opt[0].DeviceVersion)
 			overrideUpdates["device_version"] = taskInfo.DeviceVersion
+			overrideVersion = taskInfo.DeviceVersion
 		}
 		if opt[0].TaskName != "" {
 			taskInfo.TaskName = strings.TrimSpace(opt[0].TaskName)
 			overrideUpdates["task_name"] = taskInfo.TaskName
 		}
 	}
-
-	effectiveDeviceType := taskInfo.DeviceType
-	effectiveDeviceVersion := taskInfo.DeviceVersion
 
 	if len(overrideUpdates) > 0 {
 		// 显式覆盖：立即双写持久化新的任务配置，不依赖后续 persistTaskInfo
@@ -2390,7 +2443,16 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		}
 	}()
 
-	deviceVersion := strings.TrimSpace(effectiveDeviceVersion)
+	// 循环外单次加载设备映射（本方案 §6.2）：重分析按记录的 device_id 取设备权威属性，
+	// 不再使用任务级单值。任务库为任务专属库，Find 即为该任务的全量设备清单。
+	var taskDevices []model.Device
+	if findErr := taskDB.Find(&taskDevices).Error; findErr != nil {
+		return s.failTask(taskDB, &taskInfo, tr, fmt.Errorf("load devices failed: %w", findErr), "加载设备清单失败")
+	}
+	devMap := make(map[uint]model.Device, len(taskDevices))
+	for _, d := range taskDevices {
+		devMap[d.ID] = d
+	}
 
 	var reanalyzeCtx context.Context = context.Background()
 	if tr != nil {
@@ -2489,7 +2551,10 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 							return
 						}
 
-						parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, effectiveDeviceType, deviceVersion)
+						// 按行决议上下文：已归属日志用设备行权威属性，未归属回落主机名嗅探，
+						// 再由 ReanalyzeOptions 覆盖，最终中性兜底 (本方案 §4.5 / §6.2)。
+						tProd, tVer := resolveLineContext(rec, devMap, overrideProduct, overrideVersion)
+						parsed := s.parseLogLine(cleanRaw, rec.SourceFile, rec.DeviceID, tProd, tVer)
 						if parsed.KnowledgeID > 0 {
 							atomic.AddInt64(&matchedCount, 1)
 						}
@@ -2930,4 +2995,3 @@ func (s *Service) GetTaskLogSparkline(taskID string, req model.LogQueryRequestBo
 
 	return resp, nil
 }
-

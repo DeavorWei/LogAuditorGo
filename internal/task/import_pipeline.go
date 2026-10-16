@@ -78,6 +78,13 @@ type fileBundle struct {
 	totalLines int
 	deviceID   uint
 
+	// targetProduct / targetVersion 是该文件日志匹配时使用的权威设备上下文，
+	// 由 prepareBundles 按"设备行库内属性 > 主机名嗅探 > 中性兜底"决议后注入。
+	// persistFileBundle / IngestStreamingPipeline 不再接收 deviceType/deviceVersion 形参，
+	// 统一从这里读取，杜绝导入链路内部出现第二个上下文来源。
+	targetProduct string
+	targetVersion string
+
 	// lines 非空表示该来源无法二次读取（内存内容 / 一次性 Reader），行已被一次性载入；
 	// 为空表示磁盘文件，导入阶段按块重新流式读取，内存占用与文件大小无关。
 	lines []string
@@ -452,7 +459,6 @@ func (s *Service) persistFileBundle(
 	taskID string,
 	taskDB *gorm.DB,
 	bundle *fileBundle,
-	deviceType, deviceVersion string,
 	onProgress func(processed int),
 ) error {
 	taskFile := model.TaskFile{
@@ -516,8 +522,6 @@ func (s *Service) persistFileBundle(
 			taskDB,
 			lineSource,
 			bundle,
-			deviceType,
-			deviceVersion,
 			cfg,
 			onProgress,
 		)
@@ -529,8 +533,6 @@ func (s *Service) persistFileBundle(
 			taskDB,
 			lineSource,
 			bundle,
-			deviceType,
-			deviceVersion,
 			cfg,
 			onProgress,
 		)

@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
@@ -122,9 +123,11 @@ func (s *Service) PersistTaskInfoForTest(taskDB *gorm.DB, taskInfo *model.TaskIn
 // 产出可直接进入落库阶段的 fileBundle 列表。
 //
 // DEV-16: 设备创建统一走 getOrCreateDevice，与 AutoAssignDevices 行为一致。
-// TASK-06: 扫描出错（含单行超 1MB）的文件被判定为格式非法，整文件跳过并记入 failedFiles，
-//          不再像旧实现那样"记一行 warning 后继续用被截断的半截数据"。
+// TASK-06: 扫描出错（含单行超 1MB）的文件被判定为格式非法，整文件跳过并记入 failedFiles，不再像旧实现那样"记一行 warning 后继续用被截断的半截数据"。
 // TASK-18: 设备前缀改用正则判断，避免不同设备的 [A]_x.log / [B]_x.log 混档。
+//
+// 上下文决议 (本方案 §6.1)：每个 fileBundle 携带独立决议出的 targetProduct/targetVersion，
+// 取代此前"任务级单一型号透传全局"的做法。
 func (s *Service) prepareBundles(
 	ctx context.Context,
 	taskID string,
@@ -310,33 +313,53 @@ func (s *Service) prepareBundles(
 		batchAssignedNames[cleanName] = true
 
 		// 4. 自动关联或创建设备实体 (DEV-16: 与 AutoAssignDevices 共用同一实现)
+		//
+		// 上下文决议（本方案 §4.5）：设备行库内属性 > 主机名嗅探 > 中性兜底。
+		// inferredProduct 先由本文件采样到的主机名嗅探得出，作为新建设备的初始型号；
+		// 设备已存在时以库内配置为准（用户可在设备管理中修改后重新分析生效）。
+		inferredProduct := ""
+		if detectedHost != "" {
+			inferredProduct = matcher.ResolveSpecificModelOrFamily(detectedHost)
+		}
+
 		fileDevID := deviceID
+		targetProduct, targetVersion := inferredProduct, ""
 		if targetDevName != "" {
-			dev, devErr := getOrCreateDevice(taskDB, taskID, targetDevName, detectedHost)
+			dev, devErr := getOrCreateDevice(taskDB, taskID, targetDevName, detectedHost, inferredProduct)
 			if devErr != nil {
 				// 设备创建失败不阻断导入，退化为"未归属"，但必须留痕
 				logger.Log.Errorf("[Task Service] get or create device %s failed: %v", targetDevName, devErr)
 				addLog("warning", "设备 %s 自动创建失败，该文件的日志将标记为未归属: %v", targetDevName, devErr)
 			} else {
 				fileDevID = dev.ID
+				// 设备行即权威：新建时已写入真实型号；已存在时以库内配置为准。
+				// 不使用 created 标志分流，避免制造第二条决议分支（本方案 §6.1 说明）。
+				targetProduct = strings.TrimSpace(dev.DeviceType)
+				targetVersion = strings.TrimSpace(dev.DeviceVersion)
+				if targetProduct == "" {
+					targetProduct = inferredProduct
+				}
 			}
+		}
+		if targetProduct == "" {
+			targetProduct = matcher.NeutralProductName
 		}
 
 		totalLines += int64(lineCount)
 		bundles = append(bundles, &fileBundle{
-			taskID:     taskID,
-			item:       item,
-			cleanName:  cleanName,
-			totalLines: lineCount,
-			deviceID:   fileDevID,
-			lines:      allLines,
+			taskID:        taskID,
+			item:          item,
+			cleanName:     cleanName,
+			totalLines:    lineCount,
+			deviceID:      fileDevID,
+			targetProduct: targetProduct,
+			targetVersion: targetVersion,
+			lines:         allLines,
 		})
 	}
 
 	return bundles, totalLines, failedFiles, nil
 }
-
-
 
 // recountTaskLogs 重新统计任务的日志总量与匹配量（RCA 流水线失败后的兜底路径）
 func recountTaskLogs(taskDB *gorm.DB) (total, matched int64) {

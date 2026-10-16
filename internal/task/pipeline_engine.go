@@ -55,12 +55,14 @@ var (
 // 3. Stage 3 (Committer): 按 seq 重排缓冲（Reorder Buffer），按 batch / 定时器批量落库；
 // 4. 首个 batch 与 taskFile 创建在同一事务内，保留 TASK-02/TASK-05 事务完整性；
 // 5. 失败时双向取消并 drain 消费，彻底杜绝 Worker 阻塞与 Goroutine 泄漏。
+//
+// 匹配上下文（targetProduct / targetVersion）不再作为形参传入，统一读取 bundle 上的决议结果，
+// 避免调用方传入与 bundle 不一致的值造成上下文漂移。
 func (s *Service) IngestStreamingPipeline(
 	ctx context.Context,
 	taskDB *gorm.DB,
 	lineSource func(lineChan chan<- indexedLine, ctx context.Context) error,
 	bundle *fileBundle,
-	deviceType, deviceVersion string,
 	cfg PipelineConfig,
 	onProgress func(processed int),
 ) error {
@@ -127,7 +129,7 @@ func (s *Service) IngestStreamingPipeline(
 					if testWorkerPanicHook != nil {
 						testWorkerPanicHook(il.text)
 					}
-					rec = s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, deviceType, deviceVersion)
+					rec = s.parseLogLine(il.text, bundle.cleanName, bundle.deviceID, bundle.targetProduct, bundle.targetVersion)
 				}()
 				select {
 				case <-ctx.Done():
@@ -354,4 +356,3 @@ func makeSliceLineSource(lines []string) func(lineChan chan<- indexedLine, ctx c
 		return nil
 	}
 }
-

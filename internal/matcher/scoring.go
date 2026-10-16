@@ -69,6 +69,16 @@ var familyRules = []familyMappingRule{
 
 var familyBoundaryRegex map[ProductFamily]*regexp.Regexp
 
+// modelProbe 具体型号提取探针：ExtraPatterns 与所属产品族一一对应。
+type modelProbe struct {
+	family ProductFamily
+	re     *regexp.Regexp
+}
+
+// specificModelProbes 在 init() 中一次性预编译。
+// 该函数会被导入嗅探与重分析逐行决议调用（热路径），严禁在函数体内 MustCompile。
+var specificModelProbes []modelProbe
+
 func init() {
 	familyBoundaryRegex = make(map[ProductFamily]*regexp.Regexp, len(familyRules))
 	for _, rule := range familyRules {
@@ -82,6 +92,16 @@ func init() {
 		parts = append(parts, rule.ExtraPatterns...)
 		pattern := `(?:^|\b|[\s,;/])(?:` + strings.Join(parts, "|") + `)(?:\b|[\s,;/]|$)`
 		familyBoundaryRegex[rule.Family] = regexp.MustCompile(pattern)
+
+		// 具体型号探针只使用"型号形态"的 ExtraPatterns，并用捕获组取回实际命中的型号串
+		// （如 AC6508 / CE16800 / S12700），供 ResolveSpecificModelOrFamily 优先返回。
+		if len(rule.ExtraPatterns) > 0 {
+			modelPattern := `(?:^|\b|[\s,;/])(` + strings.Join(rule.ExtraPatterns, "|") + `)(?:\b|[\s,;/]|$)`
+			specificModelProbes = append(specificModelProbes, modelProbe{
+				family: rule.Family,
+				re:     regexp.MustCompile(modelPattern),
+			})
+		}
 	}
 }
 
@@ -122,6 +142,58 @@ func ClearProductFamilyCache() {
 // ResolveProductFamily 解析产品所属的大族（公开供 API 校验等场景复用）
 func ResolveProductFamily(product string) ProductFamily {
 	return resolveProductFamily(product)
+}
+
+// NeutralProductName 无法识别任何产品信息时使用的中性兜底产品名。
+//
+// 取代历史上硬编码的 "CloudEngine"：任务级默认型号一旦偏向某一产品族，
+// 多设备混合故障域下会产生系统性错配（本方案 1.1 节 D2）。
+const NeutralProductName = "Huawei-VRP"
+
+// familyCanonicalName 产品族 → 规范展示串。
+//
+// 与 internal/api/task_handler.go 的合法设备类型集合保持一致，
+// 保证嗅探产出的值能直接通过 API 校验、且在下拉框中可被识别。
+var familyCanonicalName = map[ProductFamily]string{
+	FamilyWLAN:        "WLAN",
+	FamilyCampus:      "Campus-Switch",
+	FamilyCloudEngine: "CloudEngine",
+	FamilyHiSecEngine: "HiSecEngine-USG",
+	FamilyNetEngine:   "NetEngine",
+}
+
+// ResolveSpecificModelOrFamily 从主机名 / 设备名中决议匹配上下文产品串。
+//
+// 优先级：具体型号（可命中 120/150 版本分档）> 规范产品族名 > 空串。
+// 输出示例：AC6508 / CE16800 / S12700 / USG6000F（具体型号），
+// 或 CloudEngine / Campus-Switch / HiSecEngine-USG / NetEngine / WLAN（规范族名）。
+//
+// 【契约】无法识别时返回**空串**而非 NeutralProductName：
+// 调用方需要区分"嗅探无果"与"显式覆盖"，例如 task.resolveLineContext 中
+// `product == "" && overrideProduct != ""` 的覆盖分支（ReanalyzeOptions 语义）
+// 必须建立在空串之上；若此处提前兜底为中性值，显式覆盖将永远无法生效。
+// 中性兜底由各调用点自行施加，保证回退策略只有一处权威。
+func ResolveSpecificModelOrFamily(hostname string) string {
+	trimmed := strings.TrimSpace(hostname)
+	if trimmed == "" {
+		return ""
+	}
+	upper := strings.ToUpper(trimmed)
+
+	// 1. 优先提取具体型号
+	for _, p := range specificModelProbes {
+		if m := p.re.FindStringSubmatch(upper); len(m) > 1 {
+			return strings.TrimSpace(m[1])
+		}
+	}
+
+	// 2. 退化为规范产品族名
+	if fam := resolveProductFamily(upper); fam != FamilyUnknown {
+		return familyCanonicalName[fam]
+	}
+
+	// 3. 无法识别：交由调用点施加中性兜底
+	return ""
 }
 
 // MatchTier 匹配层级常量
