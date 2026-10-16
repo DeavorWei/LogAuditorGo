@@ -75,6 +75,8 @@ func TestBatchUpdateLogRecords(t *testing.T) {
 		r.MatchTier = "EXACT"
 		r.MatchConfidence = 0.95
 		r.ParametersJSON = `{"key":"value"}`
+		// 新增第 13 列：命中的产品文档 ID 必须随重分析一并刷新
+		r.MatchedDocumentID = uint(700 + i)
 
 		r.RawLog = fmt.Sprintf("updated raw log %d", i)
 
@@ -118,6 +120,9 @@ func TestBatchUpdateLogRecords(t *testing.T) {
 	if rec4.Brief != "It's a test" {
 		t.Errorf("record 4 brief mismatch: %q", rec4.Brief)
 	}
+	if rec4.MatchedDocumentID != 703 {
+		t.Errorf("record 4 matched_document_id got %d, want 703", rec4.MatchedDocumentID)
+	}
 
 	// 检查第 6 条（包含 \x00）
 	var rec6 model.LogRecord
@@ -139,6 +144,9 @@ func TestBatchUpdateLogRecords(t *testing.T) {
 	}
 	if rec300.Hostname != "new-host-299" || rec300.KnowledgeID != 399 {
 		t.Errorf("record 300 data mismatch: host=%s, kid=%d", rec300.Hostname, rec300.KnowledgeID)
+	}
+	if rec300.MatchedDocumentID != 999 {
+		t.Errorf("record 300 matched_document_id got %d, want 999 (cross chunk boundary)", rec300.MatchedDocumentID)
 	}
 }
 
@@ -177,7 +185,7 @@ func TestReanalyzeTaskConcurrentOrderPreservation(t *testing.T) {
 		"# This is a file header comment without timestamp",
 		"Apr 15 2026 14:00:01 CORE-SW-01 %%01IFNET/4/IF_DOWN(l)[1]: Interface GigabitEthernet0/0/1 turned to down.",
 		"Interface GigabitEthernet0/0/1 speed changed to 1000M", // 无时间戳行，应继承前序有效时间戳
-		"\x00\x00\x00",                                          // 纯垃圾坏块行，应被物理删除
+		"\x00\x00\x00", // 纯垃圾坏块行，应被物理删除
 		"Apr 15 2026 14:00:05 CORE-SW-01 %%01IFNET/4/IF_UP(l)[2]: Interface GigabitEthernet0/0/1 turned to up.",
 	}
 

@@ -91,7 +91,7 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 			if kb.Message != "" {
 				er.RenderedMessage = RenderMessageTemplate(kb.Message, rawParams)
 			}
-			er.MatchedDocName = extractMatchedDocName(kb)
+			er.MatchedDocName = extractMatchedDocName(kb, rec.MatchedDocumentID)
 		} else if mergedParamsJSON != "" {
 			er.EnrichedParameters = EnrichParameters(mergedParamsJSON, nil)
 		}
@@ -100,10 +100,26 @@ func (s *Service) EnrichLogs(records []model.LogRecord) []Record {
 	return enrichedList
 }
 
-// extractMatchedDocName 提取命中的官方产品文档全称，优先取 DocName，若无则回退取 ProductType
-func extractMatchedDocName(kb *model.Knowledge) string {
+// extractMatchedDocName 提取命中的官方产品文档全称（三级平滑回退）：
+//  1. 优先按日志落库的 MatchedDocumentID 精确定位到"匹配当时胜出的那一篇文档"，
+//     彻底取代此前"取 Versions 中第一个非空 DocName"的猜测逻辑
+//     （同一知识条目可能同时被多个产品文档收录，取首条会张冠李戴）；
+//  2. matchedDocID == 0（历史数据 / 未匹配 / 无版本映射）时回退为任一非空 DocName，
+//     行为与改造前完全一致，存量数据展示零回归；
+//  3. 文档名缺失时再回退为 ProductType，最后返回空串。
+func extractMatchedDocName(kb *model.Knowledge, matchedDocID uint) string {
 	if kb == nil || len(kb.Versions) == 0 {
 		return ""
+	}
+	if matchedDocID > 0 {
+		for _, v := range kb.Versions {
+			if v.DocumentID == matchedDocID {
+				if s := strings.TrimSpace(v.DocName); s != "" {
+					return s
+				}
+				break
+			}
+		}
 	}
 	for _, v := range kb.Versions {
 		if s := strings.TrimSpace(v.DocName); s != "" {

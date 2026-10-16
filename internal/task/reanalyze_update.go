@@ -19,8 +19,8 @@ const reanalyzeBatchSize = 1000
 // REANA-09: 原实现在 1000 行的批次循环内逐条执行 `UPDATE log_records SET ... WHERE id = ?`，
 // 百万级重分析会产生百万次单行 UPDATE，耗时远大于导入路径的 CreateInBatches。
 // 这里改为分批构造 CASE WHEN 批量写回；
-// 设定为 200 行：涉及 12 个更新字段 (含 raw_log 与 message_body) + WHERE IN 条件，
-// 单条 SQL 绑定参数量约为 200 * 12 + 200 = 2600 个。
+// 设定为 200 行：涉及 13 个更新字段 (含 raw_log 与 message_body 与 matched_document_id) + WHERE IN 条件，
+// 单条 SQL 绑定参数量约为 200 * 13 + 200 = 2800 个。
 // 既能最大化批量执行效率、减少往返开销，又能稳妥规避 SQLite 变量数量上限（现代 SQLite 上限 32766）。
 const reanalyzeUpdateChunk = 200
 
@@ -66,6 +66,7 @@ func batchUpdateChunk(tx *gorm.DB, chunk []model.LogRecord) error {
 		caseRawLog      strings.Builder
 		caseMessageBody strings.Builder
 		caseParams      strings.Builder
+		caseMatchedDoc  strings.Builder
 	)
 
 	varsKnowledge := make([]interface{}, 0, n)
@@ -80,6 +81,7 @@ func batchUpdateChunk(tx *gorm.DB, chunk []model.LogRecord) error {
 	varsRawLog := make([]interface{}, 0, n)
 	varsMessageBody := make([]interface{}, 0, n)
 	varsParams := make([]interface{}, 0, n)
+	varsMatchedDoc := make([]interface{}, 0, n)
 
 	initCase := func(sb *strings.Builder) { sb.WriteString("CASE id ") }
 	initCase(&caseKnowledge)
@@ -94,6 +96,7 @@ func batchUpdateChunk(tx *gorm.DB, chunk []model.LogRecord) error {
 	initCase(&caseRawLog)
 	initCase(&caseMessageBody)
 	initCase(&caseParams)
+	initCase(&caseMatchedDoc)
 
 	for _, r := range chunk {
 		idList = append(idList, r.ID)
@@ -135,6 +138,9 @@ func batchUpdateChunk(tx *gorm.DB, chunk []model.LogRecord) error {
 
 		caseParams.WriteString(fmt.Sprintf("WHEN %d THEN ? ", r.ID))
 		varsParams = append(varsParams, r.ParametersJSON)
+
+		caseMatchedDoc.WriteString(fmt.Sprintf("WHEN %d THEN ? ", r.ID))
+		varsMatchedDoc = append(varsMatchedDoc, r.MatchedDocumentID)
 	}
 
 	endCase := func(sb *strings.Builder) { sb.WriteString("END") }
@@ -150,22 +156,24 @@ func batchUpdateChunk(tx *gorm.DB, chunk []model.LogRecord) error {
 	endCase(&caseRawLog)
 	endCase(&caseMessageBody)
 	endCase(&caseParams)
+	endCase(&caseMatchedDoc)
 
 	err := tx.Model(&model.LogRecord{}).
 		Where("id IN ?", idList).
 		Updates(map[string]interface{}{
-			"knowledge_id":     gormclause.Expr{SQL: caseKnowledge.String(), Vars: varsKnowledge},
-			"match_tier":       gormclause.Expr{SQL: caseTier.String(), Vars: varsTier},
-			"match_confidence": gormclause.Expr{SQL: caseConfidence.String(), Vars: varsConfidence},
-			"severity":         gormclause.Expr{SQL: caseSeverity.String(), Vars: varsSeverity},
-			"timestamp":        gormclause.Expr{SQL: caseTimestamp.String(), Vars: varsTimestamp},
-			"hostname":         gormclause.Expr{SQL: caseHostname.String(), Vars: varsHostname},
-			"module":           gormclause.Expr{SQL: caseModule.String(), Vars: varsModule},
-			"brief":            gormclause.Expr{SQL: caseBrief.String(), Vars: varsBrief},
-			"slot_info":        gormclause.Expr{SQL: caseSlotInfo.String(), Vars: varsSlotInfo},
-			"raw_log":          gormclause.Expr{SQL: caseRawLog.String(), Vars: varsRawLog},
-			"message_body":     gormclause.Expr{SQL: caseMessageBody.String(), Vars: varsMessageBody},
-			"parameters_json":  gormclause.Expr{SQL: caseParams.String(), Vars: varsParams},
+			"knowledge_id":        gormclause.Expr{SQL: caseKnowledge.String(), Vars: varsKnowledge},
+			"match_tier":          gormclause.Expr{SQL: caseTier.String(), Vars: varsTier},
+			"match_confidence":    gormclause.Expr{SQL: caseConfidence.String(), Vars: varsConfidence},
+			"severity":            gormclause.Expr{SQL: caseSeverity.String(), Vars: varsSeverity},
+			"timestamp":           gormclause.Expr{SQL: caseTimestamp.String(), Vars: varsTimestamp},
+			"hostname":            gormclause.Expr{SQL: caseHostname.String(), Vars: varsHostname},
+			"module":              gormclause.Expr{SQL: caseModule.String(), Vars: varsModule},
+			"brief":               gormclause.Expr{SQL: caseBrief.String(), Vars: varsBrief},
+			"slot_info":           gormclause.Expr{SQL: caseSlotInfo.String(), Vars: varsSlotInfo},
+			"raw_log":             gormclause.Expr{SQL: caseRawLog.String(), Vars: varsRawLog},
+			"message_body":        gormclause.Expr{SQL: caseMessageBody.String(), Vars: varsMessageBody},
+			"parameters_json":     gormclause.Expr{SQL: caseParams.String(), Vars: varsParams},
+			"matched_document_id": gormclause.Expr{SQL: caseMatchedDoc.String(), Vars: varsMatchedDoc},
 		}).Error
 	if err != nil {
 		logger.Log.Errorf("[Task Service] Batch CASE-WHEN update failed for %d records: %v", len(chunk), err)

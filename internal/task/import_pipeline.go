@@ -83,12 +83,8 @@ type fileBundle struct {
 	lines []string
 }
 
-// openDecodedReader 打开一个已完成 BOM 剥离与编码转码的行读取器 (TASK-08)。
-//
-// 旧实现直接 `bufio.NewScanner(rc)` 后按 UTF-8 解释字节，存在两个静默错误：
-//  1. UTF-8 BOM 残留在首行，导致首条日志必定解析失败；
-//  2. GBK 编码的设备日志全表乱码、知识库匹配率归零。
-// truncateIncompleteUTF8 裁切末尾可能因 Peek 截断产生的不完整 UTF-8 字符序列
+// truncateIncompleteUTF8 裁切末尾可能因 Peek 截断产生的不完整 UTF-8 字符序列，
+// 避免 Scanner 把半截多字节序列的最后一行误判为非法输入。
 func truncateIncompleteUTF8(b []byte) []byte {
 	if len(b) == 0 {
 		return b
@@ -117,9 +113,12 @@ func truncateIncompleteUTF8(b []byte) []byte {
 	return b
 }
 
-// openDecodedReader 打开带编码自动探测的 Reader。
+// openDecodedReader 打开一个已完成 BOM 剥离与编码转码的行读取器 (TASK-08)。
 //
 // 这里先探测前 64KB：剥掉 BOM；若不是合法 UTF-8，则整流转码为 UTF-8 后再交给 Scanner。
+// 旧实现直接 `bufio.NewScanner(rc)` 后按 UTF-8 解释字节，存在两个静默错误：
+//  1. UTF-8 BOM 残留在首行，导致首条日志必定解析失败；
+//  2. GBK 编码的设备日志全表乱码、知识库匹配率归零。
 func openDecodedReader(rc io.Reader) (io.Reader, error) {
 	bufReader := bufio.NewReaderSize(rc, decodeProbeBytes)
 
@@ -305,6 +304,9 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 	var k *model.Knowledge
 	var tier string
 	var conf float64
+	// matchedDocID 记录胜出版本映射对应的产品文档 ID，供展示层/导出直接消费，
+	// 取代此前"取 Versions 中第一个非空 DocName"的猜测逻辑 (FAMILY-EXCLUSIVITY)
+	var matchedDocID uint
 	if s.matchEngine != nil {
 		// PARSE-04: 版本真正透传，启用"同型号同版本优先"分档
 		k, tier, conf = s.matchEngine.Match(norm, deviceType, deviceVersion)
@@ -313,6 +315,8 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 		norm.KnowledgeID = k.ID
 		norm.MatchTier = tier
 		norm.MatchConfidence = conf
+		// 同源复算：与 Match 的选优共用 bestVersionMapping，不受两级缓存短路影响
+		matchedDocID = matcher.BestDocumentIDFor(k, deviceType, deviceVersion)
 		if k.Message != "" {
 			captured := summary.CaptureTemplateParams(k.Message, norm.MessageBody)
 			if len(captured) > 0 {
@@ -339,20 +343,21 @@ func (s *Service) parseLogLine(line, cleanName string, deviceID uint, deviceType
 	}
 
 	return model.LogRecord{
-		DeviceID:        deviceID,
-		Timestamp:       norm.Timestamp,
-		Hostname:        norm.Hostname,
-		Module:          norm.Module,
-		Severity:        norm.Severity,
-		Brief:           norm.Brief,
-		SlotInfo:        norm.SlotInfo,
-		SourceFile:      cleanName,
-		RawLog:          norm.RawLog,
-		MessageBody:     norm.MessageBody,
-		ParametersJSON:  paramJSONStr,
-		KnowledgeID:     norm.KnowledgeID,
-		MatchTier:       norm.MatchTier,
-		MatchConfidence: norm.MatchConfidence,
+		DeviceID:          deviceID,
+		Timestamp:         norm.Timestamp,
+		Hostname:          norm.Hostname,
+		Module:            norm.Module,
+		Severity:          norm.Severity,
+		Brief:             norm.Brief,
+		SlotInfo:          norm.SlotInfo,
+		SourceFile:        cleanName,
+		RawLog:            norm.RawLog,
+		MessageBody:       norm.MessageBody,
+		ParametersJSON:    paramJSONStr,
+		KnowledgeID:       norm.KnowledgeID,
+		MatchTier:         norm.MatchTier,
+		MatchConfidence:   norm.MatchConfidence,
+		MatchedDocumentID: matchedDocID,
 	}
 }
 

@@ -4,18 +4,19 @@ import "time"
 
 // Device 设备信息（存储在任务独立数据库中）
 type Device struct {
-	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
-	TaskID       string    `gorm:"size:64;index" json:"task_id"`
-	DeviceName   string    `gorm:"size:255" json:"device_name"`          // 用户定义的设备名称 (如: Router-Core-01)
-	DeviceType   string    `gorm:"size:128;index" json:"device_type"`    // 设备类型: Router, Switch, Firewall 等
-	ManagementIP string    `gorm:"size:64;index" json:"management_ip"`   // 管理 IP
-	Hostname     string    `gorm:"size:128;index" json:"hostname"`       // 匹配日志中的 Hostname
-	Description  string    `gorm:"type:text" json:"description"`   // 描述
-	Color        string    `gorm:"size:32" json:"color"`           // 时间线标识颜色 (如 #3B82F6)
-	LogCount     int       `json:"log_count"`                      // 该设备导入的日志总数
-	MatchedCount int       `json:"matched_count"`                  // 知识库匹配数
-	CreatedAt    time.Time `json:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at"`
+	ID            uint      `gorm:"primaryKey;autoIncrement" json:"id"`
+	TaskID        string    `gorm:"size:64;index" json:"task_id"`
+	DeviceName    string    `gorm:"size:255" json:"device_name"`        // 用户定义的设备名称 (如: Router-Core-01)
+	DeviceType    string    `gorm:"size:128;index" json:"device_type"`  // 设备产品族或具体型号: WLAN, AC6508, CloudEngine 等
+	DeviceVersion string    `gorm:"size:64" json:"device_version"`      // 设备软件版本 (可选): V200R024C00
+	ManagementIP  string    `gorm:"size:64;index" json:"management_ip"` // 管理 IP
+	Hostname      string    `gorm:"size:128;index" json:"hostname"`     // 匹配日志中的 Hostname
+	Description   string    `gorm:"type:text" json:"description"`       // 描述
+	Color         string    `gorm:"size:32" json:"color"`               // 时间线标识颜色 (如 #3B82F6)
+	LogCount      int       `json:"log_count"`                          // 该设备导入的日志总数
+	MatchedCount  int       `json:"matched_count"`                      // 知识库匹配数
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 func (Device) TableName() string {
@@ -24,16 +25,16 @@ func (Device) TableName() string {
 
 // MultiDeviceLogFilter 多设备日志联合查询过滤参数
 type MultiDeviceLogFilter struct {
-	DeviceIDs  []uint     `json:"device_ids"`  // 选中的设备 ID 列表 (空表示选中的所有设备)
-	Modules    []string   `json:"modules"`     // 模块过滤 (如 ["OSPF", "BGP", "IFNET"])
-	Briefs     []string   `json:"briefs"`      // 助记符/事件简名过滤
-	Severity   *int       `json:"severity"`    // 严重级别过滤 (<= Severity)
-	Keyword    string     `json:"keyword"`     // 报文关键词检索
-	TimeStart  *CustomTime `json:"time_start"`  // 开始时间
-	TimeEnd    *CustomTime `json:"time_end"`    // 结束时间
-	Page       int        `json:"page"`        // 分页页码
-	PageSize   int        `json:"page_size"`   // 每页数量 (<=0 表示导出全量，受服务端硬上限约束)
-	AscOrder   bool       `json:"asc_order"`   // 是否按时间升序排列 (时间线通常需要升序)
+	DeviceIDs []uint      `json:"device_ids"` // 选中的设备 ID 列表 (空表示选中的所有设备)
+	Modules   []string    `json:"modules"`    // 模块过滤 (如 ["OSPF", "BGP", "IFNET"])
+	Briefs    []string    `json:"briefs"`     // 助记符/事件简名过滤
+	Severity  *int        `json:"severity"`   // 严重级别过滤 (<= Severity)
+	Keyword   string      `json:"keyword"`    // 报文关键词检索
+	TimeStart *CustomTime `json:"time_start"` // 开始时间
+	TimeEnd   *CustomTime `json:"time_end"`   // 结束时间
+	Page      int         `json:"page"`       // 分页页码
+	PageSize  int         `json:"page_size"`  // 每页数量 (<=0 表示导出全量，受服务端硬上限约束)
+	AscOrder  bool        `json:"asc_order"`  // 是否按时间升序排列 (时间线通常需要升序)
 
 	// IncludeUnassigned 是否包含"未归属设备"(device_id = 0) 的日志 (DEV-10)。
 	//

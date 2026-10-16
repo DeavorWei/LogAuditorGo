@@ -5,26 +5,26 @@ import "time"
 // NormalizedLog 标准化日志结构
 type NormalizedLog struct {
 	ID          uint              `json:"id"`
-	RawLog      string            `json:"raw_log"`      // 原始单行日志
-	Timestamp   time.Time         `json:"timestamp"`    // 标准化时间戳
-	Hostname    string            `json:"hostname"`     // 设备主机名
-	DeviceType  string            `json:"device_type"`  // 如 Switch, Firewall, Router
-	Module      string            `json:"module"`       // 模块名 (BGP)
-	Severity    int               `json:"severity"`     // 级别 (4)
-	Brief       string            `json:"brief"`        // 助记符/事件名 (BGP_AUTH_FAILED)
-	LogType     string            `json:"log_type"`     // l: 日志, s: 安全日志
-	Sequence    uint64            `json:"sequence"`     // 序列号
-	SlotInfo    string            `json:"slot_info"`    // 插槽槽位信息 (Slot=1/1)
+	RawLog      string            `json:"raw_log"`               // 原始单行日志
+	Timestamp   time.Time         `json:"timestamp"`             // 标准化时间戳
+	Hostname    string            `json:"hostname"`              // 设备主机名
+	DeviceType  string            `json:"device_type"`           // 如 Switch, Firewall, Router
+	Module      string            `json:"module"`                // 模块名 (BGP)
+	Severity    int               `json:"severity"`              // 级别 (4)
+	Brief       string            `json:"brief"`                 // 助记符/事件名 (BGP_AUTH_FAILED)
+	LogType     string            `json:"log_type"`              // l: 日志, s: 安全日志
+	Sequence    uint64            `json:"sequence"`              // 序列号
+	SlotInfo    string            `json:"slot_info"`             // 插槽槽位信息 (Slot=1/1)
 	SourceFile  string            `json:"source_file,omitempty"` // 来源文件名
-	MessageBody string            `json:"message_body"` // 日志正文
-	Parameters  map[string]string `json:"parameters"`   // 解析出的动态键值对: {"PeerID": "192.168.1.2"}
+	MessageBody string            `json:"message_body"`          // 日志正文
+	Parameters  map[string]string `json:"parameters"`            // 解析出的动态键值对: {"PeerID": "192.168.1.2"}
 
 	// 匹配结果
 	KnowledgeID     uint    `json:"knowledge_id,omitempty"`
 	MatchTier       string  `json:"match_tier,omitempty"`       // EXACT, MNEMONIC, TEMPLATE, BLEVE, FAMILY_SUSPECT, UNMATCHED
 	MatchConfidence float64 `json:"match_confidence,omitempty"` // 0.0 ~ 1.0
 
-	DeviceID uint `json:"device_id,omitempty"` // 关联设备ID
+	DeviceID     uint   `json:"device_id,omitempty"`     // 关联设备ID
 	EventSummary string `json:"event_summary,omitempty"` // 中文事件摘要
 }
 
@@ -45,7 +45,11 @@ type LogRecord struct {
 	KnowledgeID     uint      `gorm:"index" json:"knowledge_id"`
 	MatchTier       string    `gorm:"size:32" json:"match_tier"`
 	MatchConfidence float64   `json:"match_confidence"`
-	EventSummary    string    `gorm:"-" json:"event_summary,omitempty"` // 动态生成的中文语义摘要，不持久化到表
-	Tags            []LogTag  `gorm:"-" json:"tags,omitempty"`          // 关联的标签列表，不持久化到表
-}
 
+	// MatchedDocumentID 命中的产品文档 ID (documents.id)，由 matcher.BestDocumentIDFor 与选优同源复算得出；
+	// 0 表示未匹配或无版本映射（历史行同样为 0，展示层回退到知识条目自带的文档名）。
+	// 刻意不加索引：该列不参与任何查询条件，加索引只会给历史大库白付一次索引构建与存储。
+	MatchedDocumentID uint     `json:"matched_document_id"`
+	EventSummary      string   `gorm:"-" json:"event_summary,omitempty"` // 中文事件摘要
+	Tags              []LogTag `gorm:"-" json:"tags,omitempty"`          // 关联的标签列表，不持久化到表
+}
