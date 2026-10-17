@@ -146,8 +146,8 @@ flowchart TD
 
 ### 方式一：直接运行预编译版本 (Windows)
 1. 进入 `build/` 目录；
-2. 运行 `LogAuditorGo.exe`（默认启用系统托盘，右键菜单可打开控制台/数据目录；无头场景加 `--no-tray`）；
-3. 打开浏览器访问：`http://localhost:8080`。
+2. 运行 `LogAuditorGo.exe`（默认启用系统托盘，右键菜单可打开控制台/数据目录，并自动拉起系统默认浏览器打开 Web 控制台；无头场景加 `--no-tray`，不想自动开浏览器加 `--no-browser`，需用局域网其他机器访问加 `-host 0.0.0.0`）；
+3. 打开浏览器访问：`http://localhost:8080`（端口被占用时会自动顺延，控制台与托盘提示实际端口）。
 
 ### 方式二：从源码编译构建
 
@@ -231,7 +231,7 @@ http://localhost:8080
 
 ### 6. Windows 桌面托盘（可选）
 - Windows 平台默认启用系统托盘：右键菜单可**打开控制台**（浏览器访问 Web 工作台）、**打开数据目录**、**复制访问 URL**、**退出服务**；
-- 启动参数 `--no-tray` 可禁用托盘（无头服务器/容器场景）；`--tray-theme` 可切换盾牌/终端/雷达三种程序化生成的图标主题；
+- 启动参数 `--no-tray` 可禁用托盘（无头服务器/容器场景）；`--no-browser` 可禁用程序启动后自动拉起系统默认浏览器；`--tray-theme` 可切换盾牌/终端/雷达三种程序化生成的图标主题；
 - 非 Windows 平台编译期自动降级为空实现，行为与旧版一致。
 
 ### 7. 导出诊断报告
@@ -250,8 +250,9 @@ http://localhost:8080
 
 ```yaml
 server:
-  port: 8080        # HTTP 服务监听端口
-  mode: debug       # 运行模式: debug (调试模式) 或 release (生产模式)
+  host: 127.0.0.1    # 监听主机: 127.0.0.1 (仅本机) 或 0.0.0.0 (全部网卡)
+  port: 8080        # HTTP 服务监听端口（冲突时自动顺延，最多 5 次）
+  mode: release     # 运行模式: release (生产) / debug (调试) / test / info
 
 storage:
   data_dir: "LogAuditorGoData"                          # 默认数据根目录
@@ -275,6 +276,9 @@ log:
 rca:
   timeout: 300       # RCA 单次分析计算超时（秒），超时保存部分结果并标记 TIMEOUT
   concurrency: 2     # RCA 异步调度并发数（同时执行根因分析的任务数）
+
+task:
+  parse_workers: 0   # 日志分行解析并发协程数，0 = 自适应 CPU 核心数
 ```
 
 > 🛡️ **安全提示**：`storage.allowed_roots` 留空时行为与旧版本一致（不限制）。若在多用户环境或需要限制读取范围，请显式配置该白名单，服务启动时会校验并忽略无效的目录项。
@@ -313,6 +317,7 @@ rca:
 | `POST` | `/api/v1/tasks` | 创建审计任务（支持空任务、文本或服务端路径导入） |
 | `GET` | `/api/v1/tasks` | 获取所有任务列表及状态 |
 | `GET` | `/api/v1/tasks/:id` | 获取单个任务元信息 |
+| `PATCH`/`PUT` | `/api/v1/tasks/:id` | 更新任务元信息（PATCH 与 PUT 等价） |
 | `GET` | `/api/v1/tasks/:id/files` | 获取指定任务已导入的文件列表 |
 | `DELETE` | `/api/v1/tasks/:id/files/:file_id` | 删除任务内单个已导入文件 |
 | `POST` | `/api/v1/tasks/:id/import` | 向已有任务导入/追加日志文件（支持 `conflict_mode=overwrite/skip/rename`） |
@@ -375,7 +380,7 @@ LogAuditorGo/
 │       ├── main.go                     # 程序主入口（初始化配置、DB、索引、业务引擎、托盘并启动 Web）
 │       └── server_test.go              # 服务集成与路由测试
 ├── internal/
-│   ├── api/                            # HTTP API 路由与控制器（60 条路由）
+│   ├── api/                            # HTTP API 路由与控制器（约 60 条路由）
 │   │   ├── document_handler.go         # 文档导入、扫描、列表、删除与批量删除处理
 │   │   ├── knowledge_handler.go        # 知识库检索、详情与索引重建处理
 │   │   ├── task_handler.go             # 任务生命周期、设备、多设备、RCA、标签、预设处理
@@ -388,6 +393,10 @@ LogAuditorGo/
 │   │   ├── middleware.go               # RequestID、错误脱敏、回环校验、CORS 中间件
 │   │   ├── response.go                 # 统一 API 返回结构封装
 │   │   └── router.go                   # Gin 路由与中间件装配
+│   ├── browser/                        # 跨平台系统默认浏览器拉起（Windows ShellExecute / open / xdg-open）
+│   │   ├── browser.go                  # Open(url) 统一入口
+│   │   ├── browser_windows.go          # Windows ShellExecute 直调（无黑框）
+│   │   └── browser_other.go            # macOS open / Linux xdg-open 回退
 │   ├── config/                         # 系统配置解析 (Viper + goccy/go-yaml)
 │   ├── fsx/                            # 路径安全守卫与文件系统浏览
 │   │   ├── guard.go                    # 白名单根目录校验 (SecurePathGuard)
@@ -430,6 +439,8 @@ LogAuditorGo/
 │   │   ├── tag.go                      # 日志标签多对多模型
 │   │   ├── advanced_filter.go          # 专家筛选条件与预设实体
 │   │   └── custom_time.go              # 多格式时间解析辅助
+│   ├── netutil/                        # TCP 端口冲突自愈
+│   │   └── port.go                     # ListenWithPortRetry 端口顺延重试
 │   ├── rootcause/                      # 根因分析 (RCA) 引擎
 │   │   ├── engine.go                   # 重叠窗口聚类 + 倒排 BFS 推导 + 多因子置信度
 │   │   ├── topology_dag.go             # 网络协议故障传播 DAG 规则库（5 条规则 + 检环）
