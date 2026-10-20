@@ -78,6 +78,14 @@ type fileBundle struct {
 	totalLines int
 	deviceID   uint
 
+	// primaryHost 是本文件采样得到的主 Hostname；批内其他 Hostname 的日志会在落库前
+	// 重新归属到各自设备（见 device_reassign.go）。
+	primaryHost string
+
+	// explicitDevice 表示调用方显式指定了目标设备（ImportLogsToDevice）。
+	// 此时禁止按 Hostname 改归属，避免违背用户意图。
+	explicitDevice bool
+
 	// targetProduct / targetVersion 是该文件日志匹配时使用的权威设备上下文，
 	// 由 prepareBundles 按"设备行库内属性 > 主机名嗅探 > 中性兜底"决议后注入。
 	// persistFileBundle / IngestStreamingPipeline 不再接收 deviceType/deviceVersion 形参，

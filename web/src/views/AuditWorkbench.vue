@@ -5,15 +5,17 @@
       ref="headerRef"
       v-show="!workbenchUIStore.isImmersive"
       @task-change="handleTaskChange"
-      @task-created="handleTaskCreated"
+      @new-task="goToNewTask"
       @task-deleted="handleTaskDeleted"
       @refresh-logs="fetchLogs"
       @open-files="taskFilesDialogRef?.open"
       @reanalyze="handleReanalyzeTask"
-      @open-import="importDialogRef?.open"
+      @open-import="openImportWizard"
       @open-devices="showDeviceDrawer = true"
       @open-advanced="showAdvancedDrawer = true"
       @open-report="currentViewMode = VIEW_MODE.REPORT"
+      @open-conclusion="showConclusionDrawer = true"
+      @open-summary="goToSummary"
     />
 
     <!-- 2. 一级 Tab：日志分析 / 事件时间线 / 分析报告 -->
@@ -47,8 +49,8 @@
       <WorkbenchEmptyGuide
         v-if="isTaskEmpty"
         :task-name="currentTask?.task_name"
-        @open-picker="() => importDialogRef?.openWithPicker()"
-        @open-text="importDialogRef?.open('text')"
+        @open-picker="openImportWizard"
+        @open-text="openImportWizard"
       />
 
       <!-- 5.2 经典三栏协同审计区 -->
@@ -142,16 +144,25 @@
     <TaskFilesDialog
       ref="taskFilesDialogRef"
       :task-id="currentTaskId"
-      @open-import="importDialogRef?.open"
+      @open-import="openImportWizard"
       @file-deleted="handleFileDeleted"
     />
 
-    <TaskImportDialog
-      ref="importDialogRef"
+    <ImportWizard
+      ref="importWizardRef"
+      v-model="showImportWizard"
       :task-id="currentTaskId"
       :task-name="currentTask?.task_name"
-      @job-started="openProgressModalWithId"
-      @import-settled="handleLogImportCompleted"
+      :create-mode="importCreateMode"
+      @task-created="handleWizardTaskCreated"
+      @job-started="handleImportJobStarted"
+    />
+
+    <ConclusionDrawer
+      v-model="showConclusionDrawer"
+      :task-id="currentTaskId"
+      :task="currentTask"
+      @saved="handleConclusionSaved"
     />
 
     <AdvancedFilterModal
@@ -164,7 +175,7 @@
     <ImportProgressModal
       v-model="showProgressModal"
       :job-id="currentJobId"
-      @completed="handleLogImportCompleted"
+      @completed="handleProgressCompleted"
     />
   </div>
 </template>
@@ -195,7 +206,8 @@ import WorkbenchDeviceDrawer from '@/components/workbench/WorkbenchDeviceDrawer.
 import WorkbenchAdvancedDrawer from '@/components/workbench/WorkbenchAdvancedDrawer.vue'
 import ReportCenter from '@/components/workbench/ReportCenter.vue'
 import TaskFilesDialog from '@/components/workbench/TaskFilesDialog.vue'
-import TaskImportDialog from '@/components/workbench/TaskImportDialog.vue'
+import ImportWizard from '@/components/workbench/ImportWizard.vue'
+import ConclusionDrawer from '@/components/workbench/ConclusionDrawer.vue'
 
 // 通用组件
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
@@ -216,7 +228,7 @@ const { currentViewMode, subViewRefs, refreshActiveSubView } = useSubViewRouter(
 // 2. 实例引用与弹窗状态
 const headerRef = ref(null)
 const taskFilesDialogRef = ref(null)
-const importDialogRef = ref(null)
+const importWizardRef = ref(null)
 const advFilterModalRef = ref(null)
 const advancedDrawerRef = ref(null)
 const logStreamRef = ref(null)
@@ -228,6 +240,11 @@ const showProgressModal = ref(false)
 const currentJobId = ref('')
 const showDeviceDrawer = ref(false)
 const showAdvancedDrawer = ref(false)
+const showImportWizard = ref(false)
+const showConclusionDrawer = ref(false)
+// 导入完成后是否自动跳转诊断摘要（重新分析不跳转）
+const goSummaryAfterImport = ref(false)
+const importCreateMode = ref(false)
 
 // 3. RCA 状态轮询（仅在实验室开关开启时生效）与重新分析
 const { checkAndPollRcaStatus, stopRcaPolling } = useRcaPolling({
@@ -336,12 +353,13 @@ useWorkbenchHotkeys({
     showLogDetailModal.value ||
     showQuickTagModal.value ||
     advFilterModalRef.value?.visible ||
-    importDialogRef.value?.visible ||
+    showImportWizard.value ||
     showProgressModal.value ||
     taskFilesDialogRef.value?.visible ||
     showDeviceDrawer.value ||
     showAdvancedDrawer.value ||
-    headerRef.value?.showNewTaskDialog
+    showImportWizard.value ||
+    showConclusionDrawer.value
   ),
   onSpace: () => {
     const target = hoveredLog.value || selectedLog.value
@@ -392,12 +410,58 @@ useWorkbenchHotkeys({
 })
 
 // 7. 交互胶水方法
-const handleTaskCreated = async ({ taskId, needImport }) => {
+const openImportWizard = () => {
+  importCreateMode.value = false
+  showImportWizard.value = true
+}
+
+const goToNewTask = () => {
+  if (route.path === '/audit/new') {
+    importCreateMode.value = true
+    showImportWizard.value = true
+    return
+  }
+  router.push('/audit/new')
+}
+
+const handleWizardTaskCreated = async (taskId) => {
+  importCreateMode.value = false
+  await fetchTasks()
   await handleTaskChange(taskId)
   router.replace({ path: `/audit/${taskId}` })
-  if (needImport) {
-    importDialogRef.value?.open('paths')
+}
+
+const handleImportJobStarted = async ({ jobId, taskId }) => {
+  if (taskId && taskId !== currentTaskId.value) {
+    await fetchTasks()
+    await handleTaskChange(taskId)
+    router.replace({ path: `/audit/${taskId}` })
   }
+  goSummaryAfterImport.value = Boolean(jobId)
+  if (jobId) {
+    openProgressModalWithId(jobId)
+  } else {
+    goToSummary()
+  }
+}
+
+const handleProgressCompleted = async (result) => {
+  await handleLogImportCompleted(result)
+  if (goSummaryAfterImport.value) {
+    goSummaryAfterImport.value = false
+    goToSummary()
+  }
+}
+
+const goToSummary = () => {
+  if (!currentTaskId.value) return
+  router.push({ path: `/audit/${currentTaskId.value}/summary` })
+}
+
+const handleConclusionSaved = async (updated) => {
+  if (updated) handleTaskMetadataUpdated(updated)
+  await fetchTasks()
+  ElMessage.success('结论已保存')
 }
 
 const handleTaskDeleted = async (taskId) => {
@@ -450,10 +514,24 @@ watch(() => route.params.id, async (newId, oldId) => {
   if (newId) await handleTaskChange(newId)
 })
 
+// 同一组件实例内从 /audit/:id 切换到 /audit/new 时不会重新 mount，
+// 这里补齐"新建向导"的打开逻辑。
+watch(() => route.path, (path) => {
+  if (path === '/audit/new') {
+    importCreateMode.value = true
+    showImportWizard.value = true
+  }
+})
+
 onMounted(async () => {
   await featureStore.fetchFeatures()
   await fetchTasks()
   if (currentTaskId.value) await handleTaskChange(currentTaskId.value)
+  // 三个入口统一到向导：/audit/new 打开工作台即进入"新建任务"向导
+  if (route.path === '/audit/new') {
+    importCreateMode.value = true
+    showImportWizard.value = true
+  }
 })
 </script>
 

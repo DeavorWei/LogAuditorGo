@@ -40,6 +40,20 @@
             :value="opt.value"
           />
         </el-select>
+        <el-select
+          v-model="filters.caseStatus"
+          clearable
+          placeholder="案例状态"
+          class="case-status-select"
+          @change="applyFilters"
+        >
+          <el-option
+            v-for="opt in CASE_STATUS_OPTIONS"
+            :key="opt.value"
+            :label="opt.label"
+            :value="opt.value"
+          />
+        </el-select>
         <el-date-picker
           v-model="filters.range"
           type="datetimerange"
@@ -63,6 +77,7 @@
         <el-table-column prop="task_name" label="案例名称" min-width="220">
           <template #default="{ row }">
             <button type="button" class="link-like" @click="openTask(row.task_id)">{{ row.task_name }}</button>
+            <div v-if="row.conclusion" class="conclusion-sub">{{ row.conclusion }}</div>
             <div class="task-id-sub">{{ row.task_id }}</div>
           </template>
         </el-table-column>
@@ -76,6 +91,13 @@
               <span><TaskStatusTag :status="row.status" /></span>
             </el-tooltip>
             <TaskStatusTag v-else :status="row.status" />
+          </template>
+        </el-table-column>
+        <el-table-column label="案例状态" width="110" align="center">
+          <template #default="{ row }">
+            <el-tag size="small" :type="caseStatusMeta(row.case_status).tagType">
+              {{ caseStatusMeta(row.case_status).label }}
+            </el-tag>
           </template>
         </el-table-column>
         <el-table-column label="设备 / 日志" width="130" align="center">
@@ -188,6 +210,7 @@ import {
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import TaskStatusTag from '@/components/TaskStatusTag.vue'
 import { TASK_STATUS, TASK_STATUS_OPTIONS } from '@/constants/taskStatus'
+import { CASE_STATUS_OPTIONS, caseStatusMeta } from '@/constants/caseStatus'
 import { formatTime as sharedFormatTime } from '@/utils/format'
 import { useReanalyze } from '@/composables/useReanalyze'
 import api from '@/api'
@@ -201,6 +224,7 @@ const currentJobId = ref('')
 const filters = ref({
   keyword: '',
   statuses: [],
+  caseStatus: '',
   range: null,
   sort: 'start_time:desc'
 })
@@ -208,7 +232,7 @@ const filters = ref({
 const pagination = ref({ page: 1, pageSize: 20, total: 0 })
 
 const emptyText = computed(() => {
-  const hasFilter = filters.value.keyword || filters.value.statuses.length || filters.value.range
+  const hasFilter = filters.value.keyword || filters.value.statuses.length || filters.value.caseStatus || filters.value.range
   return hasFilter ? '没有符合筛选条件的案例' : '暂无排障案例'
 })
 
@@ -245,6 +269,7 @@ const fetchTasks = async () => {
     }
     if (filters.value.keyword) params.keyword = filters.value.keyword.trim()
     if (filters.value.statuses?.length) params.status = filters.value.statuses.join(',')
+    if (filters.value.caseStatus) params.case_status = filters.value.caseStatus
     if (filters.value.range?.length === 2) {
       params.start_from = filters.value.range[0]
       params.start_to = filters.value.range[1]
@@ -422,6 +447,20 @@ onUnmounted(() => {
 
 .sort-select {
   width: 140px;
+}
+
+.case-status-select {
+  width: 140px;
+}
+
+.conclusion-sub {
+  margin-top: 2px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .task-id-sub {

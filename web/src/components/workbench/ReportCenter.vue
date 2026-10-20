@@ -10,6 +10,8 @@
       </div>
       <div class="header-right">
         <el-button icon="Refresh" @click="refresh">刷新</el-button>
+        <el-button :icon="CopyDocument" @click="copySummary">复制交接摘要</el-button>
+        <el-button :icon="Box" @click="exportPackage">导出证据包</el-button>
         <el-button type="success" icon="Download" :loading="exporting" @click="exportHTML">
           导出 HTML 报告
         </el-button>
@@ -143,7 +145,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { Document, Aim, Download, Monitor, InfoFilled, Warning } from '@element-plus/icons-vue'
+import { Document, Aim, Download, Monitor, InfoFilled, Warning, CopyDocument, Box } from '@element-plus/icons-vue'
 import StatCard from '@/components/StatCard.vue'
 import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import api from '@/api'
@@ -219,6 +221,32 @@ const fetchFacets = async () => {
     topModules.value = []
   } finally {
     loadingFacets.value = false
+  }
+}
+
+const copySummary = async () => {
+  if (!props.taskId) return
+  try {
+    const markdown = await api.getSummaryMarkdown(props.taskId)
+    if (!markdown) {
+      ElMessage.warning('摘要内容为空')
+      return
+    }
+    await navigator.clipboard.writeText(markdown)
+    ElMessage.success('交接摘要已复制到剪贴板')
+  } catch (e) {
+    ElMessage.warning('复制失败，请检查浏览器剪贴板权限')
+  }
+}
+
+const exportPackage = async () => {
+  if (!props.taskId || exporting.value) return
+  exporting.value = true
+  try {
+    await api.downloadEvidencePackage(props.taskId, props.task?.task_name)
+    ElMessage.success('证据包已导出')
+  } finally {
+    exporting.value = false
   }
 }
 

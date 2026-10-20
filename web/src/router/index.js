@@ -12,9 +12,21 @@ const routes = [
     component: () => import('@/views/AuditWorkbench.vue')
   },
   {
+    // 新建排障：进入工作台并自动打开统一导入向导（静态段优先于 /audit/:id）
+    path: '/audit/new',
+    name: 'AuditNewTask',
+    component: () => import('@/views/AuditWorkbench.vue')
+  },
+  {
     path: '/audit/:id',
     name: 'AuditTaskDetail',
     component: () => import('@/views/AuditWorkbench.vue')
+  },
+  {
+    // v1.2: 导入完成后的诊断摘要
+    path: '/audit/:id/summary',
+    name: 'AuditTaskSummary',
+    component: () => import('@/views/DiagnosisSummary.vue')
   },
   {
     path: '/knowledge',

@@ -44,6 +44,9 @@ func doRedRouteRequest(t *testing.T, router http.Handler, method, path, body str
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	// httptest 请求默认 RemoteAddr 为空，c.RemoteIP() 会判定为非回环；
+	// /fs 路由有 RequireLoopback，因此统一模拟本机来源。
+	req.RemoteAddr = "127.0.0.1:12345"
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 

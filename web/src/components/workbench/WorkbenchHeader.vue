@@ -16,7 +16,7 @@
         />
       </el-select>
       <el-tooltip content="新建排障任务" placement="bottom">
-        <el-button size="small" circle :icon="Plus" class="new-task-btn" @click="openNewTaskDialog" />
+        <el-button size="small" circle :icon="Plus" class="new-task-btn" @click="$emit('new-task')" />
       </el-tooltip>
 
       <template v-if="currentTask">
@@ -30,6 +30,14 @@
           <span class="task-meta">知识覆盖 {{ matchRate }}%</span>
         </el-tooltip>
         <span v-if="timeRange" class="task-meta">{{ timeRange }}</span>
+
+        <!-- 结论摘要：一句话可点击编辑（规划 §7.2 Header） -->
+        <el-tooltip :content="currentTask.conclusion || '点击填写案例结论'" placement="bottom">
+          <span class="conclusion-chip" @click="$emit('open-conclusion')">
+            <el-icon><EditPen /></el-icon>
+            <span class="conclusion-text">{{ conclusionText }}</span>
+          </span>
+        </el-tooltip>
       </template>
     </div>
 
@@ -70,6 +78,12 @@
             <el-dropdown-item command="full_csv">
               <el-icon><Tickets /></el-icon><span>导出全量明细 (CSV)</span>
             </el-dropdown-item>
+            <el-dropdown-item command="package">
+              <el-icon><Box /></el-icon><span>导出证据包 (ZIP)</span>
+            </el-dropdown-item>
+            <el-dropdown-item command="copy_summary">
+              <el-icon><CopyDocument /></el-icon><span>复制交接摘要</span>
+            </el-dropdown-item>
             <el-dropdown-item divided command="open-report">
               <el-icon><DataAnalysis /></el-icon><span>前往分析报告</span>
             </el-dropdown-item>
@@ -96,7 +110,13 @@
         </el-button>
         <template #dropdown>
           <el-dropdown-menu>
-            <el-dropdown-item command="refresh">
+            <el-dropdown-item command="summary">
+              <el-icon><Odometer /></el-icon><span>诊断摘要</span>
+            </el-dropdown-item>
+            <el-dropdown-item command="conclusion">
+              <el-icon><EditPen /></el-icon><span>编辑案例结论</span>
+            </el-dropdown-item>
+            <el-dropdown-item command="refresh" divided>
               <el-icon><Refresh /></el-icon><span>刷新日志</span>
             </el-dropdown-item>
             <el-dropdown-item command="files">
@@ -112,14 +132,6 @@
         </template>
       </el-dropdown>
     </div>
-
-    <NewTaskDialog v-model="showNewTaskDialog" :initial-task-name="newTaskName">
-      <template #footer="{ form, close }">
-        <el-button @click="close">取消</el-button>
-        <el-button :loading="submitting" @click="handleCreateEmptyTask(form)">仅创建任务</el-button>
-        <el-button type="primary" :loading="submitting" @click="handleCreateAndOpenImport(form)">创建并导入日志</el-button>
-      </template>
-    </NewTaskDialog>
   </div>
 </template>
 
@@ -128,19 +140,19 @@ import { computed, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Monitor, Operation, Upload, Download, ArrowDown, Plus, Refresh, Document,
-  DataAnalysis, Tickets, Files, Opportunity, Delete, MoreFilled
+  DataAnalysis, Tickets, Files, Opportunity, Delete, MoreFilled, EditPen,
+  Box, CopyDocument, Odometer
 } from '@element-plus/icons-vue'
 import { useTaskStore } from '@/stores/task'
 import { useFilterStore } from '@/stores/filter'
 import { TASK_STATUS } from '@/constants/taskStatus'
 import { formatTime } from '@/utils/format'
 import api from '@/api'
-import NewTaskDialog from '@/components/NewTaskDialog.vue'
 import TaskStatusTag from '@/components/TaskStatusTag.vue'
 
 const emit = defineEmits([
   'task-change',
-  'task-created',
+  'new-task',
   'task-deleted',
   'refresh-logs',
   'open-files',
@@ -148,7 +160,9 @@ const emit = defineEmits([
   'open-import',
   'open-devices',
   'open-advanced',
-  'open-report'
+  'open-report',
+  'open-conclusion',
+  'open-summary'
 ])
 
 const taskStore = useTaskStore()
@@ -177,12 +191,22 @@ const timeRange = computed(() => {
   return end ? `${start} ~ ${end}` : `${start} 起`
 })
 
+const conclusionText = computed(() => {
+  const text = (currentTask.value?.conclusion || '').replace(/\s+/g, ' ').trim()
+  if (!text) return '写结论'
+  return text.length > 26 ? text.slice(0, 26) + '…' : text
+})
+
 // 导出
 const exportingReport = ref(false)
 const handleExportCommand = async (cmd) => {
   if (!taskStore.currentTaskId || exportingReport.value) return
   if (cmd === 'open-report') {
     emit('open-report')
+    return
+  }
+  if (cmd === 'copy_summary') {
+    await copySummary()
     return
   }
   exportingReport.value = true
@@ -199,6 +223,9 @@ const handleExportCommand = async (cmd) => {
     } else if (cmd === 'full_csv') {
       await api.downloadTaskReport(taskStore.currentTaskId, 'csv')
       ElMessage.success('已导出全量任务 CSV 明细')
+    } else if (cmd === 'package') {
+      await api.downloadEvidencePackage(taskStore.currentTaskId, currentTask.value?.task_name)
+      ElMessage.success('已导出证据包')
     }
   } catch (e) {
     console.error('Export report failed:', e)
@@ -207,8 +234,26 @@ const handleExportCommand = async (cmd) => {
   }
 }
 
+const copySummary = async () => {
+  try {
+    const markdown = await api.getSummaryMarkdown(taskStore.currentTaskId)
+    if (!markdown) {
+      ElMessage.warning('摘要内容为空')
+      return
+    }
+    await navigator.clipboard.writeText(markdown)
+    ElMessage.success('交接摘要已复制到剪贴板')
+  } catch (e) {
+    ElMessage.warning('复制失败，请在“分析报告”中查看摘要')
+  }
+}
+
 const handleMoreCommand = async (cmd) => {
-  if (cmd === 'refresh') {
+  if (cmd === 'summary') {
+    emit('open-summary')
+  } else if (cmd === 'conclusion') {
+    emit('open-conclusion')
+  } else if (cmd === 'refresh') {
     emit('refresh-logs')
   } else if (cmd === 'files') {
     emit('open-files')
@@ -236,59 +281,9 @@ const handleDeleteTask = async () => {
   emit('task-deleted', task.task_id)
 }
 
-// 新建任务
-const showNewTaskDialog = ref(false)
-const submitting = ref(false)
-const newTaskName = ref('')
-
-const openNewTaskDialog = () => {
-  const nowStr = new Date().toISOString().replace(/[-:T.]/g, '').substring(0, 14)
-  newTaskName.value = `排障-${nowStr}`
-  showNewTaskDialog.value = true
-}
-
-const createTask = async (form) => {
-  const res = await api.createTask({ task_name: form?.taskName || newTaskName.value })
-  return res?.data?.task_id
-}
-
-const handleCreateEmptyTask = async (form) => {
-  submitting.value = true
-  try {
-    const taskId = await createTask(form)
-    if (taskId) {
-      ElMessage.success('任务创建成功，可随时导入日志')
-      showNewTaskDialog.value = false
-      await taskStore.fetchTasks()
-      emit('task-created', { taskId, needImport: false })
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
-const handleCreateAndOpenImport = async (form) => {
-  submitting.value = true
-  try {
-    const taskId = await createTask(form)
-    if (taskId) {
-      showNewTaskDialog.value = false
-      await taskStore.fetchTasks()
-      emit('task-created', { taskId, needImport: true })
-    }
-  } finally {
-    submitting.value = false
-  }
-}
-
 const onTaskChange = (taskId) => {
   emit('task-change', taskId)
 }
-
-defineExpose({
-  openNewTaskDialog,
-  showNewTaskDialog
-})
 </script>
 
 <style scoped>
@@ -310,10 +305,11 @@ defineExpose({
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .task-select {
-  width: 260px;
+  width: 240px;
 }
 
 .new-task-btn {
@@ -335,6 +331,30 @@ defineExpose({
 
 .task-meta.clickable:hover {
   color: var(--brand-600);
+}
+
+.conclusion-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 320px;
+  padding: 3px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--brand-400);
+  color: var(--brand-600);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.conclusion-chip:hover {
+  background: var(--brand-50, #eff6ff);
+}
+
+.conclusion-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
 }
 
 .header-right {
@@ -362,7 +382,6 @@ defineExpose({
 }
 
 @media (max-width: 1400px) {
-  .header-action-group .btn-text,
   .header-right .btn-text {
     display: none;
   }

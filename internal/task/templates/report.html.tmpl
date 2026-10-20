@@ -2,20 +2,24 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>LogAuditorGo 审计分析报告 - {{ .Task.TaskName }}</title>
+<title>LogAuditorGo 排障分析报告 - {{ .Task.TaskName }}</title>
 <style>
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; margin: 30px; background: #f8fafc; color: #1e293b; }
   .header { background: #1e293b; color: #fff; padding: 24px; border-radius: 8px; margin-bottom: 24px; }
   .header h1 { margin: 0 0 10px 0; font-size: 24px; }
+  .meta-line { font-size: 13px; color: #cbd5e1; line-height: 1.8; }
   .stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
   .stat-card { background: #fff; padding: 16px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); border-left: 4px solid #3b82f6; }
   .stat-card .val { font-size: 24px; font-weight: bold; color: #1e293b; }
   .stat-card .label { color: #64748b; font-size: 13px; margin-top: 4px; }
   .section { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 24px; }
   .section h2 { margin-top: 0; font-size: 18px; border-bottom: 2px solid #e2e8f0; padding-bottom: 8px; color: #0f172a; }
+  .conclusion { white-space: pre-wrap; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 14px; font-size: 14px; line-height: 1.8; }
+  .finding-list { margin: 8px 0 0; padding-left: 20px; line-height: 1.9; font-size: 14px; }
   .rca-card { border: 1px solid #fed7aa; background: #fff7ed; border-radius: 6px; padding: 16px; margin-bottom: 16px; }
   .rca-title { font-weight: bold; color: #c2410c; font-size: 15px; margin-bottom: 8px; }
   .rca-action { background: #ffedd5; padding: 10px; border-radius: 4px; font-size: 13px; color: #9a3412; margin-top: 8px; }
+  .experimental-note { font-size: 12px; color: #9a3412; margin-bottom: 10px; }
   .device-card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 12px; background: #fafafa; border-top: 4px solid #3b82f6; }
   .device-title { font-weight: 600; font-size: 14px; color: #0f172a; margin-bottom: 6px; }
   .device-meta { font-size: 12px; color: #64748b; }
@@ -30,12 +34,18 @@
   .sev-info { background: #e0f2fe; color: #075985; }
   .code { font-family: monospace; background: #f1f5f9; padding: 2px 4px; border-radius: 3px; font-size: 12px; word-break: break-all; }
   .kb-desc { font-size: 12px; color: #475569; margin-top: 4px; max-width: 260px; }
+  .muted { color: #64748b; font-size: 13px; line-height: 1.8; }
+  .limitation-list { margin: 0; padding-left: 20px; color: #475569; font-size: 13px; line-height: 1.9; }
 </style>
 </head>
 <body>
   <div class="header">
-    <h1>LogAuditorGo 华为网络设备日志智能审计报告</h1>
-    <div>任务名称: {{ .Task.TaskName }} | 设备类型: {{ .Task.DeviceType }}{{ if .Task.DeviceVersion }} / {{ .Task.DeviceVersion }}{{ end }} | 导出时间: {{ .ExportTime }}</div>
+    <h1>LogAuditorGo 排障分析报告</h1>
+    <div class="meta-line">
+      任务：{{ .Task.TaskName }}<br>
+      案例状态：{{ caseStatusLabel .Task.CaseStatus }} | 导出时间：{{ .ExportTime }}<br>
+      日志：{{ .Task.LogCount }} 行 | 匹配：{{ .Task.MatchedCount }} 条 | 设备：{{ .Task.DeviceCount }} 台{{ if .Task.ExternalRef }} | 工单号：{{ .Task.ExternalRef }}{{ end }}
+    </div>
   </div>
 
   <div class="stats-grid">
@@ -48,68 +58,132 @@
       <div class="label">知识库匹配数</div>
     </div>
     <div class="stat-card" style="border-left-color: #f97316;">
-      <div class="val">{{ len .RCAs }}</div>
-      <div class="label">识别根因事件数</div>
-    </div>
-    <div class="stat-card" style="border-left-color: #8b5cf6;">
       <div class="val">{{ coveragePercent .Task.MatchedCount .Task.LogCount }}</div>
       <div class="label">官方知识覆盖率</div>
     </div>
+    <div class="stat-card" style="border-left-color: #8b5cf6;">
+      <div class="val">{{ .Task.DeviceCount }}</div>
+      <div class="label">涉及设备数</div>
+    </div>
   </div>
-{{ if .RCAs }}
+
   <div class="section">
-    <h2>🎯 根因分析（RCA）排查建议</h2>
+    <h2>一、执行摘要</h2>
+{{ if .Task.Conclusion }}
+    <div class="conclusion">{{ .Task.Conclusion }}</div>
+{{ else if .Diagnosis }}
+    <div class="conclusion">{{ summaryText .Diagnosis }}</div>
+{{ else }}
+    <p class="muted">暂无结论：可在工作台“结论”抽屉中补充后重新导出。</p>
+{{ end }}
+{{ if .Diagnosis }}
+    <h3 style="font-size:15px; margin:16px 0 6px;">关键发现</h3>
+    <ul class="finding-list">
+{{ range .Diagnosis.TopModules }}      <li><strong>{{ .Module }}</strong>：{{ .Count }} 条，最高级别 {{ severityLabel .MaxSeverity }}</li>
+{{ end }}    </ul>
+{{ end }}
+{{ if .Task.Notes }}
+    <h3 style="font-size:15px; margin:16px 0 6px;">备注</h3>
+    <div class="conclusion">{{ .Task.Notes }}</div>
+{{ end }}
+  </div>
+
+{{ if .Diagnosis }}
+  <div class="section">
+    <h2>二、关键证据</h2>
+    <table>
+      <thead>
+        <tr><th>模块</th><th>条数</th><th>最高级别</th><th>样例日志</th></tr>
+      </thead>
+      <tbody>
+{{ range .Diagnosis.TopModules }}        <tr>
+          <td><strong>{{ .Module }}</strong></td>
+          <td>{{ .Count }}</td>
+          <td>{{ severityLabel .MaxSeverity }}</td>
+          <td><a href="#log-{{ .SampleLogID }}">#{{ .SampleLogID }}</a></td>
+        </tr>
+{{ end }}      </tbody>
+    </table>
+  </div>
+
+  <div class="section">
+    <h2>三、未匹配 / 待补充知识</h2>
+{{ if .Diagnosis.UnmatchedTop }}
+    <table>
+      <thead>
+        <tr><th>模块 / 助记符</th><th>次数</th><th>首次出现</th><th>最后出现</th><th>样例日志</th></tr>
+      </thead>
+      <tbody>
+{{ range .Diagnosis.UnmatchedTop }}        <tr>
+          <td><strong>{{ .Module }}/{{ .Brief }}</strong></td>
+          <td>{{ .Count }}</td>
+          <td>{{ formatTime .FirstSeen }}</td>
+          <td>{{ formatTime .LastSeen }}</td>
+          <td><a href="#log-{{ .SampleLogID }}">#{{ .SampleLogID }}</a></td>
+        </tr>
+{{ end }}      </tbody>
+    </table>
+{{ else }}
+    <p class="muted">本任务未发现未匹配的模块/助记符。</p>
+{{ end }}
+  </div>
+
+  <div class="section">
+    <h2>四、处置建议</h2>
+    <ul class="finding-list">
+{{ range .Diagnosis.Suggestions }}      <li>{{ . }}</li>
+{{ end }}    </ul>
+    <p class="muted">建议依据任务统计与官方知识条目生成；具体命令与配置请以官方文档原文为准。</p>
+  </div>
+{{ end }}
+
+{{ if .RCAEnabled }}
+  <div class="section">
+    <h2>五、关联事件（实验性）</h2>
+    <p class="experimental-note">该章节仅在实验室功能开启时生成；结论为启发式推断，不是官方文档原文，请结合现场信息判断。</p>
 {{ if eq .Task.RCAStatus "TIMEOUT" }}
     <div style="margin-bottom: 12px; padding: 10px 14px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px;">
-      ⚠️ <strong>分析达到超时或样本上限：</strong>本次根因分析已安全中止并保存部分结果。以下为已识别的根因链路{{ if .Task.RCAAnalyzedUntil }}（时序截断至 {{ formatTime .Task.RCAAnalyzedUntil }}）{{ end }}。
+      关联事件分析达到超时或样本上限，以下为已识别的部分关联链路{{ if .Task.RCAAnalyzedUntil }}（时序截断至 {{ formatTime .Task.RCAAnalyzedUntil }}）{{ end }}。
     </div>
+{{ else if eq .Task.RCAStatus "FAILED" }}
+    <div style="margin-bottom: 12px; padding: 10px 14px; border-left: 4px solid #ef4444; background: #fef2f2; color: #991b1b; font-size: 13px;">
+      关联事件分析异常中断{{ if .Task.RCAErrorMessage }}：{{ .Task.RCAErrorMessage }}{{ end }}。
+    </div>
+{{ else if or (eq .Task.RCAStatus "QUEUED") (eq .Task.RCAStatus "RUNNING") }}
+    <div style="margin-bottom: 12px; padding: 10px 14px; border-left: 4px solid #3b82f6; background: #eff6ff; color: #1e40af; font-size: 13px;">
+      关联事件尚在后台分析中，本次报告仅包含已生成的部分。
+    </div>
+{{ end }}
+{{ if not .RCAs }}
+    <p class="muted">本次分析未识别到关联事件。</p>
 {{ end }}
 {{ range .RCAs }}    <div class="rca-card">
-      <div class="rca-title">💥 根因事件 [{{ .RootModule }}/{{ .RootBrief }}] - {{ .RootTimestamp }} (置信度: {{ formatConfidence .Confidence }}, 影响等级: {{ .ImpactLevel }})</div>
+      <div class="rca-title">疑似根因 / 关联起点 [{{ .RootModule }}/{{ .RootBrief }}] - {{ .RootTimestamp }}（证据强度：{{ formatConfidence .Confidence }}，影响等级：{{ .ImpactLevel }}）</div>
       <div>{{ .RootCauseSummary }}</div>
-      <div class="rca-action"><strong>官方建议排查方案：</strong>{{ .RecommendedAction }}</div>
+      <div class="rca-action"><strong>参考排查建议（非官方原文）：</strong>{{ .RecommendedAction }}</div>
     </div>
 {{ end }}  </div>
-{{ else if eq .Task.RCAStatus "TIMEOUT" }}
-  <div class="section">
-    <h2>🎯 根因分析（RCA）排查建议</h2>
-    <div style="padding: 12px 16px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px;">
-      ⚠️ 分析达到超时或样本上限，未识别出有效根因事件{{ if .Task.RCAErrorMessage }}: {{ .Task.RCAErrorMessage }}{{ end }}。
-    </div>
-  </div>
-{{ else if eq .Task.RCAStatus "FAILED" }}
-  <div class="section">
-    <h2>🎯 根因分析（RCA）排查建议</h2>
-    <div style="padding: 12px 16px; border-left: 4px solid #ef4444; background: #fef2f2; color: #991b1b; font-size: 13px;">
-      ❌ RCA 根因推导异常中断{{ if .Task.RCAErrorMessage }}: {{ .Task.RCAErrorMessage }}{{ end }}。可在工作台重试计算。
-    </div>
-  </div>
-{{ else if or (eq .Task.RCAStatus "QUEUED") (eq .Task.RCAStatus "RUNNING") }}
-  <div class="section">
-    <h2>🎯 根因分析（RCA）排查建议</h2>
-    <div style="padding: 12px 16px; border-left: 4px solid #3b82f6; background: #eff6ff; color: #1e40af; font-size: 13px;">
-      ⏳ RCA 拓扑尚在后台生成中，日志与知识库匹配已就绪。可在工作台完成分析后重新导出获取完整拓扑建议。
-    </div>
-  </div>
 {{ end }}
+
 {{ if .Devices }}
   <div class="section">
-    <h2>🖥️ 设备概况 ({{ len .Devices }} 台)</h2>
+    <h2>设备概况（{{ len .Devices }} 台）</h2>
     <div class="devices-grid">
 {{ range .Devices }}      <div class="device-card" style="border-top-color: {{ safeColor .Color }};">
         <div class="device-title">{{ .DeviceName }}</div>
-        <div class="device-meta">类型: {{ .DeviceType }}{{ if .Hostname }} | Hostname: {{ .Hostname }}{{ end }}</div>
+        <div class="device-meta">型号: {{ .DeviceType }}{{ if .Hostname }} | Hostname: {{ .Hostname }}{{ end }}</div>
         <div class="device-meta">日志: {{ .LogCount }} 行 | 匹配: {{ .MatchedCount }} 条</div>
       </div>
 {{ end }}    </div>
   </div>
 {{ end }}
+
   <div class="section">
-    <h2>📋 日志分析明细</h2>
+    <h2>日志分析明细</h2>
 {{ if .RecordsTruncated }}
     <div style="margin-bottom: 12px; padding: 10px 14px; border-left: 4px solid #f59e0b; background: #fffbeb; color: #92400e; font-size: 13px;">
-      ⚠️ 本任务共 {{ .TotalLogs }} 条日志，本报告仅包含其中 <strong>{{ len .Records }}</strong> 条（按严重级别优先取）。
-      需要全量明细请在工作台中使用 JSON 或 CSV 格式导出。
+      本任务共 {{ .TotalLogs }} 条日志，本报告仅包含其中 <strong>{{ len .Records }}</strong> 条（按严重级别优先取）。
+      需要全量明细请使用 CSV 或证据包导出。
     </div>
 {{ else }}
     <div style="margin-bottom: 12px; font-size: 13px; color: #64748b;">本任务共 {{ .TotalLogs }} 条日志，已全部包含在本报告中。</div>
@@ -126,7 +200,7 @@
         </tr>
       </thead>
       <tbody>
-{{ range .Records }}        <tr>
+{{ range .Records }}        <tr id="log-{{ .ID }}">
           <td>{{ formatTime .Timestamp }}</td>
           <td>{{ .Hostname }}</td>
           <td><span class="badge {{ severityBadgeClass .Severity }}">{{ .Severity }}</span></td>
@@ -136,6 +210,16 @@
         </tr>
 {{ end }}      </tbody>
     </table>
+  </div>
+
+  <div class="section">
+    <h2>方法与局限</h2>
+    <ul class="limitation-list">
+      <li>知识匹配基于已导入的华为官方 HDX 文档，采用精确 / 助记符 / 模板 / 语义四级匹配；未命中表示暂无对应官方条目，不代表日志无意义。</li>
+      <li>本报告不做脱敏，包含原始日志内容；外发前请自行评估敏感性并遵守客户/合规要求。</li>
+      <li>{{ if .RecordsTruncated }}报告明细存在采样（仅含前 {{ len .Records }} 条），统计口径以任务库聚合为准。{{ else }}报告明细为全量，统计口径与任务库一致。{{ end }}</li>
+      <li>关联事件（实验性）仅覆盖 5 条内置规则、按设备隔离分析，可能误报或漏报，且不属于官方结论。</li>
+    </ul>
   </div>
 </body>
 </html>

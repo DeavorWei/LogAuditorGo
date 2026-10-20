@@ -25,32 +25,59 @@ const (
 
 // TaskInfo 任务元信息（存储在全局库以及任务库中）
 type TaskInfo struct {
-	TaskID       string     `gorm:"primaryKey;size:64" json:"task_id"`
-	TaskName     string     `gorm:"size:255" json:"task_name"`
-	DeviceType   string     `gorm:"size:128;index" json:"device_type"`
+	TaskID     string `gorm:"primaryKey;size:64" json:"task_id"`
+	TaskName   string `gorm:"size:255" json:"task_name"`
+	DeviceType string `gorm:"size:128;index" json:"device_type"`
 	// DeviceVersion 设备软件版本（如 V200R024C00）。
 	//
 	// PARSE-04: 新增字段。此前生产代码恒以空版本号调用 Match()，
 	// 使"同型号同版本优先"档位（150 分）永不生效、偏好较新版本的排序也无从谈起，
 	// 旧版本知识可能盖掉新版本正确知识。只有把版本真正透传进去，版本分档才有意义。
-	DeviceVersion string    `gorm:"size:64" json:"device_version"`
-	FileCount     int       `json:"file_count"`
-	DeviceCount  int        `json:"device_count"` // 设备数量
-	LogCount     int        `json:"log_count"`
-	MatchedCount int        `json:"matched_count"`
-	RcaCount     int        `json:"rca_count"`
-	DBPath       string     `gorm:"size:512" json:"db_path"`
-	Status       TaskStatus `gorm:"size:32;index" json:"status"`
-	ErrorMessage string     `gorm:"type:text" json:"error_message,omitempty"`
-	StartTime    time.Time  `gorm:"index" json:"start_time"`
-	FinishTime   *time.Time `json:"finish_time,omitempty"`
+	DeviceVersion string     `gorm:"size:64" json:"device_version"`
+	FileCount     int        `json:"file_count"`
+	DeviceCount   int        `json:"device_count"` // 设备数量
+	LogCount      int        `json:"log_count"`
+	MatchedCount  int        `json:"matched_count"`
+	RcaCount      int        `json:"rca_count"`
+	DBPath        string     `gorm:"size:512" json:"db_path"`
+	Status        TaskStatus `gorm:"size:32;index" json:"status"`
+	ErrorMessage  string     `gorm:"type:text" json:"error_message,omitempty"`
+	StartTime     time.Time  `gorm:"index" json:"start_time"`
+	FinishTime    *time.Time `json:"finish_time,omitempty"`
 
 	// --- RCA 独立异步状态字段 (存量数据零值兜底为 PENDING) ---
-	RCAStatus        RCAStatus  `gorm:"size:32;default:'PENDING';index" json:"rca_status"`
-	RCAErrorMessage  string     `gorm:"type:text" json:"rca_error_message,omitempty"`
-	RCAFinishTime    *time.Time `json:"rca_finish_time,omitempty"`
+	RCAStatus       RCAStatus  `gorm:"size:32;default:'PENDING';index" json:"rca_status"`
+	RCAErrorMessage string     `gorm:"type:text" json:"rca_error_message,omitempty"`
+	RCAFinishTime   *time.Time `json:"rca_finish_time,omitempty"`
 	// RCAAnalyzedUntil 记录超时截断时已分析到的时序边界，供前端渲染提示
 	RCAAnalyzedUntil *time.Time `json:"rca_analyzed_until,omitempty"`
+
+	// --- 案例字段（v1.2，只增列，旧任务保持零值） ---
+	//
+	// 规划 F4：任务从"容器"升级为"案例"，需要可编辑的结论、状态、备注与工单号，
+	// 从而支撑交接、复盘与跨任务检索。字段保持可空，避免旧库迁移失败。
+	CaseStatus   string     `gorm:"size:32;index" json:"case_status"`
+	Conclusion   string     `gorm:"type:text" json:"conclusion"`
+	Notes        string     `gorm:"type:text" json:"notes"`
+	ExternalRef  string     `gorm:"size:128" json:"external_ref"`
+	CaseTags     string     `gorm:"size:512" json:"case_tags"`
+	LastOpenedAt *time.Time `json:"last_opened_at,omitempty"`
+}
+
+// 案例状态枚举（UI 文案由前端 constants/caseStatus.js 负责）。
+const (
+	CaseStatusInvestigating = "investigating" // 排查中
+	CaseStatusLocated       = "located"       // 已定位
+	CaseStatusResolved      = "resolved"      // 已解决
+	CaseStatusArchived      = "archived"      // 已归档
+)
+
+// CaseStatusSet 合法案例状态集合。
+var CaseStatusSet = map[string]bool{
+	CaseStatusInvestigating: true,
+	CaseStatusLocated:       true,
+	CaseStatusResolved:      true,
+	CaseStatusArchived:      true,
 }
 
 func (TaskInfo) TableName() string {
@@ -73,16 +100,16 @@ func (TaskFile) TableName() string {
 
 // LogQueryFilter 任务内日志查询过滤参数
 type LogQueryFilter struct {
-	Page       int        `form:"page" json:"page"`
-	PageSize   int        `form:"page_size" json:"page_size"`
-	DeviceID   *uint      `form:"device_id" json:"device_id"`
-	Module     string     `form:"module" json:"module"`
-	Severity   *int       `form:"severity" json:"severity"`
-	Brief      string     `form:"brief" json:"brief"`
-	Hostname   string     `form:"hostname" json:"hostname"`
-	Keyword    string     `form:"keyword" json:"keyword"`
-	SourceFile string     `form:"source_file" json:"source_file"`
-	Matched    *bool      `form:"matched" json:"matched"`
+	Page       int         `form:"page" json:"page"`
+	PageSize   int         `form:"page_size" json:"page_size"`
+	DeviceID   *uint       `form:"device_id" json:"device_id"`
+	Module     string      `form:"module" json:"module"`
+	Severity   *int        `form:"severity" json:"severity"`
+	Brief      string      `form:"brief" json:"brief"`
+	Hostname   string      `form:"hostname" json:"hostname"`
+	Keyword    string      `form:"keyword" json:"keyword"`
+	SourceFile string      `form:"source_file" json:"source_file"`
+	Matched    *bool       `form:"matched" json:"matched"`
 	TimeStart  *CustomTime `form:"time_start" json:"time_start"`
 	TimeEnd    *CustomTime `form:"time_end" json:"time_end"`
 
@@ -99,6 +126,3 @@ type LogQueryFilter struct {
 	// Order 排序方向："asc"（默认，升序）或 "desc"（降序）
 	Order string `form:"order" json:"order"`
 }
-
-
-

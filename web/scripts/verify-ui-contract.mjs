@@ -30,6 +30,7 @@ import {
   IMPACT_LEVEL_OPTIONS
 } from '../src/utils/rca.js'
 import { matchTierMeta } from '../src/constants/matchTiers.js'
+import { CASE_STATUS, CASE_STATUS_OPTIONS, caseStatusMeta } from '../src/constants/caseStatus.js'
 
 let passed = 0
 const check = (name, fn) => {
@@ -109,6 +110,14 @@ check('匹配层级全部具备中文标签', () => {
   assert.equal(matchTierMeta('FAMILY_SUSPECT').tagType, 'danger')
   assert.equal(matchTierMeta('UNMATCHED').label, '暂无官方知识')
   assert.equal(matchTierMeta(undefined).label, '未知')
+})
+
+console.log('[5] 案例状态（v1.2）')
+check('案例状态全部中文化且含未标注', () => {
+  assert.deepEqual(CASE_STATUS_OPTIONS.map((o) => o.label), ['未标注', '排查中', '已定位', '已解决', '已归档'])
+  assert.equal(caseStatusMeta(CASE_STATUS.LOCATED).label, '已定位')
+  assert.equal(caseStatusMeta('').label, '未标注')
+  assert.equal(caseStatusMeta(undefined).tagType, 'info')
 })
 
 console.log(`\nUI contract check passed: ${passed} assertions`)

@@ -456,6 +456,11 @@ func (h *TaskHandler) QueryTasks(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Unknown task status: "+strings.Join(ignored, ","))
 		return
 	}
+	caseStatuses, ignoredCase := task.NormalizeCaseStatuses(c.Query("case_status"))
+	if len(ignoredCase) > 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Unknown case status: "+strings.Join(ignoredCase, ","))
+		return
+	}
 
 	startFrom, err := parseOptionalQueryTime(c.Query("start_from"))
 	if err != nil {
@@ -472,14 +477,15 @@ func (h *TaskHandler) QueryTasks(c *gin.Context) {
 	pageSize := parsePositiveInt(c.DefaultQuery("page_size", "20"), 20)
 
 	items, total, err := h.taskSvc.QueryTaskList(task.TaskListQuery{
-		Keyword:   c.Query("keyword"),
-		Status:    statuses,
-		StartFrom: startFrom,
-		StartTo:   startTo,
-		SortBy:    c.Query("sort_by"),
-		Order:     c.Query("order"),
-		Page:      page,
-		PageSize:  pageSize,
+		Keyword:    c.Query("keyword"),
+		Status:     statuses,
+		CaseStatus: caseStatuses,
+		StartFrom:  startFrom,
+		StartTo:    startTo,
+		SortBy:     c.Query("sort_by"),
+		Order:      c.Query("order"),
+		Page:       page,
+		PageSize:   pageSize,
 	})
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
@@ -516,6 +522,121 @@ func parseOptionalQueryTime(raw string) (*time.Time, error) {
 		return nil, nil
 	}
 	return &parsed.Time, nil
+}
+
+// UpdateTaskCase 更新案例字段（结论/状态/备注/工单号/标签）。
+func (h *TaskHandler) UpdateTaskCase(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	var req task.TaskCaseUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+		return
+	}
+	updated, err := h.taskSvc.UpdateTaskCase(taskID, req)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		} else if strings.Contains(err.Error(), "invalid case_status") {
+			status = http.StatusBadRequest
+		}
+		ErrorResponse(c, status, -1, err.Error())
+		return
+	}
+	InvalidateStatsCache()
+	SuccessResponse(c, updated, "案例字段已更新")
+}
+
+// GetConclusionDraft 返回基于统计自动生成的结论草稿（Markdown，不落库）。
+func (h *TaskHandler) GetConclusionDraft(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	draft, err := h.taskSvc.GenerateConclusionDraft(taskID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		ErrorResponse(c, status, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, gin.H{"markdown": draft})
+}
+
+// PreviewImport 返回导入预览（文件、设备分布、时间范围、冲突与预计耗时）。
+func (h *TaskHandler) PreviewImport(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	if _, err := h.taskSvc.GetTaskByID(taskID); err != nil {
+		ErrorResponse(c, http.StatusNotFound, -1, "Task not found")
+		return
+	}
+
+	req := bindLogImportRequest(c)
+	var items []task.FileUploadItem
+	if len(req.Paths) > 0 {
+		if !guardPaths(c, req.Paths) {
+			return
+		}
+		pathItems, err := buildPathItems(req.Paths, req.Exts, req.Recursive)
+		if err != nil {
+			ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+			return
+		}
+		items = append(items, pathItems...)
+	}
+	if req.Content != "" {
+		fileName := req.FileName
+		if fileName == "" {
+			fileName = "manual_input.txt"
+		}
+		items = append(items, task.FileUploadItem{
+			FileName: fileName,
+			FileSize: int64(len(req.Content)),
+			Content:  req.Content,
+		})
+	}
+	if len(items) == 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "No log paths or content provided")
+		return
+	}
+
+	preview, err := h.taskSvc.PreviewImport(taskID, items)
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, preview)
+}
+
+// GetTaskSummary 返回导入完成后的诊断摘要（v1.2）。
+func (h *TaskHandler) GetTaskSummary(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	h.taskSvc.TouchTaskOpened(taskID)
+	summary, err := h.taskSvc.GetDiagnosisSummary(taskID)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not found") {
+			status = http.StatusNotFound
+		}
+		ErrorResponse(c, status, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, summary)
 }
 
 // GetTask 获取任务元信息
@@ -678,6 +799,15 @@ func (h *TaskHandler) QueryLogsUnified(c *gin.Context) {
 	})
 }
 
+// attachmentForTask 按任务名生成可读下载文件名；任务查询失败时退回任务 ID。
+func (h *TaskHandler) attachmentForTask(taskID, suffix, ext string) string {
+	name := taskID
+	if t, err := h.taskSvc.GetTaskByID(taskID); err == nil && t.TaskName != "" {
+		name = t.TaskName
+	}
+	return attachmentHeader(name, suffix, ext)
+}
+
 // GetRCA 获取任务 RCA 事件 (返回包含根因与级联时序日志元数据的完整实体，维持裸数组契约)
 func (h *TaskHandler) GetRCA(c *gin.Context) {
 	taskID := c.Param("id")
@@ -745,7 +875,7 @@ func (h *TaskHandler) ExportReport(c *gin.Context) {
 			return
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.Header("Content-Disposition", "attachment; filename=report_"+taskID+".html")
+		c.Header("Content-Disposition", h.attachmentForTask(taskID, "", "html"))
 		c.String(http.StatusOK, htmlContent)
 		return
 	}
@@ -819,7 +949,7 @@ func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
 			return
 		}
 		c.Header("Content-Type", "text/html; charset=utf-8")
-		c.Header("Content-Disposition", "attachment; filename=report_"+taskID+".html")
+		c.Header("Content-Disposition", h.attachmentForTask(taskID, "", "html"))
 		c.String(http.StatusOK, htmlContent)
 		return
 	}
@@ -858,7 +988,7 @@ func (h *TaskHandler) ExportReportUnified(c *gin.Context) {
 // streamCSVExportUnified 以数据库游标逐行生成带标签列的 CSV 并流式下发
 func (h *TaskHandler) streamCSVExportUnified(c *gin.Context, taskID string, req model.LogQueryRequestBody) {
 	c.Header("Content-Type", "text/csv; charset=utf-8")
-	c.Header("Content-Disposition", "attachment; filename=logs_"+taskID+".csv")
+	c.Header("Content-Disposition", h.attachmentForTask(taskID, "明细", "csv"))
 
 	// UTF-8 BOM：保证 Excel 打开中文不乱码
 	if _, err := c.Writer.Write([]byte{0xEF, 0xBB, 0xBF}); err != nil {
@@ -1366,7 +1496,7 @@ func (h *TaskHandler) ExportMultiDeviceReport(c *gin.Context) {
 	}
 
 	c.Header("Content-Type", "text/html; charset=utf-8")
-	c.Header("Content-Disposition", fmt.Sprintf("attachment; filename=multi_device_report_%s.html", taskID))
+	c.Header("Content-Disposition", h.attachmentForTask(taskID, "多设备报告", "html"))
 	c.String(http.StatusOK, htmlContent)
 }
 

@@ -348,14 +348,16 @@ func (s *Service) prepareBundles(
 
 		totalLines += int64(lineCount)
 		bundles = append(bundles, &fileBundle{
-			taskID:        taskID,
-			item:          item,
-			cleanName:     cleanName,
-			totalLines:    lineCount,
-			deviceID:      fileDevID,
-			targetProduct: targetProduct,
-			targetVersion: targetVersion,
-			lines:         allLines,
+			taskID:         taskID,
+			item:           item,
+			cleanName:      cleanName,
+			totalLines:     lineCount,
+			deviceID:       fileDevID,
+			primaryHost:    detectedHost,
+			explicitDevice: deviceID > 0,
+			targetProduct:  targetProduct,
+			targetVersion:  targetVersion,
+			lines:          allLines,
 		})
 	}
 

@@ -143,29 +143,12 @@
         <el-button type="primary" icon="FolderAdd" @click="$router.push('/documents')">去导入 HDX 文档</el-button>
       </el-empty>
     </el-card>
-
-    <!-- 新建任务弹窗 (统一使用 NewTaskDialog) -->
-    <NewTaskDialog
-      v-model="showNewTaskDialog"
-      :loading="creatingTask"
-      show-content
-      @confirm="handleCreateTask"
-    />
-
-    <!-- 后台分析进度追踪弹窗（WEB-04） -->
-    <ImportProgressModal
-      v-model="showProgressModal"
-      :job-id="currentJobId"
-      @completed="handleTaskCreateCompleted"
-      @failed="handleTaskCreateFailed"
-    />
   </div>
 </template>
 
 <script setup>
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
 import {
   Reading, FolderOpened, List, DataAnalysis, Position, UploadFilled, FolderAdd, Search,
   Clock, Warning
@@ -173,9 +156,7 @@ import {
 // UI-09: 改用按需引入的 echarts 入口，避免把全量图表类型打进首屏
 import echarts from '@/plugins/echarts'
 import api from '@/api'
-import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import StatCard from '@/components/StatCard.vue'
-import NewTaskDialog from '@/components/NewTaskDialog.vue'
 import TaskStatusTag from '@/components/TaskStatusTag.vue'
 import { formatTime } from '@/utils/format'
 
@@ -189,13 +170,6 @@ const recentTasks = ref([])
 const recentLoading = ref(false)
 const statusCounts = ref({ processing: 0, failed: 0, pending: 0 })
 
-const showNewTaskDialog = ref(false)
-const creatingTask = ref(false)
-
-// 后台分析进度追踪（WEB-04）：createTask 默认异步返回 job_id
-const showProgressModal = ref(false)
-const currentJobId = ref('')
-const pendingTaskId = ref('')
 
 const attentionText = computed(() => {
   const { processing, failed, pending } = statusCounts.value
@@ -283,60 +257,8 @@ const renderModuleChart = (topModules) => {
 }
 
 const openNewTask = () => {
-  showNewTaskDialog.value = true
-}
-
-const handleCreateTask = async (formData) => {
-  const content = (formData?.content ?? '').trim()
-  const taskName = formData?.taskName ?? ''
-
-  if (!content) {
-    ElMessage.warning('请输入待分析的日志内容')
-    return
-  }
-
-  creatingTask.value = true
-  try {
-    // 任务级 device_type 已不参与匹配（规划 §6.6），新建时不再传该字段
-    const res = await api.createTask({
-      task_name: taskName,
-      content
-    })
-    if (res.code !== 0) return
-
-    const taskId = res.data?.task_id
-    const jobId = res.data?.job_id
-    showNewTaskDialog.value = false
-
-    // WEB-04: api.createTask 默认异步，后端返回时分析仍在后台跑。
-    if (jobId) {
-      pendingTaskId.value = taskId || ''
-      currentJobId.value = jobId
-      showProgressModal.value = true
-      ElMessage.info('任务已创建，正在后台分析中...')
-      return
-    }
-
-    ElMessage.success('任务创建并分析完成！')
-    if (taskId) router.push(`/audit/${taskId}`)
-  } finally {
-    creatingTask.value = false
-  }
-}
-
-// 后台分析完成：提示并跳转到对应任务的工作台
-const handleTaskCreateCompleted = () => {
-  showProgressModal.value = false
-  ElMessage.success('任务创建并分析完成！')
-  if (pendingTaskId.value) {
-    router.push(`/audit/${pendingTaskId.value}`)
-    pendingTaskId.value = ''
-  }
-}
-
-const handleTaskCreateFailed = (payload) => {
-  const reason = typeof payload === 'string' ? payload : payload?.error || payload?.message
-  ElMessage.error('任务分析失败' + (reason ? ': ' + reason : ''))
+  // 三个入口统一：进入工作台并打开同一套导入向导（规划 F1）
+  router.push('/audit/new')
 }
 
 // WEB-07: 具名 + 防抖 + 成对移除的 resize 监听

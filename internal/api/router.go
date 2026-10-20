@@ -116,6 +116,9 @@ func SetupRouter(
 			fs.GET("/roots", fsHandler.GetRoots)
 			fs.GET("/browse", fsHandler.Browse)
 			fs.POST("/stat", fsHandler.Stat)
+			// v1.2: Windows 原生文件/文件夹对话框（仅回环，返回绝对路径，不读内容）
+			fs.GET("/dialog/capability", fsHandler.GetDialogCapability)
+			fs.POST("/dialog", fsHandler.OpenDialog)
 		}
 
 		// 全流程阶段进度实时追踪 (SSE 流与 HTTP 轮询) 与长任务终止 (UI-02)
@@ -156,11 +159,18 @@ func SetupRouter(
 		// 案例库分页检索：静态段必须注册在 :id 通配之前，避免被任务详情吞掉
 		v1.GET("/tasks/query", taskHandler.QueryTasks)
 		v1.GET("/tasks/:id", taskHandler.GetTask)
+		// v1.2: 导入完成后的诊断摘要（单表聚合，不加载明细）
+		v1.GET("/tasks/:id/summary", taskHandler.GetTaskSummary)
+		// v1.2: 案例字段与结论草稿
+		v1.PATCH("/tasks/:id/case", taskHandler.UpdateTaskCase)
+		v1.GET("/tasks/:id/conclusion/draft", taskHandler.GetConclusionDraft)
 		v1.PATCH("/tasks/:id", taskHandler.UpdateTask)
 		v1.PUT("/tasks/:id", taskHandler.UpdateTask)
 		v1.GET("/tasks/:id/files", taskHandler.GetTaskFiles)
 		v1.DELETE("/tasks/:id/files/:file_id", taskHandler.DeleteTaskFile)
 		v1.POST("/tasks/:id/import", taskHandler.ImportLogs)
+		// v1.2: 导入预览（只读，不写任务库）
+		v1.POST("/tasks/:id/import/preview", taskHandler.PreviewImport)
 		v1.GET("/tasks/:id/logs", taskHandler.QueryLogs)
 		v1.POST("/tasks/:id/logs/query", taskHandler.QueryLogsUnified)
 		v1.POST("/tasks/:id/logs/sparkline", taskHandler.GetTaskLogSparkline)
@@ -173,6 +183,9 @@ func SetupRouter(
 		v1.GET("/tasks/:id/rca", taskHandler.GetRCA)
 		v1.POST("/tasks/:id/rca/reanalyze", taskHandler.ReanalyzeRCA)
 		v1.GET("/tasks/:id/export", taskHandler.ExportReport)
+		// v1.2: 可复制摘要（Markdown）与证据包（流式 ZIP）
+		v1.GET("/tasks/:id/summary/markdown", taskHandler.GetSummaryMarkdown)
+		v1.GET("/tasks/:id/export/package", taskHandler.ExportEvidencePackage)
 		v1.POST("/tasks/:id/export", taskHandler.ExportReportUnified)
 		v1.DELETE("/tasks/:id", taskHandler.DeleteTask)
 

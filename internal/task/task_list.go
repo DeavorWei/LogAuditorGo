@@ -16,14 +16,15 @@ import (
 //   - 仅做元数据检索，不跨任务库扫描原始日志（全量日志索引不在本阶段范围）；
 //   - 排序字段走白名单，禁止把用户输入直接拼进 ORDER BY。
 type TaskListQuery struct {
-	Keyword   string
-	Status    []string
-	StartFrom *time.Time
-	StartTo   *time.Time
-	SortBy    string
-	Order     string
-	Page      int
-	PageSize  int
+	Keyword    string
+	Status     []string
+	CaseStatus []string
+	StartFrom  *time.Time
+	StartTo    *time.Time
+	SortBy     string
+	Order      string
+	Page       int
+	PageSize   int
 }
 
 const (
@@ -60,6 +61,26 @@ func NormalizeTaskStatuses(raw string) (statuses []string, ignored []string) {
 	return statuses, ignored
 }
 
+// NormalizeCaseStatuses 清洗逗号分隔的案例状态列表。
+func NormalizeCaseStatuses(raw string) (statuses []string, ignored []string) {
+	seen := make(map[string]bool)
+	for _, part := range strings.Split(raw, ",") {
+		item := strings.ToLower(strings.TrimSpace(part))
+		if item == "" {
+			continue
+		}
+		if !model.CaseStatusSet[item] {
+			ignored = append(ignored, item)
+			continue
+		}
+		if !seen[item] {
+			seen[item] = true
+			statuses = append(statuses, item)
+		}
+	}
+	return statuses, ignored
+}
+
 // taskSortColumns 排序白名单：仅允许对列表可见且已建索引的列排序。
 var taskSortColumns = map[string]string{
 	"start_time":    "start_time",
@@ -79,13 +100,19 @@ func (s *Service) QueryTaskList(q TaskListQuery) ([]model.TaskInfo, int64, error
 
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
 		pattern := "%" + escapeLikePattern(kw) + "%"
+		// 案例检索覆盖：任务名、任务 ID、结论、备注、标签、工单号
 		query = query.Where(
-			"task_name LIKE ? ESCAPE '\\' OR task_id LIKE ? ESCAPE '\\'",
-			pattern, pattern,
+			"task_name LIKE ? ESCAPE '\\' OR task_id LIKE ? ESCAPE '\\' OR "+
+				"conclusion LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR "+
+				"case_tags LIKE ? ESCAPE '\\' OR external_ref LIKE ? ESCAPE '\\'",
+			pattern, pattern, pattern, pattern, pattern, pattern,
 		)
 	}
 	if len(q.Status) > 0 {
 		query = query.Where("status IN ?", q.Status)
+	}
+	if len(q.CaseStatus) > 0 {
+		query = query.Where("case_status IN ?", q.CaseStatus)
 	}
 	if q.StartFrom != nil {
 		query = query.Where("start_time >= ?", *q.StartFrom)

@@ -35,6 +35,15 @@ type ReportViewModel struct {
 
 	// KnowledgeMap 命中知识的简要信息，用于在明细表里直接展示官方释义 (REANA-13)
 	KnowledgeMap map[uint]model.Knowledge
+
+	// Diagnosis 诊断摘要（v1.2）：执行摘要、关键发现、未匹配热点与处置建议的数据源。
+	Diagnosis *DiagnosisSummary
+	// RCAEnabled 关联事件（实验性）开关；关闭时报告不渲染该章节。
+	RCAEnabled bool
+	// rcaOptionSet 标记调用方是否显式设置过开关。
+	// 直接调用 GenerateHTMLReport 的旧调用点未设置时按"渲染"处理（保持兼容），
+	// Service 导出路径始终显式传入，生产行为仍由 features.rca 决定。
+	rcaOptionSet bool
 }
 
 // MultiDeviceReportViewModel 多设备报告的渲染视图。
@@ -162,6 +171,54 @@ func knowledgeBrief(kbMap map[uint]model.Knowledge, id uint) string {
 	return brief
 }
 
+// caseStatusLabel 案例状态中文文案（报告为对外交付物，不允许出现英文枚举）。
+func caseStatusLabel(status string) string {
+	switch status {
+	case model.CaseStatusInvestigating:
+		return "排查中"
+	case model.CaseStatusLocated:
+		return "已定位"
+	case model.CaseStatusResolved:
+		return "已解决"
+	case model.CaseStatusArchived:
+		return "已归档"
+	default:
+		return "未标注"
+	}
+}
+
+// severityLabel 严重级别中文文案，同时保留 Lv.N 便于对照官方文档。
+func severityLabel(severity int) string {
+	level := "提示"
+	switch {
+	case severity <= 2:
+		level = "严重"
+	case severity <= 4:
+		level = "错误"
+	case severity <= 5:
+		level = "警告"
+	}
+	return fmt.Sprintf("%s Lv.%d", level, severity)
+}
+
+// summaryText 在用户尚未填写结论时生成执行摘要段落（确定性、不调用模型）。
+func summaryText(summary *DiagnosisSummary) string {
+	if summary == nil {
+		return ""
+	}
+	text := fmt.Sprintf("本次任务共 %d 行日志，涉及 %d 台设备、%d 个文件；其中 %d 行命中官方知识（覆盖率 %.1f%%）。",
+		summary.Overview.LogCount, summary.Overview.DeviceCount, summary.Overview.FileCount,
+		summary.Overview.MatchedCount, summary.Overview.MatchRate)
+	if len(summary.TopModules) > 0 {
+		top := summary.TopModules[0]
+		text += fmt.Sprintf("出现最频繁的模块为 %s（%d 条，最高级别 %s）。", top.Module, top.Count, severityLabel(top.MaxSeverity))
+	}
+	if unmatched := summary.Overview.LogCount - summary.Overview.MatchedCount; unmatched > 0 {
+		text += fmt.Sprintf("仍有 %d 行日志暂无官方知识，建议按“未匹配 / 待补充知识”章节补充或绑定本地知识。", unmatched)
+	}
+	return text
+}
+
 var reportFuncMap = template.FuncMap{
 	"formatTime":         formatTime,
 	"coveragePercent":    coveragePercent,
@@ -170,6 +227,9 @@ var reportFuncMap = template.FuncMap{
 	"matchBadgeHTML":     matchBadgeHTML,
 	"safeColor":          safeColor,
 	"knowledgeBrief":     knowledgeBrief,
+	"caseStatusLabel":    caseStatusLabel,
+	"severityLabel":      severityLabel,
+	"summaryText":        summaryText,
 }
 
 // reportTemplate 单任务 HTML 报告模板（加载失败时 panic，属于编译期可发现的问题）
@@ -190,6 +250,19 @@ func WithDevices(devices []model.Device) ReportOption {
 // WithKnowledgeMap 在日志明细中补充命中知识的官方释义
 func WithKnowledgeMap(kbMap map[uint]model.Knowledge) ReportOption {
 	return func(vm *ReportViewModel) { vm.KnowledgeMap = kbMap }
+}
+
+// WithDiagnosis 注入诊断摘要（执行摘要/关键发现/未匹配/建议）。
+func WithDiagnosis(summary *DiagnosisSummary) ReportOption {
+	return func(vm *ReportViewModel) { vm.Diagnosis = summary }
+}
+
+// WithRCAEnabled 控制是否渲染"关联事件（实验性）"章节。
+func WithRCAEnabled(enabled bool) ReportOption {
+	return func(vm *ReportViewModel) {
+		vm.RCAEnabled = enabled
+		vm.rcaOptionSet = true
+	}
 }
 
 // GenerateHTMLReport 生成任务分析的独立 HTML 离线报告
@@ -219,6 +292,10 @@ func GenerateHTMLReport(task *model.TaskInfo, records []model.LogRecord, rcas []
 		if opt != nil {
 			opt(&data)
 		}
+	}
+	// 兼容直接调用：未显式指定开关时保持旧行为（有数据即可渲染）。
+	if !data.rcaOptionSet {
+		data.RCAEnabled = true
 	}
 
 	var sb strings.Builder

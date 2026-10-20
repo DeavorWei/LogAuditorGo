@@ -90,6 +90,21 @@ export function useWorkbenchTaskContext(options = {}) {
 
   // 3. 悬浮与索引
   const hoveredLog = ref(null)
+  // 深链接：只应用一次 ?log=<id>，避免每次翻页都把用户拉回同一条日志
+  let appliedFocusLogId = 0
+
+  // 摘要页 → 工作台的最小深链接：module / matched / log（规划 F2 验收）
+  const applyRouteQueryFilters = () => {
+    const query = route?.query || {}
+    if (typeof query.module === 'string' && query.module.trim()) {
+      filterStore.filters.module = query.module.trim()
+    }
+    if (query.matched === 'false') {
+      filterStore.filters.matched = false
+    } else if (query.matched === 'true') {
+      filterStore.filters.matched = true
+    }
+  }
 
   const currentLogIndex = computed(() => {
     if (!selectedLog.value || !logRecords.value.length) return 0
@@ -122,6 +137,8 @@ export function useWorkbenchTaskContext(options = {}) {
     filterStore.filters.page = 1
     filterStore.filters.timeStart = null
     filterStore.filters.timeEnd = null
+    appliedFocusLogId = 0
+    applyRouteQueryFilters()
     selectedLog.value = null
 
     // 关联事件（实验性）默认关闭：开关关闭时不请求 RCA 事件，
@@ -165,11 +182,38 @@ export function useWorkbenchTaskContext(options = {}) {
         } else {
           selectedLog.value = null
         }
+        await focusRouteLog()
       }
     } catch (e) {
       console.error('Fetch logs failed:', e)
     } finally {
       loadingLogs.value = false
+    }
+  }
+
+  // focusRouteLog 处理 ?log=<id>：优先在当前页命中，否则按 ID 精确查询后选中。
+  const focusRouteLog = async () => {
+    const raw = route?.query?.log
+    if (!raw) return
+    const id = Number(raw)
+    if (!Number.isFinite(id) || id <= 0 || appliedFocusLogId === id) return
+    appliedFocusLogId = id
+    const inPage = logRecords.value.find((r) => r.id === id)
+    if (inPage) {
+      selectedLog.value = inPage
+      return
+    }
+    try {
+      const res = await api.queryTaskLogsUnified(currentTaskId.value, {
+        ids: [id],
+        page: 1,
+        page_size: 1
+      })
+      if (res.code === 0 && res.data?.records?.length) {
+        selectedLog.value = res.data.records[0]
+      }
+    } catch (e) {
+      console.error('Focus route log failed:', e)
     }
   }
 

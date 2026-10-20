@@ -165,11 +165,16 @@ func (s *Service) IngestStreamingPipeline(
 	reorderBuf := make(map[int]model.LogRecord, cfg.RecordChanCap)
 	nextSeq := 0
 
+	// 批内设备缓存：单个文件可能包含多台设备，按 Hostname 逐行归属（F14）。
+	// 仅 Committer 协程访问，无需加锁。
+	deviceCtxCache := make(map[string]deviceContext)
+
 	flush := func() error {
 		if len(batch) == 0 && !first {
 			return nil
 		}
 		alignChunkTimestamps(batch, &lastFile, &lastValidTS)
+		s.assignDevicesPerHostname(taskDB, bundle, batch, deviceCtxCache)
 		err := taskDB.Transaction(func(tx *gorm.DB) error {
 			if first {
 				if err := tx.Create(&taskFile).Error; err != nil {

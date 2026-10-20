@@ -604,7 +604,7 @@ func TestGenerateHTMLReportDetailed(t *testing.T) {
 	}
 
 	// 第 4 个参数为任务日志总数；传 len(records) 表示未截断
-	htmlReport := task.GenerateHTMLReport(taskInfo, records, rcas, len(records))
+	htmlReport := task.GenerateHTMLReport(taskInfo, records, rcas, len(records), task.WithRCAEnabled(true))
 
 	// Verify escaping of task name
 	if strings.Contains(htmlReport, "<Escaping>") {
@@ -619,9 +619,9 @@ func TestGenerateHTMLReportDetailed(t *testing.T) {
 		t.Errorf("expected '50.0%%' in report, got: %s", htmlReport)
 	}
 
-	// Verify RCA section is present
-	if !strings.Contains(htmlReport, "根因分析（RCA）排查建议") {
-		t.Errorf("expected RCA section in report")
+	// Verify 关联事件（实验性） section is present
+	if !strings.Contains(htmlReport, "关联事件（实验性）") {
+		t.Errorf("expected 关联事件（实验性） section in report")
 	}
 	if !strings.Contains(htmlReport, "95%") {
 		t.Errorf("expected '95%%' confidence in report")
@@ -1166,6 +1166,16 @@ func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
 	taskDir := filepath.Join(tmpDir, "tasks")
 	svc := task.NewService(globalDB, taskDir, nil, nil)
 
+	// 本用例验证"实验开关开启时"报告对 TIMEOUT/FAILED 状态的呈现。
+	oldConfig := config.GlobalConfig
+	cfg := config.Config{}
+	if oldConfig != nil {
+		cfg = *oldConfig
+	}
+	cfg.Features.RCA = true
+	config.GlobalConfig = &cfg
+	defer func() { config.GlobalConfig = oldConfig }()
+
 	// 1. 创建任务并设置为 TIMEOUT 状态
 	task1, err := svc.CreateEmptyTask("TimeoutTask", "CloudEngine", "")
 	if err != nil {
@@ -1186,8 +1196,8 @@ func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export html for timeout task failed: %v", err)
 	}
-	if !strings.Contains(html1, "分析达到超时或样本上限") {
-		t.Errorf("expected html1 to contain '分析达到超时或样本上限'")
+	if !strings.Contains(html1, "关联事件分析达到超时或样本上限") {
+		t.Errorf("expected html1 to contain '关联事件分析达到超时或样本上限'")
 	}
 
 	// 2. 创建任务并设置为 FAILED 状态
@@ -1208,7 +1218,7 @@ func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("export html for failed task failed: %v", err)
 	}
-	if !strings.Contains(html2, "RCA 根因推导异常中断") || !strings.Contains(html2, "计算拓扑发生不可恢复异常") {
+	if !strings.Contains(html2, "关联事件分析异常中断") || !strings.Contains(html2, "计算拓扑发生不可恢复异常") {
 		t.Errorf("expected html2 to contain failed error message")
 	}
 }

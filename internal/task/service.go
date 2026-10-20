@@ -1344,9 +1344,12 @@ func (s *Service) ExportTaskHTMLUnified(taskID string, req model.LogQueryRequest
 		}
 	}
 
+	// 关联事件（实验性）默认不进入主报告：开关关闭时不查表、不渲染。
 	var rcas []model.RCAEvent
-	if err := taskDB.Find(&rcas).Error; err != nil {
-		return "", fmt.Errorf("load rca events for html export failed: %w", err)
+	if config.Features().RCA {
+		if err := taskDB.Find(&rcas).Error; err != nil {
+			return "", fmt.Errorf("load rca events for html export failed: %w", err)
+		}
 	}
 
 	var devices []model.Device
@@ -1354,12 +1357,18 @@ func (s *Service) ExportTaskHTMLUnified(taskID string, req model.LogQueryRequest
 		logger.Log.Warnf("[Task Service] load devices for html export failed: %v", err)
 	}
 
-	opts := make([]ReportOption, 0, 2)
+	opts := make([]ReportOption, 0, 4)
+	opts = append(opts, WithRCAEnabled(config.Features().RCA))
 	if len(devices) > 0 {
 		opts = append(opts, WithDevices(devices))
 	}
 	if kbMap := s.loadKnowledgeBriefs(records); len(kbMap) > 0 {
 		opts = append(opts, WithKnowledgeMap(kbMap))
+	}
+	if summary, diagnosisErr := s.GetDiagnosisSummary(taskID); diagnosisErr == nil {
+		opts = append(opts, WithDiagnosis(summary))
+	} else {
+		logger.Log.Warnf("[Task Service] load diagnosis summary for html export failed: %v", diagnosisErr)
 	}
 
 	html := GenerateHTMLReport(task, records, rcas, int(totalLogs), opts...)

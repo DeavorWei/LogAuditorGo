@@ -1,14 +1,18 @@
 package api
 
 import (
+	"errors"
 	"net"
 	"net/http"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 
 	"logauditorgo/internal/fsx"
+	"logauditorgo/internal/nativedialog"
+	"logauditorgo/pkg/logger"
 )
 
 // maxStatPaths 单次路径校验的最大条数
@@ -82,6 +86,73 @@ func (h *FSHandler) Stat(c *gin.Context) {
 		return
 	}
 	SuccessResponse(c, gin.H{"entries": fsx.Stat(req.Paths)})
+}
+
+// GetDialogCapability 返回原生对话框是否可用（只读，不弹窗），供前端决定回退策略。
+func (h *FSHandler) GetDialogCapability(c *gin.Context) {
+	SuccessResponse(c, gin.H{
+		"supported": nativedialog.Default().Supported(),
+		"platform":  runtime.GOOS,
+	})
+}
+
+// OpenDialog 打开原生文件/文件夹对话框并返回绝对路径。
+//
+// 仅回环可调用；返回的路径仍会经过路径白名单校验，与导入接口同一守卫。
+// 用户取消返回 code=0 + canceled=true，前端不应视为错误。
+func (h *FSHandler) OpenDialog(c *gin.Context) {
+	var req struct {
+		Mode  string   `json:"mode"`
+		Title string   `json:"title"`
+		Exts  []string `json:"exts"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request: "+err.Error())
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(req.Mode))
+	if mode == "" {
+		mode = "file"
+	}
+	if mode != "file" && mode != "folder" {
+		ErrorResponse(c, http.StatusBadRequest, -1, "mode must be 'file' or 'folder'")
+		return
+	}
+
+	opts := nativedialog.Options{Title: req.Title, Exts: req.Exts, Multi: true}
+	var paths []string
+	var err error
+	if mode == "folder" {
+		var folder string
+		folder, err = nativedialog.Default().OpenFolder(opts)
+		if folder != "" {
+			paths = []string{folder}
+		}
+	} else {
+		paths, err = nativedialog.Default().OpenFiles(opts)
+	}
+
+	switch {
+	case errors.Is(err, nativedialog.ErrCanceled):
+		SuccessResponse(c, gin.H{"paths": []string{}, "mode": mode, "canceled": true})
+		return
+	case errors.Is(err, nativedialog.ErrUnsupported):
+		ErrorResponse(c, http.StatusNotImplemented, 50101, "原生对话框不可用，请使用路径选择器")
+		return
+	case err != nil:
+		logger.Log.Warnf("[API FS] native dialog failed: %v", err)
+		ErrorResponse(c, http.StatusInternalServerError, -1, "打开原生对话框失败: "+err.Error())
+		return
+	}
+
+	if len(paths) == 0 {
+		SuccessResponse(c, gin.H{"paths": []string{}, "mode": mode, "canceled": true})
+		return
+	}
+	if !guardPaths(c, paths) {
+		return
+	}
+	SuccessResponse(c, gin.H{"paths": paths, "mode": mode, "canceled": false})
 }
 
 // RequireLoopback 限制文件系统浏览仅允许本机回环访问。

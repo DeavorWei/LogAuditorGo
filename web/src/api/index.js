@@ -92,6 +92,13 @@ export default {
   fsStat(paths) {
     return request.post('/fs/stat', { paths })
   },
+  // v1.2: Windows 原生文件/文件夹对话框（仅本机回环）
+  getDialogCapability() {
+    return request.get('/fs/dialog/capability')
+  },
+  openNativeDialog({ mode = 'file', exts = [], title = '' } = {}) {
+    return request.post('/fs/dialog', { mode, exts, title }, withTimeout(600000))
+  },
 
   // 系统统计与配置
   getStats() {
@@ -196,6 +203,10 @@ export default {
   deleteTaskFile(taskId, fileId) {
     return request.delete(`/tasks/${taskId}/files/${fileId}`)
   },
+  // v1.2: 导入预览（文件/设备/时间范围/冲突/预计耗时）
+  previewImport(taskId, payload) {
+    return request.post(`/tasks/${taskId}/import/preview`, payload, withTimeout(120000))
+  },
   // 按服务端本地路径导入日志（支持一次提交多个目录或文件路径）
   importTaskLogsByPaths(taskId, { paths, exts, recursive = true, conflictMode = 'rename', deviceVersion }, isAsync = true) {
     return request.post(`/tasks/${taskId}/import`, {
@@ -253,6 +264,21 @@ export default {
   },
   updateTask(taskId, data) {
     return request.patch(`/tasks/${taskId}`, data)
+  },
+  // v1.2: 案例字段（结论/状态/备注/工单号/标签）
+  updateTaskCase(taskId, data) {
+    return request.patch(`/tasks/${taskId}/case`, data)
+  },
+  getConclusionDraft(taskId) {
+    return request.get(`/tasks/${taskId}/conclusion/draft`)
+  },
+  getTaskSummary(taskId, options = {}) {
+    return request.get(`/tasks/${taskId}/summary`, options)
+  },
+  async getSummaryMarkdown(taskId) {
+    const res = await request.get(`/tasks/${taskId}/summary/markdown`, { responseType: 'text' })
+    if (typeof res === 'string') return res
+    return res?.data || ''
   },
   // WEB-08: 补齐 options 透传，供 useRequest 注入 AbortSignal 实现请求取消
   getTaskRCA(taskId, options = {}) {
@@ -387,6 +413,24 @@ export default {
     const link = document.createElement('a')
     link.href = url
     link.download = `report_${taskId}.${format}`
+    link.click()
+    window.URL.revokeObjectURL(url)
+  },
+  // v1.2: 证据包（流式 ZIP：报告 + 明细 + 元数据 + 说明）
+  async downloadEvidencePackage(taskId, taskName = '') {
+    const res = await request.get(`/tasks/${taskId}/export/package`, {
+      responseType: 'blob',
+      timeout: EXPORT_TIMEOUT
+    })
+    const safeName = String(taskName || '任务')
+      .replace(/[\\/:*?"<>|]+/g, '_')
+      .slice(0, 60)
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    const blob = new Blob([res], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${safeName}_证据包_${stamp}.zip`
     link.click()
     window.URL.revokeObjectURL(url)
   },
