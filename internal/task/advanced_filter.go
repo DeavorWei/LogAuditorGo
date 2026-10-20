@@ -387,6 +387,11 @@ func parsePositiveUintCSV(s string) []uint {
 // BuildLogFilterScope 编译统一查询请求体为 GORM Scope（未分页与排序），
 // 供日志列表查询、命中数统计、批量打标、批量摘标及报表导出共用单一逻辑源。
 func BuildLogFilterScope(query *gorm.DB, req model.LogQueryRequestBody) (*gorm.DB, error) {
+	// 0. v1.4: 默认视图隐藏注释行，但保留显式查看入口（注释行不参与知识匹配）
+	if req.ExcludeComment {
+		query = query.Where("module <> ?", "COMMENT")
+	}
+
 	// 1. 基础条件应用
 	if req.DeviceID != nil {
 		query = query.Where("device_id = ?", *req.DeviceID)

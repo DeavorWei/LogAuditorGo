@@ -31,6 +31,7 @@ import {
 } from '../src/utils/rca.js'
 import { matchTierMeta } from '../src/constants/matchTiers.js'
 import { CASE_STATUS, CASE_STATUS_OPTIONS, caseStatusMeta } from '../src/constants/caseStatus.js'
+import { severityLabel, severityLevel } from '../src/utils/severity.js'
 
 let passed = 0
 const check = (name, fn) => {
@@ -118,6 +119,23 @@ check('案例状态全部中文化且含未标注', () => {
   assert.equal(caseStatusMeta(CASE_STATUS.LOCATED).label, '已定位')
   assert.equal(caseStatusMeta('').label, '未标注')
   assert.equal(caseStatusMeta(undefined).tagType, 'info')
+})
+
+console.log('[6] 语义严重度（v1.4）')
+check('严重度标签为中文语义 + Lv.N', () => {
+  assert.equal(severityLabel(0), '严重 Lv.0')
+  assert.equal(severityLabel(2), '严重 Lv.2')
+  assert.equal(severityLabel(4), '错误 Lv.4')
+  assert.equal(severityLabel(5), '警告 Lv.5')
+  assert.equal(severityLabel(8), '提示 Lv.8')
+  assert.equal(severityLabel('bad'), '未知')
+})
+check('严重度颜色分级与注释行', () => {
+  assert.equal(severityLevel(1), 'crit')
+  assert.equal(severityLevel(4), 'err')
+  assert.equal(severityLevel(5), 'warn')
+  assert.equal(severityLevel(8), 'info')
+  assert.equal(severityLevel(4, 'COMMENT'), 'comment')
 })
 
 console.log(`\nUI contract check passed: ${passed} assertions`)

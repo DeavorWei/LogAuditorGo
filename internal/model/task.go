@@ -100,18 +100,20 @@ func (TaskFile) TableName() string {
 
 // LogQueryFilter 任务内日志查询过滤参数
 type LogQueryFilter struct {
-	Page       int         `form:"page" json:"page"`
-	PageSize   int         `form:"page_size" json:"page_size"`
-	DeviceID   *uint       `form:"device_id" json:"device_id"`
-	Module     string      `form:"module" json:"module"`
-	Severity   *int        `form:"severity" json:"severity"`
-	Brief      string      `form:"brief" json:"brief"`
-	Hostname   string      `form:"hostname" json:"hostname"`
-	Keyword    string      `form:"keyword" json:"keyword"`
-	SourceFile string      `form:"source_file" json:"source_file"`
-	Matched    *bool       `form:"matched" json:"matched"`
-	TimeStart  *CustomTime `form:"time_start" json:"time_start"`
-	TimeEnd    *CustomTime `form:"time_end" json:"time_end"`
+	Page       int    `form:"page" json:"page"`
+	PageSize   int    `form:"page_size" json:"page_size"`
+	DeviceID   *uint  `form:"device_id" json:"device_id"`
+	Module     string `form:"module" json:"module"`
+	Severity   *int   `form:"severity" json:"severity"`
+	Brief      string `form:"brief" json:"brief"`
+	Hostname   string `form:"hostname" json:"hostname"`
+	Keyword    string `form:"keyword" json:"keyword"`
+	SourceFile string `form:"source_file" json:"source_file"`
+	Matched    *bool  `form:"matched" json:"matched"`
+	// ExcludeComment 排除 COMMENT 注释行（v1.4）
+	ExcludeComment bool        `form:"exclude_comment" json:"exclude_comment"`
+	TimeStart      *CustomTime `form:"time_start" json:"time_start"`
+	TimeEnd        *CustomTime `form:"time_end" json:"time_end"`
 
 	// AfterID 游标分页锚点 (TASK-13)。
 	//

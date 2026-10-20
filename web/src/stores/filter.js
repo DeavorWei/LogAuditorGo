@@ -16,12 +16,16 @@ export const useFilterStore = defineStore('filter', () => {
     page: 1,
     pageSize: 100, // 默认单页显示 100 条日志 (可选 50, 100, 200, 300, 500)
     keyword: '',
+    // v1.4: 模块筛选（摘要/热点深链接使用）
+    module: '',
     severity: null,
     matched: null,
     deviceId: null,
     timeStart: null,
     timeEnd: null,
     viewMode: 'logs',
+    // v1.4: 默认隐藏 COMMENT 注释行（可一键显示）
+    showComments: false,
     // 排序维度与方向：默认按真实日志发生时间正序 (time_asc)
     sortBy: 'time',
     order: 'asc',
@@ -55,6 +59,12 @@ export const useFilterStore = defineStore('filter', () => {
     }
     if (!Array.isArray(loaded.excludeTagIds)) {
       loaded.excludeTagIds = []
+    }
+    if (typeof loaded.showComments !== 'boolean') {
+      loaded.showComments = false
+    }
+    if (typeof loaded.module !== 'string') {
+      loaded.module = ''
     }
     if (typeof loaded.untaggedOnly !== 'boolean') {
       loaded.untaggedOnly = false
@@ -130,11 +140,14 @@ export const useFilterStore = defineStore('filter', () => {
       order: f.order || 'asc'
     }
     if (f.keyword) body.keyword = f.keyword
+    if (f.module) body.module = f.module
     if (f.severity !== null && f.severity !== undefined) body.severity = f.severity
     if (f.matched !== null && f.matched !== undefined) body.matched = !!f.matched
     if (f.deviceId) body.device_id = f.deviceId
     if (f.timeStart) body.time_start = f.timeStart
     if (f.timeEnd) body.time_end = f.timeEnd
+    // v1.4: 默认隐藏注释行
+    body.exclude_comment = !f.showComments
 
     // 高级筛选组 (过滤空值，携带 disabled 标记)
     if (f.advanced && Array.isArray(f.advanced.conditions) && f.advanced.conditions.length > 0) {
@@ -175,7 +188,9 @@ export const useFilterStore = defineStore('filter', () => {
     const f = filters.value
     const params = { page, page_size: pageSize }
     if (f.keyword) params.keyword = f.keyword
+    if (f.module) params.module = f.module
     if (f.severity !== null && f.severity !== undefined) params.severity = f.severity
+    if (!f.showComments) params.exclude_comment = true
     if (f.matched !== null && f.matched !== undefined) params.matched = f.matched ? 'true' : 'false'
     if (f.deviceId) params.device_id = f.deviceId
     if (f.timeStart) params.time_start = f.timeStart

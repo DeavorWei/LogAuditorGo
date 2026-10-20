@@ -58,6 +58,8 @@
         <!-- 左栏：筛选面板 + 日志卡片流与 Zen 自适应网格 -->
         <WorkbenchLogStream
           ref="logStreamRef"
+          :task-id="currentTaskId"
+          :comment-count="commentCount"
           :task-devices="taskDevices"
           :selected-log="selectedLog"
           :latest-log-time="latestLogTimestamp"
@@ -186,8 +188,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
 import { useFeatureStore } from '@/stores/features'
+import { useFilterStore } from '@/stores/filter'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
-import { VIEW_MODE } from '@/constants/viewModes'
+import { VIEW_MODE, normalizeViewMode } from '@/constants/viewModes'
 import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
 import { useSubViewRouter } from '@/composables/useSubViewRouter'
 import { useWorkbenchHotkeys } from '@/composables/useWorkbenchHotkeys'
@@ -220,6 +223,7 @@ const route = useRoute()
 const router = useRouter()
 const taskStore = useTaskStore()
 const featureStore = useFeatureStore()
+const filterStore = useFilterStore()
 const workbenchUIStore = useWorkbenchUIStore()
 
 // 1. 子视图路由与实例刷新
@@ -287,6 +291,7 @@ const {
   rcaEvents,
   logRecords,
   totalLogs,
+  commentCount,
   loadingLogs,
   selectedLog,
   contextualizeMode,
@@ -500,7 +505,47 @@ const handleReanalyzeTask = () => {
   reanalyze(currentTask.value)
 }
 
-// 8. 视图模式与路由联动
+// 8. 深链接（v1.4）：筛选/视图/选中日志写入 URL；URL 携带 view 时恢复
+if (typeof route.query.view === 'string' && route.query.view) {
+  currentViewMode.value = normalizeViewMode(route.query.view)
+}
+
+let routeSyncTimer = null
+const syncQueryToRoute = () => {
+  if (!currentTaskId.value) return
+  const next = { ...route.query }
+  const setOrDelete = (key, value) => {
+    if (value === null || value === undefined || value === '') {
+      delete next[key]
+    } else {
+      next[key] = String(value)
+    }
+  }
+  setOrDelete('view', currentViewMode.value === VIEW_MODE.LOGS ? '' : currentViewMode.value)
+  setOrDelete('keyword', filterStore.filters.keyword)
+  setOrDelete('module', filterStore.filters.module)
+  setOrDelete('severity', filterStore.filters.severity)
+  setOrDelete('matched', filterStore.filters.matched)
+  setOrDelete('device_id', filterStore.filters.deviceId)
+  setOrDelete('log', selectedLog.value?.id)
+  if (JSON.stringify(next) === JSON.stringify(route.query)) return
+  router.replace({ path: route.path, query: next })
+}
+
+watch(
+  () => filterStore.filters,
+  () => {
+    if (routeSyncTimer) clearTimeout(routeSyncTimer)
+    routeSyncTimer = setTimeout(syncQueryToRoute, 300)
+  },
+  { deep: true }
+)
+watch(() => selectedLog.value?.id, () => {
+  if (routeSyncTimer) clearTimeout(routeSyncTimer)
+  routeSyncTimer = setTimeout(syncQueryToRoute, 250)
+})
+
+// 9. 视图模式与路由联动
 watch(currentViewMode, async (newMode) => {
   if (!currentTaskId.value) return
   if (newMode === VIEW_MODE.LOGS) {

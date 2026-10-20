@@ -38,6 +38,7 @@ export function useWorkbenchTaskContext(options = {}) {
   const rcaEvents = computed(() => taskStore.rcaEvents)
   const logRecords = computed(() => taskStore.logRecords)
   const totalLogs = computed(() => taskStore.logTotal)
+  const commentCount = ref(0)
 
   // 2. 日志选择与富文本状态
   const loadingLogs = ref(false)
@@ -99,10 +100,40 @@ export function useWorkbenchTaskContext(options = {}) {
     if (typeof query.module === 'string' && query.module.trim()) {
       filterStore.filters.module = query.module.trim()
     }
+    if (typeof query.keyword === 'string' && query.keyword.trim()) {
+      filterStore.filters.keyword = query.keyword.trim()
+    }
+    if (typeof query.severity === 'string' && query.severity.trim()) {
+      const severity = Number(query.severity)
+      if (Number.isFinite(severity)) filterStore.filters.severity = severity
+    }
+    if (typeof query.device_id === 'string' && query.device_id.trim()) {
+      const deviceID = Number(query.device_id)
+      if (Number.isFinite(deviceID)) filterStore.filters.deviceId = deviceID
+    }
     if (query.matched === 'false') {
       filterStore.filters.matched = false
     } else if (query.matched === 'true') {
       filterStore.filters.matched = true
+    }
+    if (query.comments === '1') {
+      filterStore.filters.showComments = true
+    }
+  }
+
+  // fetchCommentCount 刷新“显示注释（N）”计数（失败不影响主流程）
+  const fetchCommentCount = async () => {
+    if (!currentTaskId.value) {
+      commentCount.value = 0
+      return
+    }
+    try {
+      const res = await api.getCommentCount(currentTaskId.value)
+      if (res?.code === 0) {
+        commentCount.value = res.data?.count || 0
+      }
+    } catch (e) {
+      commentCount.value = 0
     }
   }
 
@@ -155,6 +186,7 @@ export function useWorkbenchTaskContext(options = {}) {
       taskStore.rcaIndexByLogId = new Map()
     }
     await Promise.all(pending)
+    await fetchCommentCount()
     await fetchLogs()
   }
 
@@ -369,6 +401,7 @@ export function useWorkbenchTaskContext(options = {}) {
     rcaEvents,
     logRecords,
     totalLogs,
+    commentCount,
     loadingLogs,
     selectedLog,
     contextualizeMode,

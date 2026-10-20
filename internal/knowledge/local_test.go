@@ -1,9 +1,11 @@
 package knowledge_test
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/matcher"
@@ -31,6 +33,13 @@ func setupLocalKnowledge(t *testing.T) (*knowledge.Service, *matcher.MatchEngine
 	t.Cleanup(func() {
 		_ = indexer.Close()
 		_ = storage.CloseKnowledgeDB()
+		// Windows 下 Bleve 段文件句柄释放有毫秒级延迟，重试删除避免误报清理失败
+		for i := 0; i < 20; i++ {
+			if err := os.RemoveAll(dir); err == nil {
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
 	})
 	return svc, engine
 }

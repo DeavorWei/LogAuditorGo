@@ -339,6 +339,19 @@ export default {
   queryTaskLogsUnified(taskId, queryBody, options = {}) {
     return request.post(`/tasks/${taskId}/logs/query`, queryBody, options)
   },
+  // v1.4: 时间直方图 / 聚合视图 / 注释行计数
+  getLogHistogram(taskId, data = {}, buckets = 48) {
+    return request.post(`/tasks/${taskId}/logs/histogram`, data, { params: { buckets }, timeout: 60000 })
+  },
+  getAggregatedLogs(taskId, data = {}, windowSeconds = 300, limit = 200) {
+    return request.post(`/tasks/${taskId}/logs/aggregated`, data, {
+      params: { window_seconds: windowSeconds, limit },
+      timeout: 60000
+    })
+  },
+  getCommentCount(taskId) {
+    return request.get(`/tasks/${taskId}/logs/comments/count`)
+  },
   getTaskModules(taskId) {
     return request.get(`/tasks/${taskId}/modules`)
   },

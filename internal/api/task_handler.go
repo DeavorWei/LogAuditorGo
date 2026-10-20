@@ -619,6 +619,73 @@ func (h *TaskHandler) PreviewImport(c *gin.Context) {
 	SuccessResponse(c, preview)
 }
 
+// GetLogHistogram 返回日志时间直方图（v1.4，严重度堆叠）。
+func (h *TaskHandler) GetLogHistogram(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+	var req model.LogQueryRequestBody
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+	buckets := parsePositiveInt(c.DefaultQuery("buckets", "60"), 60)
+	histogram, err := h.taskSvc.GetLogHistogram(taskID, req, buckets)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, histogram)
+}
+
+// GetAggregatedLogs 返回日志聚合视图（v1.4）。
+func (h *TaskHandler) GetAggregatedLogs(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 1<<20)
+	var req model.LogQueryRequestBody
+	if c.Request.Body != nil {
+		if err := c.ShouldBindBodyWith(&req, binding.JSON); err != nil && err != io.EOF {
+			ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
+			return
+		}
+	}
+	windowSeconds := parsePositiveInt(c.DefaultQuery("window_seconds", "300"), 300)
+	limit := parsePositiveInt(c.DefaultQuery("limit", "200"), 200)
+	groups, err := h.taskSvc.GetAggregatedLogs(taskID, req, windowSeconds, limit)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, gin.H{
+		"groups":         groups,
+		"window_seconds": windowSeconds,
+	})
+}
+
+// GetCommentCount 返回注释行数量（v1.4）。
+func (h *TaskHandler) GetCommentCount(c *gin.Context) {
+	taskID := c.Param("id")
+	if !isValidTaskID(taskID) {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid task ID format")
+		return
+	}
+	count, err := h.taskSvc.CountCommentLogs(taskID)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, gin.H{"count": count})
+}
+
 // GetTaskSummary 返回导入完成后的诊断摘要（v1.2）。
 func (h *TaskHandler) GetTaskSummary(c *gin.Context) {
 	taskID := c.Param("id")

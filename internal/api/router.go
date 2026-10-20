@@ -199,6 +199,10 @@ func SetupRouter(
 		v1.POST("/tasks/:id/import/preview", taskHandler.PreviewImport)
 		v1.GET("/tasks/:id/logs", taskHandler.QueryLogs)
 		v1.POST("/tasks/:id/logs/query", taskHandler.QueryLogsUnified)
+		// v1.4: 时间直方图 / 聚合视图 / 注释行计数
+		v1.POST("/tasks/:id/logs/histogram", taskHandler.GetLogHistogram)
+		v1.POST("/tasks/:id/logs/aggregated", taskHandler.GetAggregatedLogs)
+		v1.GET("/tasks/:id/logs/comments/count", taskHandler.GetCommentCount)
 		v1.POST("/tasks/:id/logs/sparkline", taskHandler.GetTaskLogSparkline)
 		v1.GET("/tasks/:id/modules", taskHandler.GetTaskModules)
 		v1.GET("/tasks/:id/facets", taskHandler.GetTaskFacets)

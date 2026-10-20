@@ -19,26 +19,28 @@ type AdvancedFilter struct {
 // LogQueryRequestBody 统一日志查询请求体 (POST /api/v1/tasks/:id/logs/query)
 // 同时服务于工作台日志查询、命中预览、批量打标以及结构化报告导出
 type LogQueryRequestBody struct {
-	Page          int             `json:"page"`
-	PageSize      int             `json:"page_size"`
-	AfterID       uint            `json:"after_id,omitempty"`
-	SortBy        string          `json:"sort_by,omitempty"`
-	Order         string          `json:"order,omitempty"`
-	Keyword       string          `json:"keyword,omitempty"`
-	Severity      *int            `json:"severity,omitempty"`
-	Matched       *bool           `json:"matched,omitempty"`
-	DeviceID      *uint           `json:"device_id,omitempty"`
-	Module        string          `json:"module,omitempty"`
-	Brief         string          `json:"brief,omitempty"`
-	Hostname      string          `json:"hostname,omitempty"`
-	SourceFile    string          `json:"source_file,omitempty"`
-	TimeStart     *CustomTime     `json:"time_start,omitempty"`
-	TimeEnd       *CustomTime     `json:"time_end,omitempty"`
-	Advanced      *AdvancedFilter `json:"advanced,omitempty"`
-	TagIDs        []uint          `json:"tag_ids,omitempty"`
-	TagLogic      string          `json:"tag_logic,omitempty"`       // "any" | "all"，默认为 "any"
-	ExcludeTagIDs []uint          `json:"exclude_tag_ids,omitempty"` // 严格排除的标签ID列表
-	UntaggedOnly  bool            `json:"untagged_only,omitempty"`   // 是否仅查询未打标日志
+	Page       int             `json:"page"`
+	PageSize   int             `json:"page_size"`
+	AfterID    uint            `json:"after_id,omitempty"`
+	SortBy     string          `json:"sort_by,omitempty"`
+	Order      string          `json:"order,omitempty"`
+	Keyword    string          `json:"keyword,omitempty"`
+	Severity   *int            `json:"severity,omitempty"`
+	Matched    *bool           `json:"matched,omitempty"`
+	DeviceID   *uint           `json:"device_id,omitempty"`
+	Module     string          `json:"module,omitempty"`
+	Brief      string          `json:"brief,omitempty"`
+	Hostname   string          `json:"hostname,omitempty"`
+	SourceFile string          `json:"source_file,omitempty"`
+	TimeStart  *CustomTime     `json:"time_start,omitempty"`
+	TimeEnd    *CustomTime     `json:"time_end,omitempty"`
+	Advanced   *AdvancedFilter `json:"advanced,omitempty"`
+	// ExcludeComment 为 true 时隐藏 COMMENT 注释行（v1.4，默认由前端开启隐藏）。
+	ExcludeComment bool   `json:"exclude_comment,omitempty"`
+	TagIDs         []uint `json:"tag_ids,omitempty"`
+	TagLogic       string `json:"tag_logic,omitempty"`       // "any" | "all"，默认为 "any"
+	ExcludeTagIDs  []uint `json:"exclude_tag_ids,omitempty"` // 严格排除的标签ID列表
+	UntaggedOnly   bool   `json:"untagged_only,omitempty"`   // 是否仅查询未打标日志
 }
 
 // TagCreateRequest 创建标签请求
@@ -66,10 +68,10 @@ type FilterPreset struct {
 	TaskID      string               `gorm:"size:64;index" json:"task_id"`
 	Name        string               `gorm:"size:64;not null" json:"name"`
 	Description string               `gorm:"size:255" json:"description,omitempty"`
-	IsSystem    bool                 `gorm:"default:false" json:"is_system"`       // 是否为系统内置专家场景
-	Scope       string               `gorm:"size:16;default:'task'" json:"scope"`  // "task" | "system"
-	ConfigJSON  string               `gorm:"type:text" json:"-"`                   // 序列化存储 (已剥离 page/pageSize)
-	Filters     *LogQueryRequestBody `gorm:"-" json:"filters,omitempty"`           // 反序列化只读字段
+	IsSystem    bool                 `gorm:"default:false" json:"is_system"`      // 是否为系统内置专家场景
+	Scope       string               `gorm:"size:16;default:'task'" json:"scope"` // "task" | "system"
+	ConfigJSON  string               `gorm:"type:text" json:"-"`                  // 序列化存储 (已剥离 page/pageSize)
+	Filters     *LogQueryRequestBody `gorm:"-" json:"filters,omitempty"`          // 反序列化只读字段
 	CreatedAt   time.Time            `json:"created_at"`
 	UpdatedAt   time.Time            `json:"updated_at"`
 }
@@ -78,8 +80,8 @@ func (FilterPreset) TableName() string { return "filter_presets" }
 
 // FilterPresetCreateRequest 保存筛选预设请求体
 type FilterPresetCreateRequest struct {
-	Name        string               `json:"name" binding:"required"`
-	Description string               `json:"description"`
+	Name        string              `json:"name" binding:"required"`
+	Description string              `json:"description"`
 	Filters     LogQueryRequestBody `json:"filters" binding:"required"`
 }
 
@@ -101,4 +103,3 @@ type SparklineResponse struct {
 	Buckets    []SparklineBucket `json:"buckets"`
 	PeakBucket *SparklineBucket  `json:"peak_bucket,omitempty"`
 }
-
