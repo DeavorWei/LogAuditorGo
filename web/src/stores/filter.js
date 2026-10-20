@@ -21,7 +21,7 @@ export const useFilterStore = defineStore('filter', () => {
     deviceId: null,
     timeStart: null,
     timeEnd: null,
-    viewMode: 'workbench',
+    viewMode: 'logs',
     // 排序维度与方向：默认按真实日志发生时间正序 (time_asc)
     sortBy: 'time',
     order: 'asc',

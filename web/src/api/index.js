@@ -97,6 +97,17 @@ export default {
   getStats() {
     return request.get('/system/stats')
   },
+  // v1.1: 功能开关（设置页实验室功能）
+  getFeatures() {
+    return request.get('/system/features')
+  },
+  updateFeatures(patch) {
+    return request.put('/system/features', patch)
+  },
+  // v1.1: 存储 / 运行环境概览
+  getStorageOverview() {
+    return request.get('/system/storage')
+  },
   getSystemConfig() {
     return request.get('/system/config')
   },
@@ -171,6 +182,10 @@ export default {
   },
   getTasks() {
     return request.get('/tasks')
+  },
+  // v1.1: 案例库分页检索（关键词/状态/时间范围/排序/分页）
+  queryTasks(params = {}, options = {}) {
+    return request.get('/tasks/query', { params, ...options })
   },
   getTask(id) {
     return request.get(`/tasks/${id}`)

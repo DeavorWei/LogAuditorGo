@@ -417,8 +417,10 @@ func (s *Service) DeleteTaskFile(taskID string, fileID uint) (*model.TaskInfo, e
 		if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, ""); fErr != nil {
 			logger.Log.Errorf("[Task Service] finalizeTaskInfo completed failed: %v", fErr)
 		}
-		s.MarkRCAQueuedSync(taskID)
-		s.TriggerTaskRCA(taskID, true)
+		if autoRCAEnabled() {
+			s.MarkRCAQueuedSync(taskID)
+			s.TriggerTaskRCA(taskID, true)
+		}
 	}
 
 	logger.Log.Infof("[Task Service] Task %s file %s (ID: %d) deleted, remaining files: %d, logs: %d",
@@ -648,13 +650,18 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 			tr.AddLog("warning", "本次导入有 %d 个文件处理失败，详见上方错误日志", len(failedFiles))
 		}
 		tr.SetStage("COMPLETE", "日志入库与知识匹配已完成，工作台已就绪")
-		tr.Complete(&taskInfo, fmt.Sprintf("分析就绪！共处理 %d 行日志，命中知识库 %d 条，RCA 根因拓扑后台推导中",
-			taskInfo.LogCount, taskInfo.MatchedCount))
+		doneMsg := fmt.Sprintf("分析就绪！共处理 %d 行日志，命中知识库 %d 条", taskInfo.LogCount, taskInfo.MatchedCount)
+		if autoRCAEnabled() {
+			doneMsg += "，关联事件（实验性）后台推导中"
+		}
+		tr.Complete(&taskInfo, doneMsg)
 	}
 
-	// ---------- 异步派发 RCA Worker ----------
-	s.MarkRCAQueuedSync(taskID)
-	s.TriggerTaskRCA(taskID, false)
+	// ---------- 异步派发关联事件分析（默认关闭，见规划 §5.5） ----------
+	if autoRCAEnabled() {
+		s.MarkRCAQueuedSync(taskID)
+		s.TriggerTaskRCA(taskID, false)
+	}
 
 	return &taskInfo, nil
 }
@@ -2721,16 +2728,22 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 		taskID, taskInfo.LogCount, taskInfo.MatchedCount)
 
 	if tr != nil {
-		tr.AddLog("info", "全流程重新分析完成: 共 %d 行日志，最新命中知识库 %d 条，已派发后台进行 RCA 根因拓扑分析",
-			taskInfo.LogCount, taskInfo.MatchedCount)
+		rcaHint := ""
+		if autoRCAEnabled() {
+			rcaHint = "，关联事件（实验性）后台推导中"
+		}
+		tr.AddLog("info", "全流程重新分析完成: 共 %d 行日志，最新命中知识库 %d 条%s",
+			taskInfo.LogCount, taskInfo.MatchedCount, rcaHint)
 		tr.SetStage("COMPLETE", "日志全流程重新解析已完成，工作台已就绪")
-		tr.Complete(&taskInfo, fmt.Sprintf("重新分析就绪！共重新解析 %d 行日志，命中知识库 %d 条，RCA 拓扑后台推导中",
-			taskInfo.LogCount, taskInfo.MatchedCount))
+		tr.Complete(&taskInfo, fmt.Sprintf("重新分析就绪！共重新解析 %d 行日志，命中知识库 %d 条%s",
+			taskInfo.LogCount, taskInfo.MatchedCount, rcaHint))
 	}
 
-	// ---------- 异步派发 RCA Worker (强制重新分析) ----------
-	s.MarkRCAQueuedSync(taskID)
-	s.TriggerTaskRCA(taskID, true)
+	// ---------- 异步派发关联事件分析（默认关闭，见规划 §5.5） ----------
+	if autoRCAEnabled() {
+		s.MarkRCAQueuedSync(taskID)
+		s.TriggerTaskRCA(taskID, true)
+	}
 
 	// 闭环 P3-1: 重新从 globalDB 查询最新的 taskInfo，确保返回给调用方的任务属性（如并发更新的设备类型、版本等）为最新权威状态
 	var latestTaskInfo model.TaskInfo

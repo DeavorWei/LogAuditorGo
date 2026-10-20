@@ -326,3 +326,55 @@ func TestRebuildFromDB_SuccessAndRollback(t *testing.T) {
 	}
 }
 
+// TestSearchExcludesMappingSentinelDocument 验证索引元数据哨兵文档不会计入命中数 (UX-08)。
+//
+// 背景：空知识库时 Bleve 索引里仍有 __mapping_version__ 文档，
+// 旧实现把它算进 Total，前端显示"检索结果（共 1 条）"却没有任何卡片。
+func TestSearchExcludesMappingSentinelDocument(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "bleve_sentinel_*")
+	if err != nil {
+		t.Fatalf("create temp dir failed: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	indexer, err := search.InitIndexer(filepath.Join(tmpDir, "sentinel.bleve"))
+	if err != nil {
+		t.Fatalf("init indexer failed: %v", err)
+	}
+	defer indexer.Close()
+
+	// 1. 空库：match_all 必须为 0，而不是 1
+	empty, err := indexer.Search(search.SearchFilter{Page: 1, PageSize: 20})
+	if err != nil {
+		t.Fatalf("empty search failed: %v", err)
+	}
+	if empty.Total != 0 {
+		t.Fatalf("empty index total=%d, want 0 (sentinel must be excluded)", empty.Total)
+	}
+	if len(empty.Hits) != 0 {
+		t.Fatalf("empty index hits=%d, want 0", len(empty.Hits))
+	}
+
+	// 2. 有知识条目：total 恰好等于知识数量，且分页大小不受哨兵挤占
+	items := []model.Knowledge{{
+		ID:        1,
+		EntryType: model.EntryTypeLog,
+		Module:    "BGP",
+		Severity:  4,
+		Brief:     "PEER_BACKWARD",
+		Message:   "The BGP peer went down.",
+	}}
+	if err := indexer.IndexKnowledge(items); err != nil {
+		t.Fatalf("index knowledge failed: %v", err)
+	}
+	res, err := indexer.Search(search.SearchFilter{Page: 1, PageSize: 1})
+	if err != nil {
+		t.Fatalf("search failed: %v", err)
+	}
+	if res.Total != 1 {
+		t.Fatalf("total=%d, want 1", res.Total)
+	}
+	if len(res.Hits) != 1 || res.Hits[0].KnowledgeID != 1 {
+		t.Fatalf("unexpected hits: %+v", res.Hits)
+	}
+}

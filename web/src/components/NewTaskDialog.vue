@@ -1,7 +1,7 @@
 <template>
   <el-dialog
     :model-value="modelValue"
-    title="新建日志审计任务"
+    :title="title"
     class="dlg dlg-md dlg-top"
     destroy-on-close
     @update:model-value="val => $emit('update:modelValue', val)"
@@ -11,18 +11,10 @@
       <el-form-item label="任务名称">
         <el-input
           v-model="form.taskName"
-          placeholder="例如: Core-SW-01故障排查-20260415"
+          placeholder="例如: Core-SW-01 故障排查-20260415"
+          maxlength="120"
+          show-word-limit
         />
-      </el-form-item>
-      <el-form-item label="设备类型">
-        <el-select v-model="form.deviceType" class="full-width-select">
-          <el-option
-            v-for="opt in DEVICE_TYPE_OPTIONS"
-            :key="opt.value"
-            :label="opt.label"
-            :value="opt.value"
-          />
-        </el-select>
       </el-form-item>
       <el-form-item v-if="showContent" label="粘贴 Syslog 日志文本">
         <el-input
@@ -32,6 +24,18 @@
           placeholder="粘贴设备日志，例如: Apr 15 2026 14:23:10 HUAWEI-CORE-SW01 %%01BGP/4/BGP_AUTH_FAILED(l)[1042]: BGP session authentication failed..."
         />
       </el-form-item>
+      <!--
+        产品决策（规划 §6.6）：任务级"设备类型"不参与任何匹配，
+        匹配上下文由设备行逐台决议，因此新建任务不再要求选择设备类型。
+        API 仍兼容该字段（旧任务/脚本可继续传），只是 UI 不再暴露。
+      -->
+      <el-alert
+        type="info"
+        :closable="false"
+        show-icon
+        title="设备型号无需在此选择"
+        description="系统会按日志中的 Hostname 自动识别设备型号；如需指定，可在任务创建后的“设备”抽屉中逐台配置。"
+      />
     </el-form>
 
     <template #footer>
@@ -51,27 +55,24 @@
 
 <script setup>
 import { ref } from 'vue'
-import { DEVICE_TYPE_OPTIONS, DEFAULT_DEVICE_TYPE } from '@/constants/deviceTypes'
 
 const props = defineProps({
   modelValue: { type: Boolean, default: false },
   showContent: { type: Boolean, default: false },
   loading: { type: Boolean, default: false },
   initialTaskName: { type: String, default: '' },
-  defaultDeviceType: { type: String, default: DEFAULT_DEVICE_TYPE }
+  title: { type: String, default: '新建排障任务' }
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm'])
 
 const form = ref({
   taskName: '',
-  deviceType: DEFAULT_DEVICE_TYPE,
   content: ''
 })
 
 const onOpen = () => {
   form.value.taskName = props.initialTaskName || ''
-  form.value.deviceType = props.defaultDeviceType || DEFAULT_DEVICE_TYPE
   form.value.content = ''
 }
 

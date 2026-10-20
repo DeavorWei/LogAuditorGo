@@ -130,7 +130,7 @@ export const useTaskStore = defineStore('task', () => {
    * 一次切换要等四个 RTT。这里改为 Promise.all 并发，
    * 但仍把 logs 放在最后以保证"自动选中首条日志"的逻辑拿到最终数据。
    */
-  const switchTask = async (taskId, fetchLogsFn) => {
+  const switchTask = async (taskId, fetchLogsFn, fetchRcaFn = null) => {
     currentTaskId.value = taskId || ''
     currentTask.value = taskList.value.find((t) => t.task_id === taskId) || null
     if (!taskId) {
@@ -143,11 +143,10 @@ export const useTaskStore = defineStore('task', () => {
       return
     }
 
-    await Promise.all([
-      fetchTaskFiles(taskId),
-      fetchTaskDevices(taskId),
-      fetchRCA(taskId)
-    ])
+    // 关联事件（实验性）按需拉取：调用方未提供 fetchRcaFn 时不请求
+    const pending = [fetchTaskFiles(taskId), fetchTaskDevices(taskId)]
+    if (typeof fetchRcaFn === 'function') pending.push(fetchRcaFn())
+    await Promise.all(pending)
     if (typeof fetchLogsFn === 'function') {
       await fetchLogsFn()
     }

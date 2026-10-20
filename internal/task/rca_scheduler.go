@@ -151,7 +151,17 @@ func (s *Service) CancelTaskRCA(taskID string) {
 	}
 }
 
-// TriggerTaskRCA 触发后台异步 RCA 分析任务
+// autoRCAEnabled 判断是否允许"自动"派发关联事件（实验性）分析。
+//
+// 产品决策（规划 §5.5）：RCA 只保留、不演进，默认关闭；导入 / 重分析 /
+// 删除文件后重算都不得自动运行，只有用户在设置页实验室功能显式开启后，
+// 从工作台"高级"抽屉手动触发才执行。这里每次实时读取配置快照，
+// 保证设置页开关无需重启即可生效。
+func autoRCAEnabled() bool {
+	return config.Features().RCA
+}
+
+// TriggerTaskRCA 触发后台异步 RCA 分析任务（手动入口，不受自动派发开关限制）
 func (s *Service) TriggerTaskRCA(taskID string, forceReanalyze bool) {
 	if !isValidTaskID(taskID) {
 		return

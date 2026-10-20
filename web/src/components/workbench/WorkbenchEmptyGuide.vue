@@ -4,7 +4,7 @@
       <div class="guide-header">
         <el-icon size="48" color="var(--brand-600)"><FolderOpened /></el-icon>
         <h3>任务「{{ taskName }}」尚未导入日志数据</h3>
-        <p>请选择以下方式之一，直接将本地日志导入到本任务中开始智能审计与 RCA 根因分析：</p>
+        <p>请选择以下方式之一，将本地日志导入本任务，系统会自动解析并匹配官方知识：</p>
       </div>
 
       <div class="guide-actions">

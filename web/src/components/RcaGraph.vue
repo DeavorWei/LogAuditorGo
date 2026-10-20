@@ -51,7 +51,7 @@ const renderChart = () => {
   nodeIdMap.set(props.rcaEvent.root_log_id, rootName)
 
   const links = []
-  const categories = [{ name: '根因事件' }, { name: '衍生事件' }]
+  const categories = [{ name: '关联起点' }, { name: '关联日志' }]
 
   impactEvents.forEach((ev) => {
     const nodeName = `[+${ev.delay_ms}ms] ${ev.module}/${ev.brief} (#${ev.log_id})`

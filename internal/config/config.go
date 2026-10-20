@@ -12,11 +12,39 @@ import (
 )
 
 type Config struct {
-	Server  ServerConfig  `mapstructure:"server" json:"server" yaml:"server"`
-	Storage StorageConfig `mapstructure:"storage" json:"storage" yaml:"storage"`
-	Log     LogConfig     `mapstructure:"log" json:"log" yaml:"log"`
-	RCA     RCAConfig     `mapstructure:"rca" json:"rca" yaml:"rca"`
-	Task    TaskConfig    `mapstructure:"task" json:"task" yaml:"task"`
+	Server   ServerConfig   `mapstructure:"server" json:"server" yaml:"server"`
+	Storage  StorageConfig  `mapstructure:"storage" json:"storage" yaml:"storage"`
+	Log      LogConfig      `mapstructure:"log" json:"log" yaml:"log"`
+	RCA      RCAConfig      `mapstructure:"rca" json:"rca" yaml:"rca"`
+	Task     TaskConfig     `mapstructure:"task" json:"task" yaml:"task"`
+	Features FeaturesConfig `mapstructure:"features" json:"features" yaml:"features"`
+}
+
+// FeaturesConfig 产品功能开关（v1.1 阶段引入）。
+//
+// 设计约束：
+//   - 只影响"是否自动执行 / 是否在 UI 暴露"，不删除任何既有能力；
+//   - RCA 默认关闭：规划要求"只保留、不演进"，关闭后导入/重分析不再自动派发，
+//     仅在设置页实验室功能开启、且用户从工作台"高级"抽屉手动触发时才运行；
+//   - BrowserUpload / LANMode / Masking 是产品明确"不做"的能力，保留字段用于
+//     配置自检与文档一致性，置 true 不会改变行为。
+type FeaturesConfig struct {
+	RCA              bool `mapstructure:"rca" json:"rca" yaml:"rca"`
+	NativeFileDialog bool `mapstructure:"native_file_dialog" json:"native_file_dialog" yaml:"native_file_dialog"`
+	BrowserUpload    bool `mapstructure:"browser_upload" json:"browser_upload" yaml:"browser_upload"`
+	LANMode          bool `mapstructure:"lan_mode" json:"lan_mode" yaml:"lan_mode"`
+	Masking          bool `mapstructure:"masking" json:"masking" yaml:"masking"`
+}
+
+// DefaultFeatures 返回产品默认开关状态（RCA 关闭，原生对话框开启）。
+func DefaultFeatures() FeaturesConfig {
+	return FeaturesConfig{
+		RCA:              false,
+		NativeFileDialog: true,
+		BrowserUpload:    false,
+		LANMode:          false,
+		Masking:          false,
+	}
 }
 
 type TaskConfig struct {
@@ -107,6 +135,17 @@ rca:
 
 task:
   parse_workers: 0          # 日志分行解析与参数提取并发协程数, 0 表示自适应当前宿主机 CPU 核心数
+
+# 产品功能开关
+#   rca: 关联事件（实验性）分析。默认关闭；开启后仅在工作台"高级"抽屉中手动触发，
+#        导入/重分析不会自动运行。本产品对 RCA 只保留、不演进。
+#   其余开关为产品边界的显式声明（浏览器上传/LAN 多用户/脱敏均不做），修改不改变行为。
+features:
+  rca: false
+  native_file_dialog: true
+  browser_upload: false
+  lan_mode: false
+  masking: false
 `
 
 func Load(configPath string) (*Config, error) {
@@ -132,6 +171,11 @@ func Load(configPath string) (*Config, error) {
 	v.SetDefault("rca.timeout", 300)
 	v.SetDefault("rca.concurrency", 2)
 	v.SetDefault("task.parse_workers", 0)
+	v.SetDefault("features.rca", false)
+	v.SetDefault("features.native_file_dialog", true)
+	v.SetDefault("features.browser_upload", false)
+	v.SetDefault("features.lan_mode", false)
+	v.SetDefault("features.masking", false)
 
 	targetConfigFile := configPath
 	if targetConfigFile == "" {
@@ -384,4 +428,66 @@ func UpdateLogConfig(maxSizeMB, maxDays int, level, format string) (*LogConfig, 
 	}
 
 	return &currentLogCfg, nil
+}
+
+// Features 返回当前功能开关快照。
+//
+// 未初始化配置（单元测试/工具函数）时返回安全默认值：RCA 关闭，
+// 从而保证"默认不自动跑 RCA"不会因为漏初始化而被破坏。
+func Features() FeaturesConfig {
+	configMu.RLock()
+	defer configMu.RUnlock()
+	if GlobalConfig == nil {
+		return DefaultFeatures()
+	}
+	return GlobalConfig.Features
+}
+
+// featureToggleKeys 允许运行时修改的开关；其余开关属于产品边界声明，不可开启。
+var featureToggleKeys = map[string]bool{
+	"rca":                true,
+	"native_file_dialog": true,
+}
+
+// ErrFeatureNotImplemented 表示该开关属于"产品明确不做"的能力，禁止通过接口开启。
+var ErrFeatureNotImplemented = fmt.Errorf("feature is not implemented by product decision")
+
+// UpdateFeatures 按补丁更新功能开关并持久化到配置文件。
+//
+// 仅允许修改 featureToggleKeys 中的开关；浏览器上传 / LAN 多用户 / 脱敏
+// 属于规划中"本年度明确不做"的能力，显式拒绝而不是静默接受，
+// 避免使用者误以为自己开启了某个不存在的功能。
+func UpdateFeatures(patch map[string]bool) (FeaturesConfig, error) {
+	if len(patch) == 0 {
+		return Features(), nil
+	}
+
+	configMu.Lock()
+	if GlobalConfig == nil {
+		configMu.Unlock()
+		return DefaultFeatures(), fmt.Errorf("config not initialized")
+	}
+	for key := range patch {
+		if !featureToggleKeys[key] {
+			snapshot := GlobalConfig.Features
+			configMu.Unlock()
+			return snapshot, fmt.Errorf("%w: %s", ErrFeatureNotImplemented, key)
+		}
+	}
+	next := GlobalConfig.Features
+	for key, enabled := range patch {
+		switch key {
+		case "rca":
+			next.RCA = enabled
+		case "native_file_dialog":
+			next.NativeFileDialog = enabled
+		}
+	}
+	GlobalConfig.Features = next
+	configMu.Unlock()
+
+	if err := Save(""); err != nil {
+		return next, fmt.Errorf("persist features failed: %w", err)
+	}
+	return next, nil
 }

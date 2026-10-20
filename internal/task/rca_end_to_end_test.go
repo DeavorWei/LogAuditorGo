@@ -42,7 +42,7 @@ func (c *stepCancelContext) Done() <-chan struct{} {
 	}
 	return c.doneCh
 }
-func (c *stepCancelContext) Err() error { return c.err }
+func (c *stepCancelContext) Err() error        { return c.err }
 func (c *stepCancelContext) Value(key any) any { return nil }
 
 func setupE2ETaskService(t *testing.T) (*task.Service, *gorm.DB, string, func()) {
@@ -77,6 +77,8 @@ func setupE2ETaskService(t *testing.T) (*task.Service, *gorm.DB, string, func())
 			Timeout:     300,
 			Concurrency: 2,
 		},
+		// v1.1 起 RCA 默认关闭；本文件验证"开启后"的异步链路完整性。
+		Features: config.FeaturesConfig{RCA: true, NativeFileDialog: true},
 	}
 	config.GlobalConfig = cfg
 
@@ -521,11 +523,22 @@ func TestE2E_RCA_NilEngineSafe(t *testing.T) {
 	defer os.RemoveAll(tmpDir)
 
 	dbPath := filepath.Join(tmpDir, "knowledge.db")
+	_ = storage.CloseKnowledgeDB()
 	globalDB, err := storage.InitKnowledgeDB(dbPath)
 	if err != nil {
 		t.Fatalf("init global db failed: %v", err)
 	}
 	defer storage.CloseKnowledgeDB()
+
+	// 该用例验证"导入后自动派发 + nil 引擎安全降级"，需显式开启实验开关。
+	oldConfig := config.GlobalConfig
+	cfg := config.Config{}
+	if oldConfig != nil {
+		cfg = *oldConfig
+	}
+	cfg.Features.RCA = true
+	config.GlobalConfig = &cfg
+	defer func() { config.GlobalConfig = oldConfig }()
 
 	taskDir := filepath.Join(tmpDir, "tasks")
 	// 显式传入 nil 作为 rcaEngine

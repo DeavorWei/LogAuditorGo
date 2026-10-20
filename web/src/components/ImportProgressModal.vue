@@ -230,7 +230,7 @@ const dialogTitle = computed(() => {
   if (snapshot.value.job_type === 'hdx') {
     return '华为官方 HDX 产品文档知识库导入进度'
   }
-  return '日志审计与 RCA 根因分析处理流水线'
+  return '日志解析与知识匹配处理流水线'
 })
 
 const isRunning = computed(() => snapshot.value.status === 'running')

@@ -40,7 +40,12 @@ func TestEndToEndSystemIntegration(t *testing.T) {
 			TaskDir:     filepath.Join(tmpDir, "tasks"),
 			UploadDir:   filepath.Join(tmpDir, "uploads"),
 		},
+		// 本用例刻意覆盖"旧版全链路（含自动 RCA）"：
+		// v1.1 起 RCA 默认关闭，只有显式开启实验室功能才会在导入后自动派发。
+		Features: config.FeaturesConfig{RCA: true, NativeFileDialog: true},
 	}
+	// 自动派发开关由 config.Features() 读取全局配置快照，测试必须发布该配置
+	config.GlobalConfig = cfg
 
 	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
 	if err != nil {
@@ -199,4 +204,3 @@ func TestPortConflictRetryIntegration(t *testing.T) {
 		t.Errorf("expected actual port > %d, got %d", blockedPort, actualPort)
 	}
 }
-

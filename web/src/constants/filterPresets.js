@@ -57,7 +57,7 @@ export const SYSTEM_EXPERT_PRESETS = [
   {
     id: 'sys_unmatched_kb',
     name: '未收录知识库日志定位',
-    description: '精确定位官方知识库字典未覆盖或置信度偏低的边缘告警日志',
+    description: '精确定位官方知识库字典未覆盖或匹配置信度偏低的边缘告警日志',
     icon: 'QuestionFilled',
     colorToken: 'var(--info-strong)',
     filters: {

@@ -5,6 +5,7 @@ import { useTaskStore } from '@/stores/task'
 import { useFilterStore } from '@/stores/filter'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { useTagStore } from '@/stores/tag'
+import { useFeatureStore } from '@/stores/features'
 import { VIEW_MODE } from '@/constants/viewModes'
 import { formatLogDetail } from '@/utils/logFormatter'
 
@@ -26,6 +27,7 @@ export function useWorkbenchTaskContext(options = {}) {
   const filterStore = useFilterStore()
   const workbenchUIStore = useWorkbenchUIStore()
   const tagStore = useTagStore()
+  const featureStore = useFeatureStore()
 
   // 1. 任务与设备基础状态
   const currentTaskId = computed(() => taskStore.currentTaskId)
@@ -122,12 +124,20 @@ export function useWorkbenchTaskContext(options = {}) {
     filterStore.filters.timeEnd = null
     selectedLog.value = null
 
-    await Promise.all([
+    // 关联事件（实验性）默认关闭：开关关闭时不请求 RCA 事件，
+    // 满足"任务切换不拉取关联事件"的产品约束（规划 §5.5）。
+    const pending = [
       taskStore.fetchTaskFiles(taskId),
       taskStore.fetchTaskDevices(taskId),
-      taskStore.fetchRCA(taskId),
       tagStore.fetchTags(taskId)
-    ])
+    ]
+    if (featureStore.rcaEnabled) {
+      pending.push(taskStore.fetchRCA(taskId))
+    } else {
+      taskStore.rcaEvents = []
+      taskStore.rcaIndexByLogId = new Map()
+    }
+    await Promise.all(pending)
     await fetchLogs()
   }
 
@@ -248,6 +258,7 @@ export function useWorkbenchTaskContext(options = {}) {
     await fetchLogs()
     checkAndPollRcaStatus(currentTask.value, currentTaskId.value)
     if (
+      featureStore.rcaEnabled &&
       currentTask.value?.rca_status !== 'QUEUED' &&
       currentTask.value?.rca_status !== 'RUNNING'
     ) {
@@ -272,7 +283,7 @@ export function useWorkbenchTaskContext(options = {}) {
       if (res.code === 0 && res.data?.records?.length > 0) {
         selectedLog.value = res.data.records[0]
         if (typeof setCurrentViewMode === 'function') {
-          setCurrentViewMode(VIEW_MODE.WORKBENCH)
+          setCurrentViewMode(VIEW_MODE.LOGS)
         }
       }
     } catch (e) {
@@ -288,10 +299,11 @@ export function useWorkbenchTaskContext(options = {}) {
   }
 
   const handleLogImportCompleted = async (result) => {
-    const rcaMsg =
-      result?.rca_status === 'COMPLETED' && result?.rca_count > 0
-        ? `，识别出 ${result.rca_count} 个 RCA 根因事件`
-        : `。根因分析 (RCA) 已在后台启动推导，可在拓扑面板查看`
+    const rcaMsg = featureStore.rcaEnabled
+      ? (result?.rca_status === 'COMPLETED' && result?.rca_count > 0
+          ? `，识别出 ${result.rca_count} 个关联事件（实验性）`
+          : '，关联事件（实验性）已后台分析')
+      : ''
     ElMessage.success({
       message: `日志分析就绪！共处理 ${result?.log_count || 0} 行日志，匹配知识 ${result?.matched_count || 0} 条${rcaMsg}`,
       duration: 5000

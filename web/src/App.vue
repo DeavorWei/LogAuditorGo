@@ -15,23 +15,23 @@
       >
         <el-menu-item index="/">
           <el-icon><Odometer /></el-icon>
-          <span>仪表盘</span>
+          <span>概览</span>
         </el-menu-item>
         <el-menu-item index="/audit">
           <el-icon><DataAnalysis /></el-icon>
-          <span>日志审计工作台</span>
+          <span>排障工作台</span>
         </el-menu-item>
         <el-menu-item index="/knowledge">
           <el-icon><Reading /></el-icon>
-          <span>知识库中心</span>
+          <span>知识中心</span>
         </el-menu-item>
         <el-menu-item index="/tasks">
           <el-icon><List /></el-icon>
-          <span>历史任务</span>
+          <span>案例库</span>
         </el-menu-item>
         <el-menu-item index="/documents">
           <el-icon><FolderOpened /></el-icon>
-          <span>产品文档管理</span>
+          <span>产品文档</span>
         </el-menu-item>
         <el-menu-item index="/settings">
           <el-icon><Setting /></el-icon>

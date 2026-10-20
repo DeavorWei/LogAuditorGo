@@ -393,7 +393,7 @@ const deviceFormRules = {
     { min: 1, max: 64, message: '设备名称长度需在 1~64 个字符之间', trigger: 'blur' }
   ],
   device_type: [
-    { required: true, message: '请选择设备类型', trigger: 'change' }
+    { required: true, message: '请选择设备型号/产品族', trigger: 'change' }
   ],
   hostname: [
     {

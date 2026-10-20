@@ -29,11 +29,25 @@
 
     <!-- 知识列表 -->
     <div class="results-container" v-loading="loading">
-      <div class="results-header">
-        <span>检索结果 (共 {{ total }} 条)</span>
+      <div v-if="total > 0" class="results-header">
+        <span>检索结果（共 {{ total }} 条）</span>
       </div>
 
-      <div class="knowledge-grid">
+      <!-- 错误态：与"没有匹配知识"明确区分，并提供重试 -->
+      <el-result
+        v-if="searchError && !loading"
+        icon="error"
+        title="知识库检索失败"
+        :sub-title="searchError"
+        class="state-block"
+      >
+        <template #extra>
+          <el-button type="primary" @click="fetchKnowledge">重试</el-button>
+          <el-button @click="resetSearch">清空条件</el-button>
+        </template>
+      </el-result>
+
+      <div v-else class="knowledge-grid">
         <el-card
           v-for="k in (knowledgeList || [])"
           :key="k.knowledge_id || k.id"
@@ -47,7 +61,7 @@
           <div class="kb-card-top">
             <el-tag size="small" :type="k.entry_type === 'ALARM' ? 'warning' : 'primary'">{{ k.entry_type }}</el-tag>
             <span class="kb-mod">{{ k.module }} / {{ k.brief }}</span>
-            <el-tag size="small" type="danger" effect="plain">Level {{ k.severity }}</el-tag>
+            <SeverityTag :severity="k.severity" />
           </div>
           <div class="kb-card-desc">{{ k.description || k.message }}</div>
           <div v-if="k.cause" class="kb-card-cause"><strong>可能原因:</strong> {{ k.cause }}</div>
@@ -55,9 +69,21 @@
         </el-card>
       </div>
 
-      <el-empty v-if="!loading && (!knowledgeList || knowledgeList.length === 0)" description="未检索到匹配的故障知识" />
+      <el-empty
+        v-if="!loading && !searchError && (!knowledgeList || knowledgeList.length === 0)"
+        :description="emptyDescription"
+        class="state-block"
+      >
+        <div class="empty-actions">
+          <el-button @click="$router.push('/documents')">去导入 HDX 文档</el-button>
+          <el-button v-if="hasFilter" @click="resetSearch">清空筛选条件</el-button>
+        </div>
+        <p class="empty-tip">
+          知识库为空时，日志匹配率会一直是 0。请先在“产品文档”中导入华为官方 HDX 文档（support.huawei.com/enterprise 下载）。
+        </p>
+      </el-empty>
 
-      <div class="pagination-bar">
+      <div v-if="total > 0" class="pagination-bar">
         <el-pagination
           v-model:current-page="query.page"
           :page-size="query.pageSize"
@@ -75,7 +101,7 @@
           <h2>{{ selectedKnowledge.module }} / {{ selectedKnowledge.brief }}</h2>
           <div class="drawer-tags">
             <el-tag>{{ selectedKnowledge.entry_type }}</el-tag>
-            <el-tag type="danger">Severity: {{ selectedKnowledge.severity }}</el-tag>
+            <SeverityTag :severity="selectedKnowledge.severity" />
             <el-tag v-if="selectedKnowledge.trap_oid" type="warning">OID: {{ selectedKnowledge.trap_oid }}</el-tag>
             <el-tag v-if="selectedKnowledge.mib_name" type="info">MIB: {{ selectedKnowledge.mib_name }}</el-tag>
           </div>
@@ -98,7 +124,7 @@
         </div>
 
         <div class="detail-section">
-          <h3><el-icon><Tools /></el-icon> 官方处理排错步骤</h3>
+          <h3><el-icon><Tools /></el-icon> 参考排查建议（非官方原文）</h3>
           <div class="detail-box action-box">{{ selectedKnowledge.action || '按标准网络排错规范处理' }}</div>
         </div>
 
@@ -116,10 +142,14 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Tickets, Warning, Search, Tools, Files } from '@element-plus/icons-vue'
 import api from '@/api'
+import SeverityTag from '@/components/SeverityTag.vue'
+
+const route = useRoute()
 
 const loading = ref(false)
 const knowledgeList = ref([])
@@ -130,12 +160,17 @@ const selectedKnowledge = ref(null)
 const searchError = ref('')
 
 const query = ref({
-  keyword: '',
+  keyword: typeof route.query.keyword === 'string' ? route.query.keyword : '',
   module: '',
   entryType: '',
   page: 1,
   pageSize: 18
 })
+
+const hasFilter = computed(() => Boolean(query.value.keyword || query.value.module || query.value.entryType))
+const emptyDescription = computed(() =>
+  hasFilter.value ? '未检索到匹配的故障知识' : '知识库还没有可供检索的内容'
+)
 
 const handleSearch = () => {
   query.value.page = 1
@@ -288,6 +323,25 @@ onMounted(() => {
   margin-top: 16px;
   display: flex;
   justify-content: flex-end;
+}
+
+.state-block {
+  padding: 24px 0;
+}
+
+.empty-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.empty-tip {
+  max-width: 560px;
+  margin: 0 auto;
+  font-size: var(--fs-sm);
+  color: var(--text-secondary);
+  line-height: 1.7;
 }
 
 .drawer-content {

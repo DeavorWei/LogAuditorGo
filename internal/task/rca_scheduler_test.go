@@ -8,6 +8,7 @@ import (
 
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/config"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
@@ -43,9 +44,20 @@ func setupTestTaskService(t *testing.T) (*task.Service, *gorm.DB, string, func()
 	rcaEngine := rootcause.NewEngine(nil)
 	taskDir := filepath.Join(tmpDir, "tasks")
 
+	// v1.1 起自动 RCA 默认关闭；本文件验证调度器行为，测试期间显式开启。
+	oldConfig := config.GlobalConfig
+	cfg := config.Config{}
+	if oldConfig != nil {
+		cfg = *oldConfig
+	}
+	cfg.Features.RCA = true
+	cfg.Features.NativeFileDialog = true
+	config.GlobalConfig = &cfg
+
 	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
 
 	cleanup := func() {
+		config.GlobalConfig = oldConfig
 		_ = indexer.Close()
 		_ = storage.CloseKnowledgeDB()
 		_ = os.RemoveAll(tmpDir)

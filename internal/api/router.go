@@ -15,6 +15,7 @@ import (
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
 	"logauditorgo/internal/task"
+	"logauditorgo/internal/version"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/web"
 )
@@ -98,7 +99,7 @@ func SetupRouter(
 	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer)
 	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
 	statsHandler := NewStatsHandler(globalDB)
-	systemHandler := NewSystemHandler()
+	systemHandler := NewSystemHandler(globalDB)
 	progressHandler := NewProgressHandler()
 
 	// ARCH-11: 暴露统计处理器引用，供导入/删除等业务变更主动失效缓存，
@@ -129,6 +130,10 @@ func SetupRouter(
 		v1.POST("/system/config/log", systemHandler.UpdateLogConfig)
 		v1.GET("/system/logs", systemHandler.GetLogs)
 		v1.POST("/system/logs/clean", systemHandler.CleanLogs)
+		// v1.1: 功能开关（实验室功能）与存储概览
+		v1.GET("/system/features", systemHandler.GetFeatures)
+		v1.PUT("/system/features", systemHandler.UpdateFeatures)
+		v1.GET("/system/storage", systemHandler.GetStorage)
 		// KB-01: 索引健康状态（静态路径，避免与 /knowledge/:id 通配路由冲突）
 		v1.GET("/system/knowledge-index/status", knowHandler.GetIndexStatus)
 
@@ -148,6 +153,8 @@ func SetupRouter(
 		// 任务分析
 		v1.POST("/tasks", taskHandler.CreateTask)
 		v1.GET("/tasks", taskHandler.ListTasks)
+		// 案例库分页检索：静态段必须注册在 :id 通配之前，避免被任务详情吞掉
+		v1.GET("/tasks/query", taskHandler.QueryTasks)
 		v1.GET("/tasks/:id", taskHandler.GetTask)
 		v1.PATCH("/tasks/:id", taskHandler.UpdateTask)
 		v1.PUT("/tasks/:id", taskHandler.UpdateTask)
@@ -252,7 +259,7 @@ func SetupRouter(
 		c.JSON(http.StatusOK, gin.H{
 			"name":    "LogAuditorGo API Server",
 			"status":  "running",
-			"version": "v1.0.0",
+			"version": version.String,
 			"hint":    "Frontend static files not found. Please build web project before compiling.",
 		})
 	})

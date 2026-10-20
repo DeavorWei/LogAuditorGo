@@ -202,9 +202,9 @@
           </div>
         </div>
 
-        <!-- 关联根因预警 -->
-        <div v-if="currentRca" class="rca-alert">
-          <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联根因事件预警</div>
+        <!-- 关联事件提示（实验性，默认关闭） -->
+        <div v-if="currentRca && rcaEnabled" class="rca-alert">
+          <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联事件提示（实验性）</div>
           <div>{{ currentRca.root_cause_summary }}</div>
         </div>
       </div>
@@ -228,7 +228,7 @@
                 </div>
                 <div class="kb-meta">
                   <span class="badge-tier">匹配层级: {{ log.match_tier }}</span>
-                  <span class="badge-conf">置信度: {{ (log.match_confidence * 100).toFixed(0) }}%</span>
+                  <span class="badge-conf">匹配置信度: {{ matchConfidenceText }}</span>
                   <span v-if="contextualizeMode && matchedParamCount > 0" class="badge-ctx">
                     已将现场 {{ matchedParamCount }} 个参数动态注入至排查步骤
                   </span>
@@ -314,18 +314,6 @@
             </div>
           </el-tab-pane>
 
-          <el-tab-pane label="根因传播拓扑 (RCA)" name="rca">
-            <div v-if="currentRca" class="rca-tab-content">
-              <RcaGraph :rcaEvent="currentRca" />
-              <div class="rca-guide">
-                <div class="guide-title"><el-icon><InfoFilled /></el-icon> 根因处置指南</div>
-                <div>{{ currentRca.recommended_action }}</div>
-              </div>
-            </div>
-            <div v-else class="empty-kb">
-              <el-empty description="当前选中日志未触发协议级连环故障传播链路" />
-            </div>
-          </el-tab-pane>
         </el-tabs>
       </div>
     </div>
@@ -337,7 +325,6 @@ import { computed, ref, inject, onMounted, onBeforeUnmount } from 'vue'
 import { formatTime } from '@/utils/format'
 import { ArrowUp, ArrowDown, Close, InfoFilled, Plus, PriceTag, Reading, Tickets, WarningFilled, Search, Tools, Warning, Document } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import RcaGraph from '@/components/RcaGraph.vue'
 import { useTagStore } from '@/stores/tag'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import { LOG_DETAIL_CONTEXT_KEY, getMatchedDocName } from '@/utils/logFormatter'
@@ -363,6 +350,10 @@ const props = defineProps({
   totalCount: {
     type: Number,
     default: 0
+  },
+  rcaEnabled: {
+    type: Boolean,
+    default: false
   },
   matchedRca: {
     type: Object,
@@ -457,6 +448,13 @@ const isPrevShaking = ref(false)
 const isNextShaking = ref(false)
 
 const currentRca = computed(() => props.matchedRca)
+
+// 匹配置信度：缺失/为 0 时显示"未知"，避免 0% 被误读为"确定不匹配"
+const matchConfidenceText = computed(() => {
+  const value = Number(props.log?.match_confidence)
+  if (!Number.isFinite(value) || value <= 0) return '未知'
+  return `${Math.round(Math.min(value, 1) * 100)}%`
+})
 
 const dialogVisible = computed({
   get() {

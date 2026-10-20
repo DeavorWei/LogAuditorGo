@@ -20,9 +20,11 @@ import (
 	"logauditorgo/internal/netutil"
 	"logauditorgo/internal/rootcause"
 	"logauditorgo/internal/search"
+	"logauditorgo/internal/singleinstance"
 	"logauditorgo/internal/storage"
 	"logauditorgo/internal/task"
 	"logauditorgo/internal/tray"
+	"logauditorgo/internal/version"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
 )
@@ -57,7 +59,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("LogAuditorGo v1.0.0")
+		fmt.Println("LogAuditorGo " + version.String)
 		return
 	}
 
@@ -104,6 +106,27 @@ func main() {
 	log.Infof("Starting LogAuditorGo server on port %d...", cfg.Server.Port)
 	log.Infof("File logging active at dir: %s (Max: %dMB, Retain: %ddays)", cfg.Log.Dir, cfg.Log.MaxSizeMB, cfg.Log.MaxDays)
 
+	// 2.5 单实例保护（规划 §4.3 / UX-17）
+	//
+	// 任务库是物理 SQLite 文件，双开会并发写同一份 WAL。这里在打开任何数据库
+	// 之前抢占锁；第二个实例只负责把已在运行的 Web 控制台拉起来后退出。
+	// 环境变量 LOGAUDITORGO_DISABLE_SINGLE_INSTANCE=1 可关闭该保护（调试/自动化）。
+	var instanceLock *singleinstance.Lock
+	if os.Getenv("LOGAUDITORGO_DISABLE_SINGLE_INSTANCE") != "1" {
+		lock, lockErr := singleinstance.Acquire(cfg.Storage.DataDir)
+		switch {
+		case errors.Is(lockErr, singleinstance.ErrAlreadyRunning):
+			openRunningInstance(cfg, *noBrowser)
+			return
+		case lockErr != nil:
+			// 只读数据目录 / 权限受限时不阻断启动，仅告警
+			log.Warnf("单实例保护初始化失败（继续启动，双开可能损坏数据）: %v", lockErr)
+		default:
+			instanceLock = lock
+			defer instanceLock.Release()
+		}
+	}
+
 	// 3. 注册 SQLite 自定义函数并初始化全局知识库
 	storage.RegisterSQLiteFunctions()
 	globalDB, err := storage.InitKnowledgeDB(cfg.Storage.KnowledgeDB)
@@ -141,6 +164,18 @@ func main() {
 	// 端口顺延后同步更新配置对象与实际服务访问地址
 	cfg.Server.Port = actualPort
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, actualPort)
+
+	webURLForLock := fmt.Sprintf("http://%s:%d", normalizedWebHost(cfg.Server.Host), actualPort)
+	if instanceLock != nil {
+		if err := instanceLock.Publish(singleinstance.InstanceInfo{
+			PID:       os.Getpid(),
+			URL:       webURLForLock,
+			Version:   version.String,
+			StartedAt: time.Now(),
+		}); err != nil {
+			log.Warnf("写入实例信息失败（第二个实例将无法自动打开控制台）: %v", err)
+		}
+	}
 
 	r := api.SetupRouter(cfg, globalDB, knowledgeSvc, indexer, taskSvc)
 	server := &http.Server{
@@ -182,11 +217,7 @@ func main() {
 			select {
 			case <-readyCh:
 				time.Sleep(150 * time.Millisecond)
-				webHost := cfg.Server.Host
-				if webHost == "0.0.0.0" || webHost == "" {
-					webHost = "127.0.0.1"
-				}
-				webURL := fmt.Sprintf("http://%s:%d", webHost, actualPort)
+				webURL := fmt.Sprintf("http://%s:%d", normalizedWebHost(cfg.Server.Host), actualPort)
 				log.Infof("正在调用系统默认浏览器打开 Web 控制台: %s", webURL)
 				if err := browser.Open(webURL); err != nil {
 					log.Warnf("调用系统默认浏览器打开失败: %v, 请手动在浏览器访问: %s", err, webURL)
@@ -206,7 +237,7 @@ func main() {
 			Port:     actualPort,
 			LogDir:   cfg.Log.Dir,
 			DataDir:  filepath.Dir(cfg.Storage.KnowledgeDB),
-			Version:  "v1.0.0",
+			Version:  version.String,
 			Theme:    tray.IconTheme(*trayTheme),
 			IconPath: *iconPath,
 			OnExit: func() {
@@ -292,5 +323,37 @@ func main() {
 	// 若 HTTP 层启动即失败，需要以非零退出码告知调用方（systemd / 脚本依赖）
 	if err := <-serverErrCh; err != nil {
 		os.Exit(1)
+	}
+}
+
+// normalizedWebHost 把监听地址归一化为浏览器可访问的主机名。
+func normalizedWebHost(host string) string {
+	if host == "0.0.0.0" || host == "" || host == "::" {
+		return "127.0.0.1"
+	}
+	return host
+}
+
+// openRunningInstance 在检测到已有实例时，打开其 Web 控制台（或打印地址）。
+func openRunningInstance(cfg *config.Config, noBrowser bool) {
+	target := ""
+	pid := 0
+	if info, err := singleinstance.ReadInstanceInfo(cfg.Storage.DataDir); err == nil && info.URL != "" {
+		target = info.URL
+		pid = info.PID
+	} else {
+		target = fmt.Sprintf("http://%s:%d", normalizedWebHost(cfg.Server.Host), cfg.Server.Port)
+	}
+
+	if pid > 0 {
+		logger.Log.Infof("检测到已有实例正在运行 (pid=%d): %s", pid, target)
+	} else {
+		logger.Log.Infof("检测到已有实例正在运行: %s", target)
+	}
+	if noBrowser {
+		return
+	}
+	if err := browser.Open(target); err != nil {
+		logger.Log.Warnf("打开已有实例控制台失败: %v，请手动访问 %s", err, target)
 	}
 }

@@ -1,31 +1,52 @@
 <template>
   <div class="rca-center-container" v-loading="loading">
+    <!-- 实验性能力免责声明（规划 §5.5：只保留、不演进） -->
+    <el-alert
+      type="warning"
+      show-icon
+      :closable="false"
+      class="experimental-banner"
+    >
+      <template #title>
+        <span class="alert-title-strong">关联事件（实验性）· 只保留、不演进</span>
+      </template>
+      <template #default>
+        <div class="experimental-body">
+          <span>
+            当前仅内置 5 条协议故障传播规则，按设备隔离分析，结果可能误报或漏报；
+            页面中的“疑似根因/关联起点”与“参考排查建议”均为启发式推断，
+            <strong>不是官方文档原文</strong>，请结合官方知识库与现场信息判断。
+          </span>
+        </div>
+      </template>
+    </el-alert>
+
     <!-- 顶部 KPI 概览看板 -->
     <div class="rca-overview-bar">
       <div class="bar-left">
         <div class="kpi-item">
           <span class="kpi-val text-primary">{{ rcaList.length }}</span>
-          <span class="kpi-label">识别联动故障事件</span>
+          <span class="kpi-label">识别关联事件</span>
         </div>
         <div class="kpi-divider"></div>
         <div class="kpi-item">
           <span class="kpi-val text-danger">{{ countByLevel('CRITICAL') }}</span>
-          <span class="kpi-label">CRITICAL 紧急级</span>
+          <span class="kpi-label">严重级</span>
         </div>
         <div class="kpi-divider"></div>
         <div class="kpi-item">
           <span class="kpi-val text-warning">{{ countByLevel('HIGH') }}</span>
-          <span class="kpi-label">HIGH 高危级</span>
+          <span class="kpi-label">高级</span>
         </div>
         <div class="kpi-divider"></div>
         <div class="kpi-item">
           <span class="kpi-val text-success">{{ totalCorrelatedLogs }}</span>
-          <span class="kpi-label">覆盖关联衍生日志</span>
+          <span class="kpi-label">覆盖关联日志</span>
         </div>
       </div>
       <div class="bar-right">
         <el-button-group>
-          <el-button icon="Refresh" @click="fetchTaskAndRCA">刷新联动分析</el-button>
+          <el-button icon="Refresh" @click="fetchTaskAndRCA">刷新关联事件</el-button>
           <el-button
             type="warning"
             plain
@@ -34,7 +55,7 @@
             :disabled="isRcaRunning"
             @click="handleReanalyzeRCA"
           >
-            重跑 RCA
+            分析关联事件
           </el-button>
         </el-button-group>
       </div>
@@ -49,7 +70,7 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span class="alert-title-strong">分析达到超时上限 (已安全中止并保存部分结果)</span>
+        <span class="alert-title-strong">关联事件分析达到超时上限（已保存部分结果）</span>
       </template>
       <template #default>
         <div class="alert-action-body">
@@ -58,7 +79,7 @@
             <strong>{{ rcaAnalyzedUntilText }}</strong> 前的故障链路，后续时段可能存在未识别事件。
           </span>
           <el-button type="warning" size="small" plain @click="handleReanalyzeRCA" :loading="reanalyzing">
-            重新计算 RCA
+            重新分析
           </el-button>
         </div>
       </template>
@@ -73,7 +94,7 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span class="alert-title-strong">RCA 根因推导异常中断</span>
+        <span class="alert-title-strong">关联事件分析异常中断</span>
       </template>
       <template #default>
         <div class="alert-action-body">
@@ -94,7 +115,7 @@
       class="timeout-alert-bar"
     >
       <template #title>
-        <span class="alert-title-strong">RCA 根因拓扑正在后台重新推导中...</span>
+        <span class="alert-title-strong">关联事件正在后台重新分析中...</span>
       </template>
       <template #default>
         <span>
@@ -107,7 +128,7 @@
     <el-card v-if="isRcaRunning && rcaList.length === 0" shadow="never" class="running-card">
       <div class="running-header">
         <el-icon class="is-loading" size="44" color="var(--brand-600)"><Loading /></el-icon>
-        <h3 class="running-title">根因拓扑正在后台推导中...</h3>
+        <h3 class="running-title">关联事件正在后台分析中...</h3>
         <p v-if="taskInfo?.rca_status === 'QUEUED'" class="running-tip">
           当前任务正在排队等待并发计算槽位，工作台已就绪可正常审计浏览日志。
         </p>
@@ -120,12 +141,10 @@
 
     <!-- 无联动事件空状态 -->
     <el-card v-else-if="!loading && !isRcaRunning && rcaList.length === 0" shadow="never" class="empty-card">
-      <el-empty description="当前任务尚未检测到协议级故障联动事件">
-        <template #extra>
-          <p class="empty-tip">
-            RCA 根因分析引擎会自动在 300s 滑动时间窗口内匹配网络协议故障传播有向图 (如: 物理口Down → BFD超时 → 动态路由邻居断开 → 路由撤销)。当日志中存在联动异常时将在此处集中展现。
-          </p>
-        </template>
+      <el-empty description="当前任务尚未检测到协议级关联事件">
+        <p class="empty-tip">
+          关联事件引擎会在 300s 滑动时间窗口内匹配内置的协议故障传播规则（如：物理口 Down → BFD 超时 → 路由邻居断开 → 路由撤销）。该能力为实验性，仅作排查线索参考。
+        </p>
       </el-empty>
     </el-card>
 
@@ -134,12 +153,14 @@
       <!-- 左栏：联动事件列表 (340px) -->
       <div class="col-event-list">
         <div class="list-header">
-          <span>联动事件索引 ({{ filteredRcaList.length }})</span>
+          <span>关联事件索引 ({{ filteredRcaList.length }})</span>
           <el-select v-model="levelFilter" size="small" class="level-filter-select" placeholder="级别筛选">
-            <el-option label="全部级别" value="ALL" />
-            <el-option label="CRITICAL" value="CRITICAL" />
-            <el-option label="HIGH" value="HIGH" />
-            <el-option label="MEDIUM" value="MEDIUM" />
+            <el-option
+              v-for="opt in IMPACT_LEVEL_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
           </el-select>
         </div>
 
@@ -154,11 +175,11 @@
             @keydown.enter.space.prevent="selectRCA(ev)"
           >
             <div class="item-card-header">
-              <span :class="['level-tag', ev.impact_level?.toLowerCase()]">
-                {{ ev.impact_level || 'HIGH' }}
+              <span :class="['level-tag', (ev.impact_level || 'HIGH').toLowerCase()]">
+                {{ impactLevelLabel(ev.impact_level) }}
               </span>
               <span class="confidence-tag">
-                置信度 {{ Math.round((ev.confidence || 0.8) * 100) }}%
+                证据强度 {{ formatRcaConfidence(ev.confidence) }}
               </span>
             </div>
 
@@ -192,46 +213,46 @@
           <div class="detail-header-row">
             <div>
               <div class="rca-header-title-box">
-                <span :class="['level-tag', selectedRCA.impact_level?.toLowerCase()]">
-                  {{ selectedRCA.impact_level || 'HIGH' }}
+                <span :class="['level-tag', (selectedRCA.impact_level || 'HIGH').toLowerCase()]">
+                  {{ impactLevelLabel(selectedRCA.impact_level) }}
                 </span>
                 <h3 class="rca-root-title">
-                  [{{ selectedRCA.root_module }}/{{ selectedRCA.root_brief }}] 根因联动故障推断
+                  [{{ selectedRCA.root_module }}/{{ selectedRCA.root_brief }}] 疑似根因 / 关联起点
                 </h3>
               </div>
               <p class="rca-root-subtitle">
-                始发于 {{ selectedRCA.root_timestamp }}，触发了 {{ selectedRCA.correlated_count }} 条衍生告警，整体置信度为 {{ Math.round((selectedRCA.confidence || 0.8) * 100) }}%
+                始发于 {{ selectedRCA.root_timestamp }}，关联 {{ selectedRCA.correlated_count }} 条衍生日志，证据强度 {{ formatRcaConfidence(selectedRCA.confidence) }}（启发式推断，非官方结论）
               </p>
             </div>
 
             <div>
               <el-button type="primary" plain size="small" icon="Position" @click="jumpToAuditStream(selectedRCA.root_log_id)">
-                在审计流中定位根因
+                在日志流中定位
               </el-button>
             </div>
           </div>
 
           <!-- 子 Tab: 拓扑图、时序链明细、处置指南 -->
           <el-tabs v-model="activeDetailTab" class="detail-tabs">
-            <!-- Tab 1: 故障因果拓扑图 -->
-            <el-tab-pane label="故障传播因果拓扑 (DAG)" name="dag">
+            <!-- Tab 1: 关联拓扑图 -->
+            <el-tab-pane label="关联拓扑 (DAG)" name="dag">
               <div class="graph-box">
                 <RcaGraph :rcaEvent="selectedRCA" />
               </div>
             </el-tab-pane>
 
-            <!-- Tab 2: 级联时序传播链 -->
-            <el-tab-pane label="级联时序传播链明细" name="timeline">
+            <!-- Tab 2: 关联时序明细 -->
+            <el-tab-pane label="关联时序明细" name="timeline">
               <div class="cascade-timeline-wrap">
                 <div class="step-card root-step">
                   <div class="step-badge root">
-                    <span>1. 根因始发源</span>
+                    <span>1. 关联起点</span>
                   </div>
                   <div class="step-content">
                     <div class="step-header">
                       <div class="step-header-left">
                         <span class="time-text">{{ selectedRCA.root_timestamp }}</span>
-                        <span class="delay-tag zero">+0ms (始发)</span>
+                        <span class="delay-tag zero">+0ms (起点)</span>
                         <span v-if="selectedRCA.root_device_name" class="device-pill" :style="{ backgroundColor: selectedRCA.root_device_color || 'var(--brand-500)' }">
                           {{ selectedRCA.root_device_name }}
                         </span>
@@ -262,7 +283,7 @@
                   class="step-card impact-step"
                 >
                   <div class="step-badge impact">
-                    <span>{{ idx + 2 }}. 级联衍生</span>
+                    <span>{{ idx + 2 }}. 关联日志</span>
                   </div>
                   <div class="step-content">
                     <div class="step-header">
@@ -281,7 +302,7 @@
                     </div>
 
                     <div class="step-raw-log">
-                      {{ impact.raw_log || `[${impact.module}/${impact.brief}] 衍生告警事件` }}
+                      {{ impact.raw_log || `[${impact.module}/${impact.brief}] 关联日志事件` }}
                     </div>
 
                     <div v-if="impact.parameters && Object.keys(impact.parameters).length > 0" class="step-params">
@@ -294,17 +315,17 @@
               </div>
             </el-tab-pane>
 
-            <!-- Tab 3: 官方专家处置指引 -->
-            <el-tab-pane label="官方排查与根因处置指南" name="guide">
+            <!-- Tab 3: 参考排查建议 -->
+            <el-tab-pane label="参考排查建议" name="guide">
               <div class="guide-content-box">
                 <div class="guide-block">
-                  <h4><el-icon><WarningFilled /></el-icon> 根因推断综述</h4>
+                  <h4><el-icon><WarningFilled /></el-icon> 关联事件综述（启发式）</h4>
                   <div class="summary-text">{{ selectedRCA.root_cause_summary }}</div>
                 </div>
 
                 <div class="guide-block">
-                  <h4><el-icon><Tools /></el-icon> 华为官方推荐排查处置步骤</h4>
-                  <div class="action-text">{{ selectedRCA.recommended_action || '请检查根因节点接口物理状态与协议配置。' }}</div>
+                  <h4><el-icon><Tools /></el-icon> 参考排查建议（非官方原文）</h4>
+                  <div class="action-text">{{ selectedRCA.recommended_action || '请检查关联起点设备的接口物理状态与协议配置。' }}</div>
                 </div>
               </div>
             </el-tab-pane>
@@ -322,6 +343,7 @@ import { Position, Loading, Opportunity, Refresh, Clock, WarningFilled, Tools } 
 import { ElMessage } from 'element-plus'
 import api from '@/api'
 import RcaGraph from '@/components/RcaGraph.vue'
+import { formatRcaConfidence, impactLevelLabel, IMPACT_LEVEL_OPTIONS } from '@/utils/rca'
 import { useRequest } from '@/composables/useRequest'
 
 const props = defineProps({
@@ -460,12 +482,12 @@ const handleReanalyzeRCA = async () => {
   try {
     const res = await api.reanalyzeTaskRCA(props.taskId)
     if (res && res.code === 0) {
-      ElMessage.success('已触发 RCA 重新推导，后台排队计算中')
+      ElMessage.success('已触发关联事件分析，后台排队计算中')
       await loadTaskInfo()
       startPolling()
     }
   } catch (err) {
-    ElMessage.error(err.message || '重跑 RCA 失败')
+    ElMessage.error(err.message || '关联事件分析失败')
   } finally {
     reanalyzing.value = false
   }
@@ -524,6 +546,15 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 16px;
+}
+
+.experimental-banner {
+  border-radius: var(--radius-lg);
+}
+
+.experimental-body {
+  font-size: var(--fs-sm);
+  line-height: 1.6;
 }
 .rca-overview-bar {
   display: flex;

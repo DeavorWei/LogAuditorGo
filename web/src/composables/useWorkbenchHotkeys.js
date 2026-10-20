@@ -87,7 +87,7 @@ export function useWorkbenchHotkeys(options = {}) {
       return
     }
 
-    // 10. Alt + F: 呼出高级筛选抽屉 (对齐现代日志审计工作台快捷键规范)
+    // 10. Alt + F: 呼出高级筛选抽屉 (对齐现代日志分析工作台快捷键规范)
     if (e.altKey && !e.ctrlKey && !e.shiftKey && !e.metaKey && (e.key === 'f' || e.key === 'F')) {
       e.preventDefault()
       onOpenAdvancedFilter()

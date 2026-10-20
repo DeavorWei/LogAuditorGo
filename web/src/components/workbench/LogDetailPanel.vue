@@ -1,15 +1,15 @@
 <template>
   <div class="col-middle">
-    <!-- RCA 联动告警全局提示条 -->
-    <div v-if="rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
+    <!-- 关联事件提示条（实验性，默认关闭时完全不显示） -->
+    <div v-if="rcaEnabled && rcaEvents && rcaEvents.length > 0" class="rca-banner-alert">
       <div class="banner-left">
         <el-icon color="var(--warning-strong)" size="18"><Aim /></el-icon>
         <span class="banner-text">
-          <strong>系统已识别 {{ rcaEvents.length }} 个协议联动事件</strong>
+          <strong>已识别 {{ rcaEvents.length }} 个关联事件（实验性）</strong>
         </span>
       </div>
       <el-button type="warning" link size="small" icon="ArrowRight" @click="$emit('view-rca')">
-        查看 RCA 全景分析
+        在高级抽屉中查看
       </el-button>
     </div>
 
@@ -20,7 +20,7 @@
           注释/元数据
         </el-tag>
         <el-tag v-else size="small" :type="log.knowledge_id ? 'success' : 'info'">
-          {{ log.knowledge_id ? `知识库已匹配 (${(log.match_confidence * 100).toFixed(0)}%)` : '未匹配' }}
+          {{ log.knowledge_id ? `已匹配官方知识 · ${tierLabel}` : '暂无官方知识' }}
         </el-tag>
       </div>
 
@@ -165,9 +165,9 @@
         </div>
       </div>
 
-      <!-- 关联根因提示 -->
-      <div v-if="matchedRca" class="rca-alert">
-        <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联根因事件预警</div>
+      <!-- 关联事件提示（实验性） -->
+      <div v-if="rcaEnabled && matchedRca" class="rca-alert">
+        <div class="rca-alert-title"><el-icon><WarningFilled /></el-icon> 关联事件提示（实验性）</div>
         <div>{{ matchedRca?.root_cause_summary }}</div>
       </div>
     </div>
@@ -187,6 +187,7 @@ import { LOG_DETAIL_CONTEXT_KEY, formatTooltipHtml, getMatchedDocName } from '@/
 import api from '@/api'
 import { PREDEFINE_TAG_COLORS, DEFAULT_TAG_COLOR } from '@/constants/tagColors'
 import SeverityTag from '@/components/SeverityTag.vue'
+import { matchTierMeta } from '@/constants/matchTiers'
 
 const props = defineProps({
   log: {
@@ -204,6 +205,10 @@ const props = defineProps({
   matchedRca: {
     type: Object,
     default: null
+  },
+  rcaEnabled: {
+    type: Boolean,
+    default: false
   }
 })
 
@@ -211,6 +216,8 @@ const emit = defineEmits(['view-rca', 'tag-changed'])
 
 const taskStore = useTaskStore()
 const tagStore = useTagStore()
+
+const tierLabel = computed(() => matchTierMeta(props.log?.match_tier).label)
 
 // 注入富文本格式化上下文
 const logContext = inject(LOG_DETAIL_CONTEXT_KEY, null)

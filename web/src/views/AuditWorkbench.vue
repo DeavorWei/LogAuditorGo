@@ -1,57 +1,49 @@
 <template>
   <div class="workbench-container" :class="{ 'is-immersive': workbenchUIStore.isImmersive }">
-    <!-- 1. 顶栏操作区 (任务选择、新建/分析/导出按钮) -->
+    <!-- 1. 顶栏：任务选择 + 状态/时间/设备 + 导入/导出/设备/高级/更多 -->
     <WorkbenchHeader
       ref="headerRef"
       v-show="!workbenchUIStore.isImmersive"
       @task-change="handleTaskChange"
       @task-created="handleTaskCreated"
+      @task-deleted="handleTaskDeleted"
       @refresh-logs="fetchLogs"
       @open-files="taskFilesDialogRef?.open"
       @reanalyze="handleReanalyzeTask"
       @open-import="importDialogRef?.open"
+      @open-devices="showDeviceDrawer = true"
+      @open-advanced="showAdvancedDrawer = true"
+      @open-report="currentViewMode = VIEW_MODE.REPORT"
     />
 
-    <!-- 2. 主视图模式导航栏 (WORKBENCH / DEVICES / MULTI_TIMELINE / RCA / MULTI_REPORT) -->
+    <!-- 2. 一级 Tab：日志分析 / 事件时间线 / 分析报告 -->
     <WorkbenchNavBar
       v-if="currentTaskId && !workbenchUIStore.isImmersive"
       v-model="currentViewMode"
     />
 
-    <!-- 3. 子视图区域 (非主工作台审计模式时按需挂载并保活) -->
-    <template v-if="currentTaskId && currentViewMode !== VIEW_MODE.WORKBENCH">
-      <div class="workbench-sub-view">
-        <DeviceManager
-          v-if="currentViewMode === VIEW_MODE.DEVICES"
-          :ref="subViewRefs.deviceManagerRef"
-          :task-id="currentTaskId"
-          @devices-updated="handleDeviceUpdated"
-        />
-        <MultiDeviceTimeline
-          v-else-if="currentViewMode === VIEW_MODE.MULTI_TIMELINE"
-          :ref="subViewRefs.timelineRef"
-          :task-id="currentTaskId"
-          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
-        />
-        <RcaCenter
-          v-else-if="currentViewMode === VIEW_MODE.RCA"
-          :ref="subViewRefs.rcaCenterRef"
-          :task-id="currentTaskId"
-          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
-          @task-updated="handleTaskMetadataUpdated"
-        />
-        <MultiDeviceReport
-          v-else-if="currentViewMode === VIEW_MODE.MULTI_REPORT"
-          :ref="subViewRefs.multiReportRef"
-          :task-id="currentTaskId"
-          @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
-        />
-      </div>
-    </template>
+    <!-- 3. 事件时间线 -->
+    <div v-if="currentTaskId && currentViewMode === VIEW_MODE.TIMELINE" class="workbench-sub-view">
+      <MultiDeviceTimeline
+        :ref="subViewRefs.timelineRef"
+        :task-id="currentTaskId"
+        @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+      />
+    </div>
 
-    <!-- 4. 核心工作台主视口 (三栏审计模式) -->
+    <!-- 4. 分析报告（原"多设备对比诊断报告"一级视图已合并至此） -->
+    <div v-else-if="currentTaskId && currentViewMode === VIEW_MODE.REPORT" class="workbench-sub-view">
+      <ReportCenter
+        :ref="subViewRefs.reportRef"
+        :task-id="currentTaskId"
+        :task="currentTask"
+        @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+      />
+    </div>
+
+    <!-- 5. 日志分析主视口（三栏） -->
     <div v-else class="workbench-main-view">
-      <!-- 4.1 空任务待导入引导卡片 -->
+      <!-- 5.1 空任务待导入引导卡片 -->
       <WorkbenchEmptyGuide
         v-if="isTaskEmpty"
         :task-name="currentTask?.task_name"
@@ -59,7 +51,7 @@
         @open-text="importDialogRef?.open('text')"
       />
 
-      <!-- 4.2 经典三栏协同审计区 -->
+      <!-- 5.2 经典三栏协同审计区 -->
       <div v-else class="workbench-body">
         <!-- 左栏：筛选面板 + 日志卡片流与 Zen 自适应网格 -->
         <WorkbenchLogStream
@@ -89,19 +81,20 @@
           :task-id="currentTaskId"
           :rca-events="rcaEvents"
           :matched-rca="matchedRCA"
-          @view-rca="currentViewMode = VIEW_MODE.RCA"
+          :rca-enabled="featureStore.rcaEnabled"
+          @view-rca="openRcaFromDetail"
           @tag-changed="fetchLogs"
         />
 
-        <!-- 右栏：官方知识库指南与 RCA 因果拓扑 (严格保持 v-show 保活激活 Tab) -->
+        <!-- 右栏：官方知识 + 参数注入 + 未匹配行动建议（RCA Tab 已移除） -->
         <LogKnowledgePanel
           v-show="!workbenchUIStore.isImmersive"
           :log="selectedLog"
-          :matched-rca="matchedRCA"
+          :task-id="currentTaskId"
         />
       </div>
 
-      <!-- 5. 全屏沉浸式居中双栏深度解析弹窗 -->
+      <!-- 6. 全屏沉浸式居中双栏深度解析弹窗 -->
       <AuditLogDetailModal
         v-model:visible="showLogDetailModal"
         :log="selectedLog"
@@ -109,6 +102,7 @@
         :current-index="currentLogIndex"
         :total-count="logRecords.length"
         :matched-rca="matchedRCA"
+        :rca-enabled="featureStore.rcaEnabled"
         @prev="handlePrevLog"
         @next="handleNextLog"
         @add-tag="fetchLogs"
@@ -116,7 +110,7 @@
         @delete-tag="fetchLogs"
       />
 
-      <!-- 6. 快捷打标签弹窗 (空格键触发) -->
+      <!-- 7. 快捷打标签弹窗 (空格键触发) -->
       <QuickTagModal
         v-model:visible="showQuickTagModal"
         :log="quickTagTargetLog"
@@ -126,7 +120,25 @@
       />
     </div>
 
-    <!-- 7. 业务弹窗群 (已分析文件清单、导入向导、高级筛选、分析进度) -->
+    <!-- 8. 设备抽屉（原一级视图） -->
+    <WorkbenchDeviceDrawer
+      v-model="showDeviceDrawer"
+      :task-id="currentTaskId"
+      @devices-updated="handleDeviceUpdated"
+    />
+
+    <!-- 9. 高级抽屉：专家筛选 / 关联事件（实验性）/ 原始字段与诊断 -->
+    <WorkbenchAdvancedDrawer
+      ref="advancedDrawerRef"
+      v-model="showAdvancedDrawer"
+      :task-id="currentTaskId"
+      :task="currentTask"
+      @open-advanced-filter="advFilterModalRef?.open"
+      @jump-to-log="(id) => handleJumpToLog(id, (m) => currentViewMode = m)"
+      @task-updated="handleTaskMetadataUpdated"
+    />
+
+    <!-- 10. 业务弹窗群（已分析文件清单、导入向导、高级筛选、分析进度） -->
     <TaskFilesDialog
       ref="taskFilesDialogRef"
       :task-id="currentTaskId"
@@ -159,9 +171,10 @@
 
 <script setup>
 import { ref, provide, watch, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
+import { useFeatureStore } from '@/stores/features'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
 import { VIEW_MODE } from '@/constants/viewModes'
 import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
@@ -178,21 +191,23 @@ import WorkbenchEmptyGuide from '@/components/workbench/WorkbenchEmptyGuide.vue'
 import WorkbenchLogStream from '@/components/workbench/WorkbenchLogStream.vue'
 import LogDetailPanel from '@/components/workbench/LogDetailPanel.vue'
 import LogKnowledgePanel from '@/components/workbench/LogKnowledgePanel.vue'
+import WorkbenchDeviceDrawer from '@/components/workbench/WorkbenchDeviceDrawer.vue'
+import WorkbenchAdvancedDrawer from '@/components/workbench/WorkbenchAdvancedDrawer.vue'
+import ReportCenter from '@/components/workbench/ReportCenter.vue'
 import TaskFilesDialog from '@/components/workbench/TaskFilesDialog.vue'
 import TaskImportDialog from '@/components/workbench/TaskImportDialog.vue'
 
 // 通用组件
-import DeviceManager from '@/components/DeviceManager.vue'
 import MultiDeviceTimeline from '@/components/MultiDeviceTimeline.vue'
-import RcaCenter from '@/components/RcaCenter.vue'
-import MultiDeviceReport from '@/components/MultiDeviceReport.vue'
 import AuditLogDetailModal from '@/components/AuditLogDetailModal.vue'
 import QuickTagModal from '@/components/QuickTagModal.vue'
 import AdvancedFilterModal from '@/components/AdvancedFilterModal.vue'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 
 const route = useRoute()
+const router = useRouter()
 const taskStore = useTaskStore()
+const featureStore = useFeatureStore()
 const workbenchUIStore = useWorkbenchUIStore()
 
 // 1. 子视图路由与实例刷新
@@ -203,6 +218,7 @@ const headerRef = ref(null)
 const taskFilesDialogRef = ref(null)
 const importDialogRef = ref(null)
 const advFilterModalRef = ref(null)
+const advancedDrawerRef = ref(null)
 const logStreamRef = ref(null)
 
 const showLogDetailModal = ref(false)
@@ -210,12 +226,20 @@ const showQuickTagModal = ref(false)
 const quickTagTargetLog = ref(null)
 const showProgressModal = ref(false)
 const currentJobId = ref('')
+const showDeviceDrawer = ref(false)
+const showAdvancedDrawer = ref(false)
 
-// 3. RCA 状态轮询与重新分析
+// 3. RCA 状态轮询（仅在实验室开关开启时生效）与重新分析
 const { checkAndPollRcaStatus, stopRcaPolling } = useRcaPolling({
   onTaskUpdated: (updated) => handleTaskMetadataUpdated(updated),
-  onRcaCompleted: async (taskId) => { await taskStore.fetchRCA(taskId) }
+  onRcaCompleted: async (taskId) => {
+    if (featureStore.rcaEnabled) await taskStore.fetchRCA(taskId)
+  }
 })
+
+const gatedCheckAndPollRcaStatus = (task, taskId) => {
+  if (featureStore.rcaEnabled) checkAndPollRcaStatus(task, taskId)
+}
 
 const { reanalyze } = useReanalyze({
   onJobStarted: (jobId) => {
@@ -233,7 +257,7 @@ const taskContext = useWorkbenchTaskContext({
   logStreamRef,
   subViewRefs,
   refreshActiveSubView,
-  checkAndPollRcaStatus,
+  checkAndPollRcaStatus: gatedCheckAndPollRcaStatus,
   stopRcaPolling,
   onLogClickImmersive: () => { showLogDetailModal.value = true }
 })
@@ -306,7 +330,7 @@ provide(LOG_DETAIL_CONTEXT_KEY, {
 
 // 6. 全局键盘流与按键守卫 (收敛至 hasActiveOverlay 单点防护)
 useWorkbenchHotkeys({
-  isWorkbenchView: () => currentViewMode.value === VIEW_MODE.WORKBENCH,
+  isWorkbenchView: () => currentViewMode.value === VIEW_MODE.LOGS,
   hasActiveTask: () => Boolean(currentTaskId.value),
   hasActiveOverlay: () => Boolean(
     showLogDetailModal.value ||
@@ -315,6 +339,8 @@ useWorkbenchHotkeys({
     importDialogRef.value?.visible ||
     showProgressModal.value ||
     taskFilesDialogRef.value?.visible ||
+    showDeviceDrawer.value ||
+    showAdvancedDrawer.value ||
     headerRef.value?.showNewTaskDialog
   ),
   onSpace: () => {
@@ -356,6 +382,8 @@ useWorkbenchHotkeys({
     else if (advFilterModalRef.value?.visible) {
       advFilterModalRef.value?.close?.()
     }
+    else if (showAdvancedDrawer.value) showAdvancedDrawer.value = false
+    else if (showDeviceDrawer.value) showDeviceDrawer.value = false
     else if (workbenchUIStore.isImmersive) {
       workbenchUIStore.exitImmersive()
       logStreamRef.value?.scrollToLog(selectedLog.value?.id)
@@ -366,14 +394,39 @@ useWorkbenchHotkeys({
 // 7. 交互胶水方法
 const handleTaskCreated = async ({ taskId, needImport }) => {
   await handleTaskChange(taskId)
+  router.replace({ path: `/audit/${taskId}` })
   if (needImport) {
     importDialogRef.value?.open('paths')
+  }
+}
+
+const handleTaskDeleted = async (taskId) => {
+  await fetchTasks()
+  if (taskStore.currentTaskId === taskId) {
+    const next = taskStore.taskList[0]
+    if (next) {
+      router.replace({ path: `/audit/${next.task_id}` })
+      await handleTaskChange(next.task_id)
+    } else {
+      taskStore.currentTaskId = ''
+      taskStore.currentTask = null
+      router.replace({ path: '/audit' })
+    }
   }
 }
 
 const openProgressModalWithId = (jobId) => {
   currentJobId.value = jobId
   showProgressModal.value = true
+}
+
+// 详情面板的"查看关联事件"入口：打开高级抽屉并展开关联事件
+const openRcaFromDetail = () => {
+  if (!featureStore.rcaEnabled) {
+    ElMessage.info('关联事件（实验性）默认关闭，可在系统设置 → 实验室功能中开启')
+    return
+  }
+  showAdvancedDrawer.value = true
 }
 
 // 去阻断：一键直达重新分析（确认弹窗由 useReanalyze 统一提供），不再弹型号选择框。
@@ -384,17 +437,9 @@ const handleReanalyzeTask = () => {
 }
 
 // 8. 视图模式与路由联动
-watch(currentViewMode, async (newMode, oldMode) => {
+watch(currentViewMode, async (newMode) => {
   if (!currentTaskId.value) return
-  if (newMode === VIEW_MODE.RCA) {
-    stopRcaPolling()
-  } else if (oldMode === VIEW_MODE.RCA) {
-    checkAndPollRcaStatus(currentTask.value, currentTaskId.value)
-  }
-  if (newMode === VIEW_MODE.DEVICES) {
-    await taskStore.fetchTaskDevices(currentTaskId.value)
-    subViewRefs.deviceManagerRef.value?.fetchDevices?.()
-  } else if (newMode === VIEW_MODE.WORKBENCH) {
+  if (newMode === VIEW_MODE.LOGS) {
     await fetchLogs()
     await taskStore.fetchTaskFiles(currentTaskId.value)
   }
@@ -406,6 +451,7 @@ watch(() => route.params.id, async (newId, oldId) => {
 })
 
 onMounted(async () => {
+  await featureStore.fetchFeatures()
   await fetchTasks()
   if (currentTaskId.value) await handleTaskChange(currentTaskId.value)
 })
@@ -434,6 +480,7 @@ onMounted(async () => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  padding: 12px 16px;
 }
 
 .workbench-main-view {

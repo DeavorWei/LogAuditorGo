@@ -526,7 +526,11 @@ func (idx *Indexer) Search(filter SearchFilter) (*SearchResult, error) {
 		queries = append(queries, termQuery)
 	}
 
-	rootQuery := buildRootQuery(queries)
+	// UX-08: mapping 版本哨兵文档（__mapping_version__）是索引管理用的元数据，
+	// 不属于知识条目。原实现只在结果集里跳过它，却把 searchResult.Total 原样返回，
+	// 导致空知识库也显示"共 1 条"。这里在查询层用 MustNot 精确排除，
+	// Total 与 Hits 同时恢复正确。
+	rootQuery := excludeIndexMetadata(buildRootQuery(queries))
 
 	page := filter.Page
 	if page <= 0 {
@@ -572,6 +576,17 @@ func (idx *Indexer) Search(filter SearchFilter) (*SearchResult, error) {
 }
 
 // IsMappingOutdatedLocked 在已持锁状态下判断 mapping 是否过期
+// excludeIndexMetadata 在业务查询外层排除索引自身的元数据文档。
+//
+// 用 BooleanQuery 包裹而不是在每个子查询里追加条件：
+// 当 queries 为空（match_all）时同样生效，且不改变任何业务字段的评分。
+func excludeIndexMetadata(base query.Query) query.Query {
+	boolQuery := bleve.NewBooleanQuery()
+	boolQuery.AddMust(base)
+	boolQuery.AddMustNot(bleve.NewDocIDQuery([]string{mappingVersionDocID}))
+	return boolQuery
+}
+
 func (idx *Indexer) IsMappingOutdatedLocked() bool {
 	v, err := idx.readMappingVersion()
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"logauditorgo/internal/config"
 	"logauditorgo/internal/matcher"
 	"logauditorgo/internal/model"
 	"logauditorgo/internal/rootcause"
@@ -52,6 +53,16 @@ func TestTaskServiceAndExport(t *testing.T) {
 	matchEngine := matcher.NewMatchEngine(globalDB, indexer)
 	rcaEngine := rootcause.NewEngine(nil)
 	taskDir := filepath.Join(tmpDir, "tasks")
+
+	// v1.1 起自动 RCA 默认关闭；本用例覆盖"导入后自动派发 RCA"的旧链路。
+	oldConfig := config.GlobalConfig
+	cfg := config.Config{}
+	if oldConfig != nil {
+		cfg = *oldConfig
+	}
+	cfg.Features.RCA = true
+	config.GlobalConfig = &cfg
+	defer func() { config.GlobalConfig = oldConfig }()
 
 	svc := task.NewService(globalDB, taskDir, matchEngine, rcaEngine)
 
@@ -1202,12 +1213,6 @@ func TestExportTaskHTML_TimeoutAndFailedStates(t *testing.T) {
 	}
 }
 
-
-
-
-
-
-
 func TestImport_TemplateParamsCapturePersistence(t *testing.T) {
 	logger.Init("debug", "console")
 
@@ -1419,4 +1424,3 @@ func TestRecoverDanglingTasks(t *testing.T) {
 		t.Fatalf("expected self-healing error message, got: %q", recovered.ErrorMessage)
 	}
 }
-

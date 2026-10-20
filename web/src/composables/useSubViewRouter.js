@@ -1,38 +1,31 @@
 import { ref, watch } from 'vue'
-import { VIEW_MODE, DEFAULT_VIEW_MODE, isValidViewMode } from '@/constants/viewModes'
+import { VIEW_MODE, DEFAULT_VIEW_MODE, normalizeViewMode } from '@/constants/viewModes'
 import { useFilterStore } from '@/stores/filter'
 
 /**
- * 工作台子视图模式路由与实例刷新编排
+ * 工作台一级 Tab 切换与实例刷新编排（v1.1 三 Tab）。
+ *
+ * 设备管理与关联事件不再是视图：设备走 Header 抽屉，
+ * 关联事件走"高级"抽屉（实验开关开启后可见）。
  */
 export function useSubViewRouter() {
   const filterStore = useFilterStore()
 
-  // 视图模式：优先恢复上次使用的视图，并做合法性校验
-  const currentViewMode = ref(
-    isValidViewMode(filterStore.filters.viewMode)
-      ? filterStore.filters.viewMode
-      : DEFAULT_VIEW_MODE
-  )
+  // 视图模式：优先恢复上次使用的 Tab；旧版本持久化的五视图值由 normalizeViewMode 迁移
+  const currentViewMode = ref(normalizeViewMode(filterStore.filters.viewMode))
 
   // 视图切换即落盘，下次进入工作台直接回到上次的分析视图
   watch(currentViewMode, (mode) => {
     filterStore.filters.viewMode = mode
   })
 
-  // 四个子视图的组件实例引用
-  const deviceManagerRef = ref(null)
   const timelineRef = ref(null)
-  const rcaCenterRef = ref(null)
-  const multiReportRef = ref(null)
+  const reportRef = ref(null)
 
-  // 主动刷新当前激活的子视图
   const refreshActiveSubView = async () => {
     const targetMap = {
-      [VIEW_MODE.DEVICES]: deviceManagerRef,
-      [VIEW_MODE.MULTI_TIMELINE]: timelineRef,
-      [VIEW_MODE.RCA]: rcaCenterRef,
-      [VIEW_MODE.MULTI_REPORT]: multiReportRef
+      [VIEW_MODE.TIMELINE]: timelineRef,
+      [VIEW_MODE.REPORT]: reportRef
     }
     const target = targetMap[currentViewMode.value]
     try {
@@ -45,10 +38,8 @@ export function useSubViewRouter() {
   return {
     currentViewMode,
     subViewRefs: {
-      deviceManagerRef,
       timelineRef,
-      rcaCenterRef,
-      multiReportRef
+      reportRef
     },
     refreshActiveSubView
   }

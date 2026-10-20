@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
@@ -442,6 +443,79 @@ func (h *TaskHandler) ListTasks(c *gin.Context) {
 	}
 
 	SuccessResponse(c, tasks)
+}
+
+// QueryTasks 案例库分页检索（Phase 0）
+//
+// 与 GET /tasks 的区别：本端点返回 {items,total,page,page_size}，
+// 支持关键词 / 状态 / 时间范围 / 排序；GET /tasks 继续返回全量数组，
+// 供工作台任务选择器与仪表盘快速视图复用，避免破坏既有契约。
+func (h *TaskHandler) QueryTasks(c *gin.Context) {
+	statuses, ignored := task.NormalizeTaskStatuses(c.Query("status"))
+	if len(ignored) > 0 {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Unknown task status: "+strings.Join(ignored, ","))
+		return
+	}
+
+	startFrom, err := parseOptionalQueryTime(c.Query("start_from"))
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid start_from: "+err.Error())
+		return
+	}
+	startTo, err := parseOptionalQueryTime(c.Query("start_to"))
+	if err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid start_to: "+err.Error())
+		return
+	}
+
+	page := parsePositiveInt(c.DefaultQuery("page", "1"), 1)
+	pageSize := parsePositiveInt(c.DefaultQuery("page_size", "20"), 20)
+
+	items, total, err := h.taskSvc.QueryTaskList(task.TaskListQuery{
+		Keyword:   c.Query("keyword"),
+		Status:    statuses,
+		StartFrom: startFrom,
+		StartTo:   startTo,
+		SortBy:    c.Query("sort_by"),
+		Order:     c.Query("order"),
+		Page:      page,
+		PageSize:  pageSize,
+	})
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+
+	SuccessResponse(c, gin.H{
+		"items":     items,
+		"total":     total,
+		"page":      page,
+		"page_size": pageSize,
+	})
+}
+
+// parsePositiveInt 解析正整数查询参数，非法值回退默认值。
+func parsePositiveInt(raw string, fallback int) int {
+	v, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || v < 1 {
+		return fallback
+	}
+	return v
+}
+
+// parseOptionalQueryTime 解析可选的 ISO/常见日期时间查询参数。
+func parseOptionalQueryTime(raw string) (*time.Time, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parsed, err := model.ParseCustomTime(raw)
+	if err != nil {
+		return nil, err
+	}
+	if parsed == nil {
+		return nil, nil
+	}
+	return &parsed.Time, nil
 }
 
 // GetTask 获取任务元信息

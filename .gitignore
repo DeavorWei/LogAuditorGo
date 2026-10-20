@@ -9,3 +9,6 @@
 /build
 LogAuditorGoData/
 **/LogAuditorGoData/
+# 本地冒烟实例（临时数据目录 / 截图 / 浏览器 profile）
+/.smoke/
+/.smoke-config.yaml

@@ -393,7 +393,7 @@
                   <el-option label="来源文件 (source_file)" value="source_file" />
                   <el-option label="严重级别 (severity)" value="severity" />
                   <el-option label="匹配分层 (match_tier)" value="match_tier" />
-                  <el-option label="置信度 (match_confidence)" value="match_confidence" />
+                  <el-option label="匹配置信度 (match_confidence)" value="match_confidence" />
                   <el-option label="知识库ID (knowledge_id)" value="knowledge_id" />
                 </el-option-group>
               </el-select>
@@ -1354,11 +1354,11 @@ const operatorMap = {
     { label: '不属于', value: 'not_in' }
   ],
   match_confidence: [
-    { label: '置信度 >=', value: 'gte' },
-    { label: '置信度 <=', value: 'lte' },
-    { label: '置信度 >', value: 'gt' },
-    { label: '置信度 <', value: 'lt' },
-    { label: '置信度 =', value: 'eq' }
+    { label: '匹配置信度 >=', value: 'gte' },
+    { label: '匹配置信度 <=', value: 'lte' },
+    { label: '匹配置信度 >', value: 'gt' },
+    { label: '匹配置信度 <', value: 'lt' },
+    { label: '匹配置信度 =', value: 'eq' }
   ],
   knowledge_id: [
     { label: '知识ID >=', value: 'gte' },

@@ -5,78 +5,40 @@
       size="default"
       @update:model-value="(val) => $emit('update:modelValue', val)"
     >
-      <el-radio-button :value="VIEW_MODE.WORKBENCH">
+      <el-radio-button :value="VIEW_MODE.LOGS">
         <el-icon><Document /></el-icon>
-        <span>日志审计工作台</span>
+        <span>日志分析</span>
       </el-radio-button>
-      <el-radio-button :value="VIEW_MODE.DEVICES">
-        <el-icon><Monitor /></el-icon>
-        <span>设备管理</span>
-        <span v-if="currentTask && currentTask.device_count" class="nav-count-badge">
-          {{ currentTask.device_count }}
-        </span>
-      </el-radio-button>
-      <el-radio-button :value="VIEW_MODE.MULTI_TIMELINE">
+      <el-radio-button :value="VIEW_MODE.TIMELINE">
         <el-icon><Histogram /></el-icon>
-        <span>多设备协同时间线</span>
+        <span>事件时间线</span>
       </el-radio-button>
-      <el-radio-button :value="VIEW_MODE.RCA">
-        <el-icon><Aim /></el-icon>
-        <span>RCA 故障联动</span>
-        <el-tooltip
-          v-if="currentTask && (currentTask.rca_status === 'QUEUED' || currentTask.rca_status === 'RUNNING')"
-          content="根因拓扑正在后台推导中，工作台已就绪可正常审计"
-          placement="top"
-        >
-          <el-icon class="is-loading nav-loading-icon"><Loading /></el-icon>
-        </el-tooltip>
-        <el-tooltip
-          v-else-if="currentTask && currentTask.rca_status === 'TIMEOUT'"
-          :content="`根因拓扑分析超时截断，已推导出 ${currentTask.rca_count || 0} 个事件`"
-          placement="top"
-        >
-          <span class="nav-count-badge warning">
-            {{ currentTask.rca_count || 0 }}!
-          </span>
-        </el-tooltip>
-        <span
-          v-else-if="currentTask && currentTask.rca_count"
-          class="nav-count-badge danger"
-        >
-          {{ currentTask.rca_count }}
-        </span>
-      </el-radio-button>
-      <el-radio-button :value="VIEW_MODE.MULTI_REPORT">
+      <el-radio-button :value="VIEW_MODE.REPORT">
         <el-icon><DataAnalysis /></el-icon>
-        <span>多设备对比诊断报告</span>
+        <span>分析报告</span>
       </el-radio-button>
     </el-radio-group>
   </div>
 </template>
 
 <script setup>
-import { computed } from 'vue'
-import { Document, Monitor, Histogram, Aim, Loading, DataAnalysis } from '@element-plus/icons-vue'
+import { Document, Histogram, DataAnalysis } from '@element-plus/icons-vue'
 import { VIEW_MODE } from '@/constants/viewModes'
-import { useTaskStore } from '@/stores/task'
 
 defineProps({
   modelValue: {
     type: String,
-    default: VIEW_MODE.WORKBENCH
+    default: VIEW_MODE.LOGS
   }
 })
 
 defineEmits(['update:modelValue'])
-
-const taskStore = useTaskStore()
-const currentTask = computed(() => taskStore.currentTask)
 </script>
 
 <style scoped>
 .workbench-nav-bar {
   display: flex;
-  justify-content: flex-start;
+  justify-content: space-between;
   align-items: center;
   background: var(--gray-0);
   padding: 8px 16px;
@@ -92,7 +54,7 @@ const currentTask = computed(() => taskStore.currentTask)
   justify-content: center;
   height: 32px;
   line-height: 32px;
-  padding: 0 14px;
+  padding: 0 16px;
   box-sizing: border-box;
 }
 
@@ -101,49 +63,4 @@ const currentTask = computed(() => taskStore.currentTask)
   vertical-align: middle;
 }
 
-.nav-loading-icon {
-  margin-left: 6px;
-  color: var(--brand-500);
-  vertical-align: middle;
-}
-
-.nav-count-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 16px;
-  min-width: 16px;
-  padding: 0 4px;
-  margin-left: 6px;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  line-height: 1;
-  border-radius: var(--radius-lg);
-  background-color: var(--brand-500);
-  color: var(--gray-0);
-  box-sizing: border-box;
-}
-
-.nav-count-badge.danger {
-  background-color: var(--danger-strong);
-}
-
-.nav-count-badge.warning {
-  background-color: var(--warning-strong);
-}
-
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge {
-  background-color: rgba(255, 255, 255, 0.28);
-  color: var(--gray-0);
-}
-
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.danger {
-  background-color: var(--danger-strong);
-  color: var(--gray-0);
-}
-
-.workbench-nav-bar :deep(.el-radio-button.is-active) .nav-count-badge.warning {
-  background-color: var(--warning-strong);
-  color: var(--gray-0);
-}
 </style>
