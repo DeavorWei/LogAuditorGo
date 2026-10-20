@@ -52,6 +52,8 @@
             <span class="el-button el-button--primary">选择文件夹并开始扫描</span>
           </button>
         </div>
+
+        <HdxHelpCard class="doc-hdx-card" @import-doc="openGuidePicker" />
       </el-card>
     </div>
 
@@ -375,6 +377,7 @@ import {
 import api from '@/api'
 import ImportProgressModal from '@/components/ImportProgressModal.vue'
 import ServerPathPicker from '@/components/ServerPathPicker.vue'
+import HdxHelpCard from '@/components/HdxHelpCard.vue'
 import {
   formatTime as sharedFormatTime,
   formatSize as sharedFormatSize,
@@ -798,6 +801,11 @@ onMounted(() => {
   border-radius: var(--radius-lg);
   background: var(--bg-subtle);
   border: 1px dashed var(--gray-300);
+}
+
+.doc-hdx-card {
+  margin-top: 16px;
+  text-align: left;
 }
 
 .guide-header {

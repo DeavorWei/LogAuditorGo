@@ -198,6 +198,8 @@ func ResolveSpecificModelOrFamily(hostname string) string {
 
 // MatchTier 匹配层级常量
 const (
+	TierLocalMapping  = "LOCAL_MAPPING"  // 0.90: 本地覆盖绑定到官方知识（优先于官方精确）
+	TierLocalExact    = "LOCAL_EXACT"    // 0.95: 用户补充的本地知识精确命中
 	TierExact         = "EXACT"          // 1.0: 模块与简名精确匹配
 	TierMnemonic      = "MNEMONIC"       // 0.9: 助记符/别名不区分大小写模糊匹配
 	TierTemplate      = "TEMPLATE"       // 0.8: 日志消息模板反向正则匹配
@@ -219,11 +221,13 @@ const (
 	BleveMinScoreThreshold = 0.25 // Bleve 搜索候选最低相关度分数阈值
 
 	// 各层级匹配置信度 (Confidence Level)
-	ConfidenceExact    = 1.0  // Tier 1 (EXACT) 精确匹配置信度
-	ConfidenceMnemonic = 0.90 // Tier 2 (MNEMONIC) 助记符别名匹配置信度
-	ConfidenceTemplate = 0.80 // Tier 3 (TEMPLATE) 消息模板反向匹配置信度
-	ConfidenceBleveMin = 0.50 // Tier 4 (BLEVE) 全文语义检索最小置信度
-	ConfidenceBleveMax = 0.75 // Tier 4 (BLEVE) 全文语义检索最大置信度
+	ConfidenceLocalMapping = 0.90 // 本地覆盖（LOCAL_MAPPING）
+	ConfidenceLocalExact   = 0.95 // 本地知识（LOCAL_EXACT）
+	ConfidenceExact        = 1.0  // Tier 1 (EXACT) 精确匹配置信度
+	ConfidenceMnemonic     = 0.90 // Tier 2 (MNEMONIC) 助记符别名匹配置信度
+	ConfidenceTemplate     = 0.80 // Tier 3 (TEMPLATE) 消息模板反向匹配置信度
+	ConfidenceBleveMin     = 0.50 // Tier 4 (BLEVE) 全文语义检索最小置信度
+	ConfidenceBleveMax     = 0.75 // Tier 4 (BLEVE) 全文语义检索最大置信度
 
 	// ConfidenceFamilySuspectMax 互斥族豁免保留条目的置信度上限。
 	// 该类条目仅因候选窗口内不存在同族知识而被保留，跨产品复用的可能性无法排除，

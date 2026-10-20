@@ -417,6 +417,7 @@ func (s *Service) DeleteTaskFile(taskID string, fileID uint) (*model.TaskInfo, e
 		if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(totalLogCount), int(matchedCount), model.TaskStatusCompleted, ""); fErr != nil {
 			logger.Log.Errorf("[Task Service] finalizeTaskInfo completed failed: %v", fErr)
 		}
+		s.refreshTaskDigestQuiet(taskID)
 		if autoRCAEnabled() {
 			s.MarkRCAQueuedSync(taskID)
 			s.TriggerTaskRCA(taskID, true)
@@ -641,6 +642,8 @@ func (s *Service) ImportLogsWithDevice(taskID string, deviceID uint, items []Fil
 		model.TaskStatusCompleted, errSummary); fErr != nil {
 		logger.Log.Errorf("[Task Service] finalizeTaskInfo failed on import completion: %v", fErr)
 	}
+	// v1.3: 刷新跨任务检索摘要（失败只告警）
+	s.refreshTaskDigestQuiet(taskID)
 
 	logger.Log.Infof("[Task Service] Task %s updated: %d files, %d total logs, %d matched",
 		taskID, taskInfo.FileCount, taskInfo.LogCount, taskInfo.MatchedCount)
@@ -1454,6 +1457,10 @@ func (s *Service) DeleteTask(taskID string) error {
 	}
 	if res.RowsAffected == 0 {
 		logger.Log.Warnf("[Task Service] task %s not found in global db during delete (physical files already removed)", taskID)
+	}
+	// 跨任务检索摘要同步清理，避免已删任务仍出现在热点/检索结果中
+	if err := s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskDigest{}).Error; err != nil {
+		logger.Log.Warnf("[Task Service] delete task digest %s failed: %v", taskID, err)
 	}
 
 	logger.Log.Infof("[Task Service] Task %s deleted (files + metadata)", taskID)
@@ -2732,6 +2739,7 @@ func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...R
 	if fErr := s.finalizeTaskInfo(taskDB, &taskInfo, int(finalLogCount), int(finalMatched), model.TaskStatusCompleted, ""); fErr != nil {
 		logger.Log.Errorf("[Task Service] finalizeTaskInfo failed on reanalyze completion: %v", fErr)
 	}
+	s.refreshTaskDigestQuiet(taskID)
 
 	logger.Log.Infof("[Task Service] Reanalyze completed for task %s: %d total logs, %d matched",
 		taskID, taskInfo.LogCount, taskInfo.MatchedCount)

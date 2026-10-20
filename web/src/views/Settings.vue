@@ -153,6 +153,33 @@
           <p class="section-tip">
             任务库按案例物理隔离存放；删除案例会同时删除对应数据库文件。日志占用可通过“常规”页的清理策略控制。
           </p>
+
+          <el-divider content-position="left">备份、恢复与诊断</el-divider>
+          <div class="backup-actions">
+            <el-button type="primary" :icon="Coin" :loading="creatingBackup" @click="handleCreateBackup">
+              立即创建备份
+            </el-button>
+            <el-button :icon="Download" @click="handleDownloadDiagnostics">下载诊断包</el-button>
+            <span class="backup-hint">备份包含知识库/索引/任务库/配置；保留最近 3 份。恢复在下次启动生效。</span>
+          </div>
+
+          <el-table :data="backups" v-loading="loadingBackups" size="small" style="width: 100%; margin-top: 12px">
+            <el-table-column prop="name" label="备份文件" min-width="220" />
+            <el-table-column label="大小" width="110" align="right">
+              <template #default="{ row }">{{ formatSize(row.size) }}</template>
+            </el-table-column>
+            <el-table-column label="创建时间" width="180">
+              <template #default="{ row }">{{ formatTime(row.created_at) }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="220" align="center">
+              <template #default="{ row }">
+                <el-button link type="primary" size="small" @click="handleDownloadBackup(row)">下载</el-button>
+                <el-button link type="warning" size="small" @click="handleRestoreBackup(row)">恢复</el-button>
+                <el-button link type="danger" size="small" @click="handleDeleteBackup(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!loadingBackups && backups.length === 0" description="还没有备份" :image-size="60" />
         </el-card>
       </el-tab-pane>
 
@@ -268,7 +295,7 @@ import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Document, Files, PieChart, Timer, Setting, Tickets, Coin, Reading, FolderOpened,
-  List, Search, MagicStick, InfoFilled, Check, Refresh, Delete, DocumentChecked, Folder
+  List, Search, MagicStick, InfoFilled, Check, Refresh, Delete, DocumentChecked, Folder, Download
 } from '@element-plus/icons-vue'
 import api from '@/api'
 import StatCard from '@/components/StatCard.vue'
@@ -289,6 +316,9 @@ const logForm = ref({ dir: 'LogAuditorGoData/log', max_size_mb: 1024, max_days: 
 
 const storage = ref({ paths: [], counts: {}, version: '', config_file: '' })
 const indexStatus = ref({ mapping_version: null, mapping_outdated: false, indexed_documents: 0 })
+const backups = ref([])
+const loadingBackups = ref(false)
+const creatingBackup = ref(false)
 
 const saving = ref(false)
 const cleaning = ref(false)
@@ -357,6 +387,68 @@ const fetchIndexStatus = async () => {
   } finally {
     loadingIndex.value = false
   }
+}
+
+const fetchBackups = async () => {
+  loadingBackups.value = true
+  try {
+    const res = await api.listBackups()
+    if (res.code === 0) backups.value = res.data || []
+  } finally {
+    loadingBackups.value = false
+  }
+}
+
+const handleCreateBackup = async () => {
+  creatingBackup.value = true
+  try {
+    const res = await api.createBackup()
+    if (res.code === 0) {
+      ElMessage.success('备份已完成')
+      await fetchBackups()
+      await fetchStorage()
+    }
+  } finally {
+    creatingBackup.value = false
+  }
+}
+
+const handleDownloadBackup = async (row) => {
+  await api.downloadBackup(row.name)
+}
+
+const handleRestoreBackup = async (row) => {
+  try {
+    await ElMessageBox.confirm(
+      `将使用备份 ${row.name} 覆盖当前知识库/索引/任务库，恢复会在下次启动时执行，当前数据会保留为 .pre_restore_<时间>。是否继续？`,
+      '确认恢复',
+      { type: 'warning', confirmButtonText: '准备恢复', cancelButtonText: '取消' }
+    )
+  } catch (e) {
+    return
+  }
+  const res = await api.restoreBackup(row.name)
+  if (res.code === 0) {
+    ElMessageBox.alert('恢复已准备，请手动重启 LogAuditorGo 后生效。', '需要重启', { type: 'success' })
+  }
+}
+
+const handleDeleteBackup = async (row) => {
+  try {
+    await ElMessageBox.confirm(`删除备份 ${row.name}？`, '确认删除', { type: 'warning' })
+  } catch (e) {
+    return
+  }
+  const res = await api.deleteBackup(row.name)
+  if (res.code === 0) {
+    ElMessage.success('备份已删除')
+    await fetchBackups()
+  }
+}
+
+const handleDownloadDiagnostics = async () => {
+  await api.downloadDiagnostics()
+  ElMessage.success('诊断包已下载')
 }
 
 const handleSaveConfig = async () => {
@@ -462,6 +554,7 @@ onMounted(async () => {
     fetchConfig(),
     fetchStorage(),
     fetchIndexStatus(),
+    fetchBackups(),
     featureStore.fetchFeatures()
   ])
 })
@@ -583,6 +676,18 @@ onMounted(async () => {
 
 .diag-note {
   margin-left: 8px;
+  font-size: var(--fs-xs);
+  color: var(--text-secondary);
+}
+
+.backup-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.backup-hint {
   font-size: var(--fs-xs);
   color: var(--text-secondary);
 }

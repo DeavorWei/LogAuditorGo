@@ -10,6 +10,7 @@ import (
 
 	"logauditorgo/internal/knowledge"
 	"logauditorgo/internal/search"
+	"logauditorgo/internal/task"
 	"logauditorgo/pkg/logger"
 	"logauditorgo/pkg/progress"
 )
@@ -17,13 +18,18 @@ import (
 type KnowledgeHandler struct {
 	knowledgeSvc *knowledge.Service
 	indexer      *search.Indexer
+	taskSvc      *task.Service
 }
 
-func NewKnowledgeHandler(knowledgeSvc *knowledge.Service, indexer *search.Indexer) *KnowledgeHandler {
-	return &KnowledgeHandler{
+func NewKnowledgeHandler(knowledgeSvc *knowledge.Service, indexer *search.Indexer, taskSvc ...*task.Service) *KnowledgeHandler {
+	h := &KnowledgeHandler{
 		knowledgeSvc: knowledgeSvc,
 		indexer:      indexer,
 	}
+	if len(taskSvc) > 0 {
+		h.taskSvc = taskSvc[0]
+	}
+	return h
 }
 
 // SearchKnowledge 全文与多维组合检索知识库
@@ -61,6 +67,7 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 		Version:   version,
 		Page:      page,
 		PageSize:  pageSize,
+		Sort:      c.Query("sort"),
 	}
 
 	res, err := h.indexer.Search(filter)
@@ -80,6 +87,8 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 		Description string `json:"description"`
 		Cause       string `json:"cause"`
 		Action      string `json:"action"`
+		Source      string `json:"source"`
+		Reference   string `json:"reference_url,omitempty"`
 	}
 
 	enrichedHits := make([]EnrichedHit, 0)
@@ -109,6 +118,8 @@ func (h *KnowledgeHandler) SearchKnowledge(c *gin.Context) {
 						Description: k.Description,
 						Cause:       k.Cause,
 						Action:      k.Action,
+						Source:      k.Source,
+						Reference:   k.ReferenceURL,
 					}
 					enrichedHits = append(enrichedHits, eh)
 				}
@@ -188,6 +199,63 @@ func (h *KnowledgeHandler) GetIndexStatus(c *gin.Context) {
 	})
 }
 
+// GetFacets 返回知识库分面（产品/版本/严重度/类型）。
+func (h *KnowledgeHandler) GetFacets(c *gin.Context) {
+	facets, err := h.knowledgeSvc.GetKnowledgeFacets(c.Query("module"), c.Query("entry_type"))
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, facets)
+}
+
+// SetFavorite 收藏知识。
+func (h *KnowledgeHandler) SetFavorite(c *gin.Context) {
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.knowledgeSvc.SetFavorite(id, true); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, nil, "已收藏")
+}
+
+// RemoveFavorite 取消收藏。
+func (h *KnowledgeHandler) RemoveFavorite(c *gin.Context) {
+	id, ok := parseUintParam(c, "id")
+	if !ok {
+		return
+	}
+	if err := h.knowledgeSvc.SetFavorite(id, false); err != nil {
+		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, nil, "已取消收藏")
+}
+
+// ListFavorites 返回收藏列表。
+func (h *KnowledgeHandler) ListFavorites(c *gin.Context) {
+	items, err := h.knowledgeSvc.ListFavorites()
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, items)
+}
+
+// ListRecent 返回最近浏览。
+func (h *KnowledgeHandler) ListRecent(c *gin.Context) {
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
+	items, err := h.knowledgeSvc.ListRecent(limit)
+	if err != nil {
+		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		return
+	}
+	SuccessResponse(c, items)
+}
+
 // GetKnowledgeDetail 获取单条知识详情
 func (h *KnowledgeHandler) GetKnowledgeDetail(c *gin.Context) {
 	idStr := c.Param("id")
@@ -202,6 +270,8 @@ func (h *KnowledgeHandler) GetKnowledgeDetail(c *gin.Context) {
 		ErrorResponse(c, http.StatusNotFound, -1, "Knowledge not found: "+err.Error())
 		return
 	}
+	// v1.3: 记录最近浏览（本地工具，GET 侧写入可接受；最多保留 50 条）
+	h.knowledgeSvc.RecordRecent(uint(id))
 
 	SuccessResponse(c, k)
 }

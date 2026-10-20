@@ -57,17 +57,17 @@ type LogEntry struct {
 
 // ProgressSnapshot 进度数据快照（前端接收模型）
 type ProgressSnapshot struct {
-	JobID        string      `json:"job_id"`
-	TaskID       string      `json:"task_id,omitempty"`
-	JobType      string      `json:"job_type"` // "hdx" | "log"
-	Status       JobStatus   `json:"status"`
-	CurrentStage string      `json:"current_stage"`
-	StageIndex   int         `json:"stage_index"`
-	TotalStages  int         `json:"total_stages"`
-	Current      int64       `json:"current"`
-	Total        int64       `json:"total"`
-	Percent      float64     `json:"percent"`
-	Message      string      `json:"message"`
+	JobID        string    `json:"job_id"`
+	TaskID       string    `json:"task_id,omitempty"`
+	JobType      string    `json:"job_type"` // "hdx" | "log"
+	Status       JobStatus `json:"status"`
+	CurrentStage string    `json:"current_stage"`
+	StageIndex   int       `json:"stage_index"`
+	TotalStages  int       `json:"total_stages"`
+	Current      int64     `json:"current"`
+	Total        int64     `json:"total"`
+	Percent      float64   `json:"percent"`
+	Message      string    `json:"message"`
 	// OverallLabel 批量处理时的整体进度描述（例如"第 3/12 个文档包"），为空表示无整体进度概念
 	OverallLabel string      `json:"overall_label,omitempty"`
 	Stages       []StageInfo `json:"stages"`
@@ -132,13 +132,13 @@ func NewJobTracker(jobID string, taskID string, jobType string, stageDefs []Stag
 	}
 
 	tracker := &JobTracker{
-		jobID:       jobID,
-		taskID:      taskID,
-		jobType:     jobType,
-		status:      JobRunning,
-		stages:      stages,
-		stageIndex:  -1,
-		subscribers: make(map[chan ProgressSnapshot]struct{}),
+		jobID:          jobID,
+		taskID:         taskID,
+		jobType:        jobType,
+		status:         JobRunning,
+		stages:         stages,
+		stageIndex:     -1,
+		subscribers:    make(map[chan ProgressSnapshot]struct{}),
 		startTime:      time.Now(),
 		updatedAt:      time.Now(),
 		logs:           make([]LogEntry, 0, 50),
@@ -675,6 +675,22 @@ func GetHub() *Hub {
 		go GlobalHub.startJanitor()
 	})
 	return GlobalHub
+}
+
+// RunningCount 返回当前仍在运行的任务数。
+//
+// 供备份等"需要一致快照"的操作判断是否可以开始：长任务运行期间
+// 关闭任务库连接/复制索引都会得到不一致的数据。
+func (h *Hub) RunningCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	count := 0
+	for _, job := range h.jobs {
+		if job != nil && job.GetSnapshot().Status == JobRunning {
+			count++
+		}
+	}
+	return count
 }
 
 // Stop 停止 Hub 的后台清理任务

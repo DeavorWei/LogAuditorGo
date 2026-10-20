@@ -56,6 +56,8 @@ type SearchFilter struct {
 	Version   string
 	Page      int
 	PageSize  int
+	// Sort 排序方式：""/"relevance"（默认）或 "severity"（低级别=更严重）。
+	Sort string
 }
 
 type SearchHit struct {
@@ -81,8 +83,9 @@ type Indexer struct {
 // KB-02: 所有文本字段统一 `Store: true`，让 Search 命中即可直接回填完整文档内容，
 // 调用方不再需要按 ID 回查数据库（消除 N+1）。
 // KB-09: brief 增加 cjk 子字段（brief.cjk），中文助记符不再是"整串精确匹配"；
-//        product_list / version_list 改 keyword 分词 + TermQuery，
-//        避免 `V800R021C00` 被切成二元碎片导致过滤不精确。
+//
+//	product_list / version_list 改 keyword 分词 + TermQuery，
+//	避免 `V800R021C00` 被切成二元碎片导致过滤不精确。
 func buildIndexMapping() mapping.IndexMapping {
 	indexMapping := bleve.NewIndexMapping()
 	indexMapping.DefaultAnalyzer = "cjk"
@@ -543,6 +546,10 @@ func (idx *Indexer) Search(filter SearchFilter) (*SearchResult, error) {
 	from := (page - 1) * pageSize
 
 	searchRequest := bleve.NewSearchRequestOptions(rootQuery, pageSize, from, false)
+	// v1.3: 支持按严重度排序（severity 数值越小越严重），默认按相关度
+	if strings.EqualFold(strings.TrimSpace(filter.Sort), "severity") {
+		searchRequest.SortBy([]string{"severity", "-_score"})
+	}
 	searchRequest.Highlight = bleve.NewHighlight()
 	// KB-02: 请求返回全部已存储字段，命中即带完整文档，调用方无需 N+1 回查
 	searchRequest.Fields = []string{"*"}

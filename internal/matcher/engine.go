@@ -153,6 +153,10 @@ type MatchEngine struct {
 	exactMap  map[string][]*model.Knowledge // Key: UPPER(MODULE) + ":" + UPPER(BRIEF)
 	moduleMap map[string][]*model.Knowledge // Key: UPPER(MODULE)
 	idMap     map[uint]*model.Knowledge     // Key: ID
+	// localExact 本地知识索引（source=local），命中即返回 LOCAL_EXACT(0.95)
+	localExact map[string]*model.Knowledge
+	// overrides 本地覆盖（module+brief → 官方 knowledge_id），命中即返回 LOCAL_MAPPING(0.90)
+	overrides map[string]uint
 	loaded    bool
 
 	// templateBuckets Tier3 模板倒排索引 (PARSE-15)：
@@ -176,6 +180,8 @@ func NewMatchEngine(db *gorm.DB, indexer *search.Indexer) *MatchEngine {
 		exactMap:       make(map[string][]*model.Knowledge),
 		moduleMap:      make(map[string][]*model.Knowledge),
 		idMap:          make(map[uint]*model.Knowledge),
+		localExact:     make(map[string]*model.Knowledge),
+		overrides:      make(map[string]uint),
 		cache:          cache.NewShardedLRUCache[*matchCacheItem](defaultMatchCacheCap, 32),
 		exactBestCache: cache.NewShardedLRUCache[*model.Knowledge](defaultExactBestCacheCap, 32),
 		negativeCache:  cache.NewShardedLRUCache[struct{}](defaultNegativeCacheCap, 32),
@@ -221,6 +227,7 @@ func (m *MatchEngine) loadIndexLocked() {
 		newExact := make(map[string][]*model.Knowledge, len(list))
 		newModule := make(map[string][]*model.Knowledge)
 		newID := make(map[uint]*model.Knowledge, len(list))
+		newLocal := make(map[string]*model.Knowledge)
 		// PARSE-15: 同步构建 Tier3 模板倒排索引
 		newBuckets := make(map[string]map[string][]*model.Knowledge)
 
@@ -233,6 +240,10 @@ func (m *MatchEngine) loadIndexLocked() {
 			newExact[exactKey] = append(newExact[exactKey], k)
 			newModule[modKey] = append(newModule[modKey], k)
 			newID[k.ID] = k
+			// 本地知识单独建索引：与官方同键时必须稳定优先，不依赖加载顺序。
+			if k.Source == "local" {
+				newLocal[exactKey] = k
+			}
 
 			if tpl := strings.TrimSpace(k.Message); tpl != "" {
 				bucket := newBuckets[modKey]
@@ -245,13 +256,46 @@ func (m *MatchEngine) loadIndexLocked() {
 			}
 		}
 
+		// 本地覆盖映射：仅保留目标知识仍存在的记录
+		newOverrides := make(map[string]uint)
+		var overrideRows []model.KnowledgeOverride
+		if err := m.db.Where("enabled = ?", true).Find(&overrideRows).Error; err == nil {
+			for _, row := range overrideRows {
+				key := strings.ToUpper(strings.TrimSpace(row.Module)) + ":" + strings.ToUpper(strings.TrimSpace(row.Brief))
+				if newID[row.KnowledgeID] != nil {
+					newOverrides[key] = row.KnowledgeID
+				}
+			}
+		}
+
 		m.exactMap = newExact
 		m.moduleMap = newModule
 		m.idMap = newID
+		m.localExact = newLocal
+		m.overrides = newOverrides
 		m.templateBuckets = newBuckets
 		m.loaded = true
-		logger.Log.Debugf("[Matcher] In-memory knowledge index loaded: %d items", len(list))
+		logger.Log.Debugf("[Matcher] In-memory knowledge index loaded: %d items (%d local, %d overrides)",
+			len(list), len(newLocal), len(newOverrides))
 	}
+}
+
+// matchLocal 查询本地覆盖与本地知识索引。
+//
+// 返回 ok=false 表示没有命中本地规则，继续走官方四级流水线。
+func (m *MatchEngine) matchLocal(exactKey string) (*model.Knowledge, string, float64, bool) {
+	m.indexMu.RLock()
+	defer m.indexMu.RUnlock()
+
+	if knowledgeID, ok := m.overrides[exactKey]; ok {
+		if k := m.idMap[knowledgeID]; k != nil {
+			return k, TierLocalMapping, ConfidenceLocalMapping, true
+		}
+	}
+	if k := m.localExact[exactKey]; k != nil {
+		return k, TierLocalExact, ConfidenceLocalExact, true
+	}
+	return nil, "", 0, false
 }
 
 func (m *MatchEngine) ensureIndex() {
@@ -367,6 +411,12 @@ func (m *MatchEngine) Match(norm *model.NormalizedLog, product string, version s
 	}
 
 	m.ensureIndex()
+
+	// ---------------- Tier 0: 本地覆盖 / 本地知识（v1.3，最高优先级） ----------------
+	// 用户显式绑定/补充的知识必须稳定优先于官方候选，且不受互斥产品族过滤影响。
+	if k, tier, conf, ok := m.matchLocal(module + ":" + upperBrief); ok {
+		return k, tier, conf
+	}
 
 	// ---------------- Tier 1~3: 纯内存索引匹配（受 indexMu 保护） ----------------
 	var fallbackK *model.Knowledge

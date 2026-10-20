@@ -76,6 +76,10 @@ func InitKnowledgeDB(dbPath string) (*gorm.DB, error) {
 		&model.Document{},
 		&model.Knowledge{},
 		&model.KnowledgeVersionMapping{},
+		&model.KnowledgeOverride{},
+		&model.KnowledgeFavorite{},
+		&model.KnowledgeRecent{},
+		&model.TaskDigest{},
 		&model.TaskInfo{},
 	); err != nil {
 		return nil, fmt.Errorf("auto migrate knowledge tables failed: %w", err)

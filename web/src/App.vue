@@ -39,6 +39,13 @@
         </el-menu-item>
       </el-menu>
 
+      <!-- v1.3: 顶栏帮助入口（任何页面可打开使用说明/HDX/快捷键） -->
+      <div class="help-entry">
+        <el-tooltip content="帮助：使用说明 / HDX 获取 / 快捷键" placement="bottom">
+          <el-button circle type="info" plain :icon="QuestionFilled" @click="showHelp = true" />
+        </el-tooltip>
+      </div>
+
       <!--
         UI-01: 常驻的"运行中任务"指示器。
         进度弹窗被关闭后任务仍在后台执行，此前没有任何入口可以回到弹窗，
@@ -58,19 +65,54 @@
     <el-main class="app-main" :class="{ 'is-immersive': isImmersiveWorkbench }">
       <router-view />
     </el-main>
+
+    <HelpDrawer
+      v-model="showHelp"
+      @open-onboarding="openOnboarding"
+      @import-doc="goDocuments"
+    />
+    <OnboardingDialog v-model="showOnboarding" />
   </el-container>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
-import { Loading } from '@element-plus/icons-vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { Loading, QuestionFilled } from '@element-plus/icons-vue'
 import { useProgressStore } from '@/stores/progress'
 import { useWorkbenchUIStore } from '@/stores/workbenchUI'
+import { useOnboardingStore } from '@/stores/onboarding'
+import HelpDrawer from '@/components/HelpDrawer.vue'
+import OnboardingDialog from '@/components/OnboardingDialog.vue'
 
 const route = useRoute()
+const router = useRouter()
 const progressStore = useProgressStore()
 const workbenchUIStore = useWorkbenchUIStore()
+const onboardingStore = useOnboardingStore()
+
+const showHelp = ref(false)
+const showOnboarding = ref(false)
+
+const openOnboarding = () => {
+  showHelp.value = false
+  onboardingStore.reopen()
+  showOnboarding.value = true
+}
+
+const goDocuments = () => {
+  showHelp.value = false
+  router.push('/documents')
+}
+
+// 首启：仅当后端标记"从未完成且未跳过/关闭"时自动弹出
+watch(
+  () => onboardingStore.shouldShow,
+  (value) => {
+    if (value) showOnboarding.value = true
+  },
+  { immediate: true }
+)
 
 // 沉浸或物理全屏模式下，隐藏工作台顶栏
 const isImmersiveWorkbench = computed(() => {
@@ -108,6 +150,7 @@ const reopenProgressDialog = () => {
 let pruneTimer = null
 onMounted(() => {
   pruneTimer = setInterval(() => progressStore.prune(), 60 * 1000)
+  onboardingStore.fetch(true)
 })
 onUnmounted(() => {
   if (pruneTimer) clearInterval(pruneTimer)
@@ -168,6 +211,13 @@ onUnmounted(() => {
   height: var(--app-header-h);
   flex: 1;
   min-width: 0;
+}
+
+.help-entry {
+  display: flex;
+  align-items: center;
+  margin-left: var(--sp-8);
+  flex-shrink: 0;
 }
 
 /* UI-01: 运行中任务指示器 */

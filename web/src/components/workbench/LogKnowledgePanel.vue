@@ -152,11 +152,12 @@
           <el-button size="small" :icon="CopyDocument" @click="copyModuleBrief">
             复制模块/助记符
           </el-button>
-          <el-tooltip content="本地知识补充与匹配覆盖将在下一阶段提供" placement="top">
-            <span>
-              <el-button size="small" disabled :icon="Plus">补充本地知识</el-button>
-            </span>
-          </el-tooltip>
+          <el-button size="small" type="success" plain :icon="Plus" @click="showLocalDialog = true">
+            补充本地知识
+          </el-button>
+          <el-button size="small" :icon="Link" @click="showBindDialog = true">
+            绑定已有知识
+          </el-button>
         </div>
         <div class="unmatched-tips">
           <div class="tips-title">下一步建议</div>
@@ -172,18 +173,32 @@
     <div v-else class="empty-state">
       <el-empty description="请选择日志查看官方故障知识库与排查建议" />
     </div>
+
+    <LocalKnowledgeDialog
+      v-model="showLocalDialog"
+      :initial="{ module: log?.module, brief: log?.brief }"
+      @saved="onKnowledgeSaved"
+    />
+    <BindKnowledgeDialog
+      v-model="showBindDialog"
+      :module="log?.module || ''"
+      :brief="log?.brief || ''"
+      @saved="onKnowledgeSaved"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, inject } from 'vue'
+import { computed, inject, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import {
-  InfoFilled, Reading, Search, Tools, Warning, Document, CopyDocument, Plus
+  InfoFilled, Reading, Search, Tools, Warning, Document, CopyDocument, Plus, Link
 } from '@element-plus/icons-vue'
 import { LOG_DETAIL_CONTEXT_KEY } from '@/utils/logFormatter'
 import { matchTierMeta } from '@/constants/matchTiers'
+import LocalKnowledgeDialog from '@/components/LocalKnowledgeDialog.vue'
+import BindKnowledgeDialog from '@/components/BindKnowledgeDialog.vue'
 
 const props = defineProps({
   log: {
@@ -197,6 +212,13 @@ const props = defineProps({
 })
 
 const router = useRouter()
+
+const showLocalDialog = ref(false)
+const showBindDialog = ref(false)
+
+const onKnowledgeSaved = () => {
+  ElMessage.success('知识已保存；重新分析或下次导入时生效')
+}
 
 // 注入富文本格式化上下文
 const logContext = inject(LOG_DETAIL_CONTEXT_KEY, null)

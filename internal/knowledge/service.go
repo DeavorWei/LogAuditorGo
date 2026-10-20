@@ -1250,9 +1250,24 @@ func (s *Service) DeleteDocuments(docIDs []uint) (int, error) {
 			activeSet[id] = struct{}{}
 		}
 
+		// v1.3: 本地知识不随官方文档删除而清理（双保险：孤儿判定排除 + 删除条件排除）。
+		var localIDs []uint
+		if err := s.db.Model(&model.Knowledge{}).
+			Where("id IN ? AND source = ?", kIDs, "local").
+			Pluck("id", &localIDs).Error; err != nil {
+			logger.Log.Warnf("[Knowledge Service] query local knowledge ids failed: %v", err)
+		}
+		localSet := make(map[uint]struct{}, len(localIDs))
+		for _, id := range localIDs {
+			localSet[id] = struct{}{}
+		}
+
 		orphanIDs := make([]string, 0, len(kIDs))
 		orphanUintIDs := make([]uint, 0, len(kIDs))
 		for _, id := range kIDs {
+			if _, isLocal := localSet[id]; isLocal {
+				continue
+			}
 			if _, active := activeSet[id]; !active {
 				orphanUintIDs = append(orphanUintIDs, id)
 				orphanIDs = append(orphanIDs, strconv.Itoa(int(id)))
@@ -1270,7 +1285,7 @@ func (s *Service) DeleteDocuments(docIDs []uint) (int, error) {
 				}
 			}
 			var dbErr error
-			if err := s.db.Where("id IN ?", orphanUintIDs).Delete(&model.Knowledge{}).Error; err != nil {
+			if err := s.db.Where("id IN ? AND source <> ?", orphanUintIDs, "local").Delete(&model.Knowledge{}).Error; err != nil {
 				logger.Log.Errorf("[Knowledge Service] delete orphan knowledge from db failed: %v", err)
 				dbErr = err
 			}

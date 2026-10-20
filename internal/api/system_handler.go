@@ -12,12 +12,14 @@ import (
 
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/model"
+	"logauditorgo/internal/search"
 	"logauditorgo/internal/version"
 	"logauditorgo/pkg/logger"
 )
 
 type SystemHandler struct {
 	globalDB *gorm.DB
+	indexer  *search.Indexer
 }
 
 // NewSystemHandler 构造系统处理器。
@@ -30,6 +32,11 @@ func NewSystemHandler(globalDB ...*gorm.DB) *SystemHandler {
 		h.globalDB = globalDB[0]
 	}
 	return h
+}
+
+// SetIndexer 注入索引实例，供诊断包输出索引健康状态。
+func (h *SystemHandler) SetIndexer(indexer *search.Indexer) {
+	h.indexer = indexer
 }
 
 // GetConfig 获取当前系统配置与日志状态

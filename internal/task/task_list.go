@@ -100,13 +100,16 @@ func (s *Service) QueryTaskList(q TaskListQuery) ([]model.TaskInfo, int64, error
 
 	if kw := strings.TrimSpace(q.Keyword); kw != "" {
 		pattern := "%" + escapeLikePattern(kw) + "%"
-		// 案例检索覆盖：任务名、任务 ID、结论、备注、标签、工单号
-		query = query.Where(
-			"task_name LIKE ? ESCAPE '\\' OR task_id LIKE ? ESCAPE '\\' OR "+
-				"conclusion LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR "+
-				"case_tags LIKE ? ESCAPE '\\' OR external_ref LIKE ? ESCAPE '\\'",
-			pattern, pattern, pattern, pattern, pattern, pattern,
-		)
+		// 案例检索覆盖：任务名、任务 ID、结论、备注、标签、工单号，
+		// 以及 TaskDigest 中的主机名与高频模块（跨任务库检索的辅助索引）。
+		query = query.Joins("LEFT JOIN task_digests AS digest ON digest.task_id = task_info.task_id").
+			Where(
+				"task_info.task_name LIKE ? ESCAPE '\\' OR task_info.task_id LIKE ? ESCAPE '\\' OR "+
+					"task_info.conclusion LIKE ? ESCAPE '\\' OR task_info.notes LIKE ? ESCAPE '\\' OR "+
+					"task_info.case_tags LIKE ? ESCAPE '\\' OR task_info.external_ref LIKE ? ESCAPE '\\' OR "+
+					"digest.hostnames LIKE ? ESCAPE '\\' OR digest.top_modules LIKE ? ESCAPE '\\'",
+				pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern,
+			)
 	}
 	if len(q.Status) > 0 {
 		query = query.Where("status IN ?", q.Status)
@@ -149,7 +152,7 @@ func (s *Service) QueryTaskList(q TaskListQuery) ([]model.TaskInfo, int64, error
 
 	var tasks []model.TaskInfo
 	// 次级排序用 task_id 保证翻页稳定（同毫秒创建的任务不会在不同页重复/漏出）
-	orderClause := fmt.Sprintf("%s %s, task_id DESC", orderColumn, direction)
+	orderClause := fmt.Sprintf("%s %s, task_info.task_id DESC", orderColumn, direction)
 	if err := query.
 		Order(orderClause).
 		Offset((page - 1) * pageSize).

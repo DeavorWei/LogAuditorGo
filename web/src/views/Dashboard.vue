@@ -1,5 +1,8 @@
 <template>
   <div class="dashboard-page">
+    <!-- 首启 checklist：跳过引导后仍可继续（v1.3） -->
+    <OnboardingChecklist @open-guide="onboardingStore.reopen()" />
+
     <!-- 今日概览：最近任务与需要关注的案例 -->
     <el-row :gutter="16" class="content-row">
       <el-col :span="15">
@@ -158,9 +161,12 @@ import echarts from '@/plugins/echarts'
 import api from '@/api'
 import StatCard from '@/components/StatCard.vue'
 import TaskStatusTag from '@/components/TaskStatusTag.vue'
+import OnboardingChecklist from '@/components/OnboardingChecklist.vue'
+import { useOnboardingStore } from '@/stores/onboarding'
 import { formatTime } from '@/utils/format'
 
 const router = useRouter()
+const onboardingStore = useOnboardingStore()
 const stats = ref({})
 const statsLoading = ref(true)
 const moduleChartRef = ref(null)

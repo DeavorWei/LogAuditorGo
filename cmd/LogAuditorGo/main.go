@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"logauditorgo/internal/api"
+	"logauditorgo/internal/backup"
 	"logauditorgo/internal/browser"
 	"logauditorgo/internal/config"
 	"logauditorgo/internal/knowledge"
@@ -125,6 +126,27 @@ func main() {
 			instanceLock = lock
 			defer instanceLock.Release()
 		}
+	}
+
+	// 2.6 应用待处理的数据恢复（v1.3）
+	//
+	// 恢复包由设置页准备，只在启动阶段、打开任何数据库/索引之前应用，
+	// 避免在线替换文件造成句柄与状态不一致。
+	if backup.HasPendingRestore(cfg.Storage.DataDir) {
+		log.Warnf("检测到待应用的数据恢复包，开始恢复（当前数据将保留为 .pre_restore_<时间>）")
+		restoreOpts := backup.Options{
+			DataDir:     cfg.Storage.DataDir,
+			KnowledgeDB: cfg.Storage.KnowledgeDB,
+			BleveIndex:  cfg.Storage.BleveIndex,
+			TaskDir:     cfg.Storage.TaskDir,
+			LogDir:      cfg.Log.Dir,
+			ConfigFile:  config.ConfigFileUsed,
+		}
+		if restoreErr := backup.ApplyPendingRestore(restoreOpts, log.Warnf); restoreErr != nil {
+			log.Errorf("应用数据恢复失败，已中止启动（原数据保留，修复后可重启重试）: %v", restoreErr)
+			os.Exit(1)
+		}
+		log.Infof("数据恢复完成，继续启动")
 	}
 
 	// 3. 注册 SQLite 自定义函数并初始化全局知识库

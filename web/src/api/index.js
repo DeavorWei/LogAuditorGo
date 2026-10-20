@@ -115,6 +115,52 @@ export default {
   getStorageOverview() {
     return request.get('/system/storage')
   },
+  // v1.3: 首启引导 / 备份 / 恢复 / 诊断
+  getOnboarding() {
+    return request.get('/system/onboarding')
+  },
+  updateOnboarding(patch) {
+    return request.put('/system/onboarding', patch)
+  },
+  createBackup() {
+    return request.post('/system/backup', {}, withTimeout(EXPORT_TIMEOUT))
+  },
+  listBackups() {
+    return request.get('/system/backups')
+  },
+  deleteBackup(name) {
+    return request.delete(`/system/backups/${encodeURIComponent(name)}`)
+  },
+  restoreBackup(name) {
+    return request.post('/system/restore', { name })
+  },
+  async downloadBackup(name) {
+    const res = await request.get(`/system/backups/${encodeURIComponent(name)}/download`, {
+      responseType: 'blob',
+      timeout: EXPORT_TIMEOUT
+    })
+    const blob = new Blob([res], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = name
+    link.click()
+    window.URL.revokeObjectURL(url)
+  },
+  async downloadDiagnostics() {
+    const res = await request.get('/system/diagnostics', {
+      responseType: 'blob',
+      timeout: EXPORT_TIMEOUT
+    })
+    const blob = new Blob([res], { type: 'application/zip' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '')
+    link.href = url
+    link.download = `诊断包_${stamp}.zip`
+    link.click()
+    window.URL.revokeObjectURL(url)
+  },
   getSystemConfig() {
     return request.get('/system/config')
   },
@@ -167,6 +213,63 @@ export default {
   },
   getKnowledgeDetail(id) {
     return request.get(`/knowledge/${id}`)
+  },
+  // v1.3: 知识分面、收藏、最近浏览
+  getKnowledgeFacets(params = {}) {
+    return request.get('/knowledge/facets', { params })
+  },
+  favoriteKnowledge(id) {
+    return request.post(`/knowledge/${id}/favorite`)
+  },
+  unfavoriteKnowledge(id) {
+    return request.delete(`/knowledge/${id}/favorite`)
+  },
+  getKnowledgeFavorites() {
+    return request.get('/knowledge/favorites')
+  },
+  getKnowledgeRecent() {
+    return request.get('/knowledge/recent')
+  },
+  // v1.3: 本地知识 / 覆盖 / 跨任务未匹配热点
+  listLocalKnowledge(keyword = '') {
+    return request.get('/knowledge/local', { params: keyword ? { keyword } : {} })
+  },
+  createLocalKnowledge(data) {
+    return request.post('/knowledge/local', data)
+  },
+  updateLocalKnowledge(id, data) {
+    return request.put(`/knowledge/local/${id}`, data)
+  },
+  deleteLocalKnowledge(id) {
+    return request.delete(`/knowledge/local/${id}`)
+  },
+  importLocalKnowledgeCSV(content) {
+    return request.post('/knowledge/local/import', { content }, withTimeout(LONG_TIMEOUT))
+  },
+  async exportLocalKnowledgeCSV() {
+    const res = await request.get('/knowledge/local/export', { responseType: 'blob' })
+    const blob = new Blob([res], { type: 'text/csv;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = '本地知识.csv'
+    link.click()
+    window.URL.revokeObjectURL(url)
+  },
+  listKnowledgeOverrides() {
+    return request.get('/knowledge/overrides')
+  },
+  createKnowledgeOverride(data) {
+    return request.post('/knowledge/overrides', data)
+  },
+  updateKnowledgeOverride(id, data) {
+    return request.patch(`/knowledge/overrides/${id}`, data)
+  },
+  deleteKnowledgeOverride(id) {
+    return request.delete(`/knowledge/overrides/${id}`)
+  },
+  getGlobalUnmatchedHotspots(limit = 20, options = {}) {
+    return request.get('/knowledge/unmatched-hotspots', { params: { limit }, ...options })
   },
 
   // 任务管理

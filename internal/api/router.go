@@ -96,10 +96,11 @@ func SetupRouter(
 	})
 
 	docHandler := NewDocumentHandler(knowledgeSvc)
-	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer)
+	knowHandler := NewKnowledgeHandler(knowledgeSvc, indexer, taskSvc)
 	taskHandler := NewTaskHandler(taskSvc, knowledgeSvc)
 	statsHandler := NewStatsHandler(globalDB)
 	systemHandler := NewSystemHandler(globalDB)
+	systemHandler.SetIndexer(indexer)
 	progressHandler := NewProgressHandler()
 
 	// ARCH-11: 暴露统计处理器引用，供导入/删除等业务变更主动失效缓存，
@@ -137,6 +138,15 @@ func SetupRouter(
 		v1.GET("/system/features", systemHandler.GetFeatures)
 		v1.PUT("/system/features", systemHandler.UpdateFeatures)
 		v1.GET("/system/storage", systemHandler.GetStorage)
+		// v1.3: 首启引导状态、备份/恢复、诊断包
+		v1.GET("/system/onboarding", systemHandler.GetOnboarding)
+		v1.PUT("/system/onboarding", systemHandler.UpdateOnboarding)
+		v1.POST("/system/backup", systemHandler.CreateBackup)
+		v1.GET("/system/backups", systemHandler.ListBackups)
+		v1.DELETE("/system/backups/:name", systemHandler.DeleteBackup)
+		v1.GET("/system/backups/:name/download", systemHandler.DownloadBackup)
+		v1.POST("/system/restore", systemHandler.RestoreBackup)
+		v1.GET("/system/diagnostics", systemHandler.DownloadDiagnostics)
 		// KB-01: 索引健康状态（静态路径，避免与 /knowledge/:id 通配路由冲突）
 		v1.GET("/system/knowledge-index/status", knowHandler.GetIndexStatus)
 
@@ -147,8 +157,24 @@ func SetupRouter(
 		v1.DELETE("/documents/:id", docHandler.DeleteDocument)
 		v1.POST("/documents/batch-delete", docHandler.BatchDeleteDocuments)
 
-		// 知识库
+		// 知识库（v1.3：本地知识 / 覆盖 / 跨任务热点；静态路径需先于 :id 注册）
 		v1.GET("/knowledge/search", knowHandler.SearchKnowledge)
+		v1.GET("/knowledge/facets", knowHandler.GetFacets)
+		v1.GET("/knowledge/favorites", knowHandler.ListFavorites)
+		v1.GET("/knowledge/recent", knowHandler.ListRecent)
+		v1.POST("/knowledge/:id/favorite", knowHandler.SetFavorite)
+		v1.DELETE("/knowledge/:id/favorite", knowHandler.RemoveFavorite)
+		v1.GET("/knowledge/local", knowHandler.ListLocalKnowledge)
+		v1.POST("/knowledge/local", knowHandler.CreateLocalKnowledge)
+		v1.POST("/knowledge/local/import", knowHandler.ImportLocalCSV)
+		v1.GET("/knowledge/local/export", knowHandler.ExportLocalCSV)
+		v1.PUT("/knowledge/local/:id", knowHandler.UpdateLocalKnowledge)
+		v1.DELETE("/knowledge/local/:id", knowHandler.DeleteLocalKnowledge)
+		v1.GET("/knowledge/overrides", knowHandler.ListOverrides)
+		v1.POST("/knowledge/overrides", knowHandler.CreateOverride)
+		v1.PATCH("/knowledge/overrides/:id", knowHandler.UpdateOverride)
+		v1.DELETE("/knowledge/overrides/:id", knowHandler.DeleteOverride)
+		v1.GET("/knowledge/unmatched-hotspots", knowHandler.GlobalUnmatchedHotspots)
 		v1.GET("/knowledge/:id", knowHandler.GetKnowledgeDetail)
 		// KB-01: 索引重建入口。默认走异步模式，返回 job_id 由前端挂进度弹窗
 		v1.POST("/knowledge/reindex", knowHandler.RebuildIndex)
