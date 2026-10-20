@@ -63,7 +63,7 @@
       <div class="batch-action-bar">
         <div class="batch-left">
           <el-button size="small" @click="handleToggleSelectAllDocs">
-            {{ isAllDocsSelected ? '取消全选所有' : '全选所有文档 (' + docList.length + ')' }}
+            {{ isAllDocsSelected ? '取消全选当前筛选' : '全选当前筛选 (' + filteredDocList.length + ')' }}
           </el-button>
           <span v-if="selectedDocIds.length > 0" class="batch-count-tip">
             已选择 <strong>{{ selectedDocIds.length }}</strong> / {{ docList.length }} 个文档包
@@ -437,7 +437,8 @@ const isAllScannedSelected = computed(() => {
 })
 
 const isAllDocsSelected = computed(() => {
-  return docList.value.length > 0 && selectedDocIds.value.length === docList.value.length
+  return filteredDocList.value.length > 0 &&
+    filteredDocList.value.every(d => selectedDocIds.value.includes(d.id))
 })
 
 const filteredScannedItems = computed(() => {
@@ -488,7 +489,9 @@ const handleToggleSelectAllDocs = () => {
     selectedDocIds.value = []
     docTableRef.value?.clearSelection()
   } else {
-    selectedDocIds.value = docList.value.map(d => d.id)
+    // 只选当前筛选可见项，避免批量删除时带走筛选外的文档
+    selectedDocIds.value = filteredDocList.value.map(d => d.id)
+    docTableRef.value?.clearSelection()
     filteredDocList.value.forEach(row => {
       docTableRef.value?.toggleRowSelection(row, true)
     })

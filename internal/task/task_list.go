@@ -128,6 +128,9 @@ func (s *Service) QueryTaskList(q TaskListQuery) ([]model.TaskInfo, int64, error
 	if err := query.Count(&total).Error; err != nil {
 		return nil, 0, fmt.Errorf("count tasks failed: %w", err)
 	}
+	// JOIN task_digests 时避免同名列（task_id/log_count）覆盖 TaskInfo 字段，
+	// Find 明确只取 task_info 的列；Count 已在上方单独执行。
+	query = query.Select("task_info.*")
 
 	orderColumn := "start_time"
 	if col, ok := taskSortColumns[strings.ToLower(strings.TrimSpace(q.SortBy))]; ok {

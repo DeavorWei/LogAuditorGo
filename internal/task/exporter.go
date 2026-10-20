@@ -84,8 +84,14 @@ func coveragePercent(matched, total int) string {
 	return fmt.Sprintf("%.1f%%", float64(matched)/float64(total)*100)
 }
 
-// formatConfidence 格式化置信度百分比
+// formatConfidence 格式化置信度百分比；0 或负值表示“证据不足”。
 func formatConfidence(conf float64) string {
+	if conf <= 0 {
+		return "证据不足"
+	}
+	if conf > 1 {
+		conf = 1
+	}
 	return fmt.Sprintf("%.0f%%", conf*100)
 }
 

@@ -19,10 +19,12 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
 
+	"logauditorgo/internal/model"
 	"logauditorgo/internal/storage"
 )
 
@@ -68,8 +70,13 @@ func Dir(dataDir string) string {
 	return filepath.Join(dataDir, DirName)
 }
 
+var backupMu sync.Mutex
+
 // Create 生成一份备份并保留最近 KeepCount 份。
 func Create(opts Options) (Info, error) {
+	// 备份/恢复互斥：避免并发请求写同名 .tmp 或互相覆盖恢复 marker。
+	backupMu.Lock()
+	defer backupMu.Unlock()
 	if strings.TrimSpace(opts.DataDir) == "" {
 		return Info{}, fmt.Errorf("data dir is required")
 	}
@@ -103,9 +110,7 @@ func Create(opts Options) (Info, error) {
 		if err := addDir(zw, opts.BleveIndex, "bleve"); err != nil {
 			return err
 		}
-		// 任务库是物理 SQLite 文件，复制前必须关闭连接，避免拿到半写状态。
-		storage.CloseAllTaskDBs()
-		if err := addDir(zw, opts.TaskDir, "tasks"); err != nil {
+		if err := addTasks(zw, opts); err != nil {
 			return err
 		}
 		return nil
@@ -125,6 +130,11 @@ func Create(opts Options) (Info, error) {
 		_ = os.Remove(tmpPath)
 		return Info{}, fmt.Errorf("finalize backup failed: %w", err)
 	}
+	// 自校验：确保 knowledge.db 等必备条目存在，避免产出“成功但不可恢复”的备份。
+	if err := ValidateArchive(finalPath); err != nil {
+		_ = os.Remove(finalPath)
+		return Info{}, fmt.Errorf("backup validation failed: %w", err)
+	}
 
 	if err := prune(dir); err != nil {
 		// 保留策略失败不影响本次备份可用性
@@ -136,6 +146,54 @@ func Create(opts Options) (Info, error) {
 		return Info{}, err
 	}
 	return Info{Name: name, Size: stat.Size(), CreatedAt: stat.ModTime()}, nil
+}
+
+// addTasks 把任务库写入备份。
+//
+// 优先对每个任务执行 VACUUM INTO 生成一致快照：既避免直接复制 WAL 中的半写状态，
+// 也避免 CloseAllTaskDBs 影响正在查询的工作台请求；无法查询任务列表时回退为文件复制。
+func addTasks(zw *zip.Writer, opts Options) error {
+	if opts.DB == nil || strings.TrimSpace(opts.TaskDir) == "" {
+		return addDir(zw, opts.TaskDir, "tasks")
+	}
+	var taskIDs []string
+	if err := opts.DB.Model(&model.TaskInfo{}).Pluck("task_id", &taskIDs).Error; err != nil {
+		return addDir(zw, opts.TaskDir, "tasks")
+	}
+	if len(taskIDs) == 0 {
+		return nil
+	}
+	staging, err := os.MkdirTemp("", "logauditorgo_backup_tasks_*")
+	if err != nil {
+		return fmt.Errorf("create task snapshot dir failed: %w", err)
+	}
+	defer os.RemoveAll(staging)
+
+	for _, taskID := range taskIDs {
+		db, _, err := storage.GetOrCreateTaskDB(opts.TaskDir, taskID)
+		if err != nil {
+			continue
+		}
+		snapshot := filepath.Join(staging, "task_"+taskID+".db")
+		query := "VACUUM INTO '" + strings.ReplaceAll(snapshot, "'", "''") + "'"
+		execErr := db.Exec(query).Error
+		storage.ReleaseTaskDB(taskID)
+		if execErr == nil {
+			if err := addFile(zw, snapshot, path.Join("tasks", filepath.Base(snapshot))); err != nil {
+				return err
+			}
+			_ = os.Remove(snapshot)
+			continue
+		}
+		// 回退：直接复制主文件 + WAL/SHM（尽力而为）
+		dbPath := storage.TaskDBPath(opts.TaskDir, taskID)
+		if err := addFileIfExists(zw, dbPath, path.Join("tasks", filepath.Base(dbPath))); err != nil {
+			return err
+		}
+		_ = addFileIfExists(zw, dbPath+"-wal", path.Join("tasks", filepath.Base(dbPath)+"-wal"))
+		_ = addFileIfExists(zw, dbPath+"-shm", path.Join("tasks", filepath.Base(dbPath)+"-shm"))
+	}
+	return nil
 }
 
 func addKnowledgeDB(zw *zip.Writer, opts Options) error {
@@ -152,8 +210,12 @@ func addKnowledgeDB(zw *zip.Writer, opts Options) error {
 	if err := addFileIfExists(zw, opts.KnowledgeDB, "knowledge.db"); err != nil {
 		return err
 	}
-	_ = addFileIfExists(zw, opts.KnowledgeDB+"-wal", "knowledge.db-wal")
-	_ = addFileIfExists(zw, opts.KnowledgeDB+"-shm", "knowledge.db-shm")
+	if err := addFileIfExists(zw, opts.KnowledgeDB+"-wal", "knowledge.db-wal"); err != nil {
+		return err
+	}
+	if err := addFileIfExists(zw, opts.KnowledgeDB+"-shm", "knowledge.db-shm"); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -162,16 +224,25 @@ func addDir(zw *zip.Writer, srcDir, archiveRoot string) error {
 		return nil
 	}
 	info, err := os.Stat(srcDir)
-	if err != nil || !info.IsDir() {
-		return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", srcDir)
 	}
 	return filepath.WalkDir(srcDir, func(filePath string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil || entry == nil || entry.IsDir() {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry == nil || entry.IsDir() {
 			return nil
 		}
 		rel, err := filepath.Rel(srcDir, filePath)
 		if err != nil || strings.HasPrefix(rel, "..") {
-			return nil
+			return fmt.Errorf("invalid relative path for %s", filePath)
 		}
 		return addFile(zw, filePath, path.Join(archiveRoot, filepath.ToSlash(rel)))
 	})
@@ -182,15 +253,24 @@ func addFileIfExists(zw *zip.Writer, src, archiveName string) error {
 		return nil
 	}
 	if _, err := os.Stat(src); err != nil {
-		return nil
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 	return addFile(zw, src, archiveName)
 }
 
 func addFile(zw *zip.Writer, src, archiveName string) error {
 	info, err := os.Stat(src)
-	if err != nil || !info.Mode().IsRegular() {
-		return nil
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", src)
 	}
 	header, err := zip.FileInfoHeader(info)
 	if err != nil {
@@ -337,6 +417,8 @@ func allowedEntry(name string) bool {
 
 // PrepareRestore 校验备份并写入恢复标记（下次启动生效）。
 func PrepareRestore(dataDir, name string) error {
+	backupMu.Lock()
+	defer backupMu.Unlock()
 	archivePath, err := backupPath(dataDir, name)
 	if err != nil {
 		return err
@@ -410,6 +492,14 @@ func ApplyPendingRestore(opts Options, logf func(string, ...any)) error {
 	}
 
 	moved := make([]moveItem, 0, len(items))
+	movedSet := make(map[string]bool, len(items))
+	recordMoved := func(target string) {
+		if target == "" || movedSet[target] {
+			return
+		}
+		movedSet[target] = true
+		moved = append(moved, moveItem{target: target})
+	}
 	rollback := func() {
 		for i := len(moved) - 1; i >= 0; i-- {
 			item := moved[i]
@@ -418,6 +508,22 @@ func ApplyPendingRestore(opts Options, logf func(string, ...any)) error {
 				_ = os.Rename(item.target+".pre_restore_"+stamp, item.target)
 			}
 		}
+	}
+
+	moveAside := func(target string) error {
+		if _, err := os.Stat(target); err != nil {
+			if os.IsNotExist(err) {
+				return nil
+			}
+			return err
+		}
+		backupName := target + ".pre_restore_" + stamp
+		_ = os.RemoveAll(backupName)
+		if err := os.Rename(target, backupName); err != nil {
+			return err
+		}
+		recordMoved(target)
+		return nil
 	}
 
 	for _, item := range items {
@@ -431,19 +537,28 @@ func ApplyPendingRestore(opts Options, logf func(string, ...any)) error {
 			rollback()
 			return fmt.Errorf("prepare restore target dir failed: %w", err)
 		}
-		if _, err := os.Stat(item.target); err == nil {
-			backupName := item.target + ".pre_restore_" + stamp
-			_ = os.RemoveAll(backupName)
-			if err := os.Rename(item.target, backupName); err != nil {
-				rollback()
-				return fmt.Errorf("backup current data failed: %w", err)
+		// 先登记旧数据再替换：staged rename 失败时 rollback 也能恢复当前项。
+		if err := moveAside(item.target); err != nil {
+			rollback()
+			return fmt.Errorf("backup current data failed: %w", err)
+		}
+		// 数据库主文件替换前清走旧 WAL/SHM，避免旧 WAL 回放进新库。
+		if strings.HasSuffix(strings.ToLower(item.target), ".db") {
+			for _, suffix := range []string{"-wal", "-shm"} {
+				if err := moveAside(item.target + suffix); err != nil {
+					rollback()
+					return fmt.Errorf("backup current wal/shm failed: %w", err)
+				}
 			}
 		}
 		if err := os.Rename(item.staged, item.target); err != nil {
 			rollback()
 			return fmt.Errorf("apply restore item failed: %w", err)
 		}
-		moved = append(moved, item)
+		// staged 文件已就位；若该 target 之前不存在，也要登记以便失败时移除。
+		if !movedSet[item.target] {
+			recordMoved(item.target)
+		}
 	}
 
 	logLine := fmt.Sprintf("%s restore applied from %s, pre_restore suffix %s\n",

@@ -190,15 +190,20 @@ export function useWorkbenchTaskContext(options = {}) {
     await fetchLogs()
   }
 
+  let logFetchSeq = 0
   const fetchLogs = async () => {
     if (!currentTaskId.value) return
+    const seq = ++logFetchSeq
+    const taskID = currentTaskId.value
     loadingLogs.value = true
     try {
       const body = filterStore.toLogQueryBody(
         filterStore.filters.page,
         filterStore.filters.pageSize
       )
-      const res = await api.queryTaskLogsUnified(currentTaskId.value, body)
+      const res = await api.queryTaskLogsUnified(taskID, body)
+      // 快速切换筛选/分页/任务时，旧响应必须丢弃，避免 A 条件显示 B 数据。
+      if (seq !== logFetchSeq || taskID !== currentTaskId.value) return
       if (res.code === 0) {
         taskStore.setLogs(res.data?.records || [], res.data?.total || 0)
 
@@ -217,9 +222,9 @@ export function useWorkbenchTaskContext(options = {}) {
         await focusRouteLog()
       }
     } catch (e) {
-      console.error('Fetch logs failed:', e)
+      if (seq === logFetchSeq) console.error('Fetch logs failed:', e)
     } finally {
-      loadingLogs.value = false
+      if (seq === logFetchSeq) loadingLogs.value = false
     }
   }
 
@@ -415,6 +420,7 @@ export function useWorkbenchTaskContext(options = {}) {
     fetchTasks,
     handleTaskChange,
     fetchLogs,
+    applyRouteQueryFilters,
     onFilterChange,
     handleResetFilters,
     handleLogCardClick,

@@ -282,8 +282,9 @@ const onOpen = async () => {
   }
   if (nativeSupported.value === null) {
     try {
-      const res = await api.getDialogCapability()
-      nativeSupported.value = Boolean(res?.data?.supported)
+      const [capability, features] = await Promise.all([api.getDialogCapability(), api.getFeatures()])
+      const enabled = features?.data?.features?.native_file_dialog !== false
+      nativeSupported.value = enabled && Boolean(capability?.data?.supported)
     } catch (e) {
       nativeSupported.value = false
     }

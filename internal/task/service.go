@@ -1435,6 +1435,13 @@ func (s *Service) DeleteTask(taskID string) error {
 	// 0. 优先取消正在排队或执行的后台 RCA 任务，杜绝已删库文件被后台 worker 复活
 	s.CancelTaskRCA(taskID)
 
+	// 0.1 先清理跨任务摘要：失败则中止删除（此时物理文件/元数据都还在，可安全重试），
+	//     避免已删任务继续出现在热点/检索结果中。
+	if err := s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskDigest{}).Error; err != nil {
+		logger.Log.Errorf("[Task Service] delete task digest %s failed: %v", taskID, err)
+		return fmt.Errorf("delete task digest failed: %w", err)
+	}
+
 	// 1. 先从连接池强制驱逐并关闭底层句柄（等待在途引用归零，超时强制关闭）
 	if err := storage.GlobalPool.EvictTaskDB(taskID); err != nil {
 		logger.Log.Errorf("[Task Service] evict task db %s failed: %v", taskID, err)
@@ -1457,10 +1464,6 @@ func (s *Service) DeleteTask(taskID string) error {
 	}
 	if res.RowsAffected == 0 {
 		logger.Log.Warnf("[Task Service] task %s not found in global db during delete (physical files already removed)", taskID)
-	}
-	// 跨任务检索摘要同步清理，避免已删任务仍出现在热点/检索结果中
-	if err := s.globalDB.Where("task_id = ?", taskID).Delete(&model.TaskDigest{}).Error; err != nil {
-		logger.Log.Warnf("[Task Service] delete task digest %s failed: %v", taskID, err)
 	}
 
 	logger.Log.Infof("[Task Service] Task %s deleted (files + metadata)", taskID)
@@ -2402,16 +2405,29 @@ func (s *Service) ExportMultiDeviceHTML(taskID string, deviceIDs []uint) (string
 //
 // 返回值同样改为命名返回值，确保 panic / 失败路径不会向调用方返回 (nil, nil)。
 func (s *Service) ReanalyzeTask(taskID string, tr *progress.JobTracker, opt ...ReanalyzeOptions) (ret *model.TaskInfo, err error) {
+	// 统一失败收尾：任何提前 return 都把 tracker 置为 FAILED，避免 RunningCount 永久 >0
+	// 导致备份接口一直 409（janitor 只清理终态任务）。
+	defer func() {
+		if err != nil && tr != nil {
+			tr.Fail(err)
+		}
+	}()
 	if !isValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+
+	// 先校验任务存在，再打开/创建任务库：对不存在任务直接返回，
+	// 不再 GetOrCreate 留下永远无人引用的幽灵库。
+	if s.globalDB != nil {
+		var exists model.TaskInfo
+		if err := s.globalDB.Where("task_id = ?", taskID).First(&exists).Error; err != nil {
+			return nil, fmt.Errorf("task not found: %w", err)
+		}
 	}
 
 	taskLock := s.getTaskLock(taskID)
 	if !taskLock.TryLock() {
 		lockErr := fmt.Errorf("task %s is already processing another job", taskID)
-		if tr != nil {
-			tr.Fail(lockErr, "当前任务正在执行其他作业，请等待其完成后再试")
-		}
 		return nil, lockErr
 	}
 	defer taskLock.Unlock()

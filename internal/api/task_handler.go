@@ -500,6 +500,14 @@ func (h *TaskHandler) QueryTasks(c *gin.Context) {
 	})
 }
 
+// insightErrorStatus 把服务层"任务不存在"映射为 404，其余按 500 处理。
+func insightErrorStatus(err error) int {
+	if err != nil && strings.Contains(err.Error(), "not found") {
+		return http.StatusNotFound
+	}
+	return http.StatusInternalServerError
+}
+
 // parsePositiveInt 解析正整数查询参数，非法值回退默认值。
 func parsePositiveInt(raw string, fallback int) int {
 	v, err := strconv.Atoi(strings.TrimSpace(raw))
@@ -637,7 +645,7 @@ func (h *TaskHandler) GetLogHistogram(c *gin.Context) {
 	buckets := parsePositiveInt(c.DefaultQuery("buckets", "60"), 60)
 	histogram, err := h.taskSvc.GetLogHistogram(taskID, req, buckets)
 	if err != nil {
-		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		ErrorResponse(c, insightErrorStatus(err), -1, err.Error())
 		return
 	}
 	SuccessResponse(c, histogram)
@@ -662,7 +670,7 @@ func (h *TaskHandler) GetAggregatedLogs(c *gin.Context) {
 	limit := parsePositiveInt(c.DefaultQuery("limit", "200"), 200)
 	groups, err := h.taskSvc.GetAggregatedLogs(taskID, req, windowSeconds, limit)
 	if err != nil {
-		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		ErrorResponse(c, insightErrorStatus(err), -1, err.Error())
 		return
 	}
 	SuccessResponse(c, gin.H{
@@ -680,7 +688,7 @@ func (h *TaskHandler) GetCommentCount(c *gin.Context) {
 	}
 	count, err := h.taskSvc.CountCommentLogs(taskID)
 	if err != nil {
-		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
+		ErrorResponse(c, insightErrorStatus(err), -1, err.Error())
 		return
 	}
 	SuccessResponse(c, gin.H{"count": count})

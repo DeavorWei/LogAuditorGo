@@ -6,7 +6,7 @@ package version
 
 const (
 	// Number 语义化版本号（不含前缀）。
-	Number = "1.4.0"
+	Number = "1.4.1"
 	// String 面向用户的完整版本号。
 	String = "v" + Number
 )

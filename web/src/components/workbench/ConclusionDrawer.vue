@@ -110,17 +110,22 @@ const applyTask = (task) => {
   }
 }
 
+let loadSeq = 0
 const loadTask = async () => {
+  const seq = ++loadSeq
+  const taskId = props.taskId
   applyTask(props.task)
-  if (!props.taskId) return
+  if (!taskId) return
   loading.value = true
   try {
-    const res = await api.getTask(props.taskId)
+    const res = await api.getTask(taskId)
+    // 快速切换任务时丢弃旧响应，避免 A 的结论覆盖 B 的表单
+    if (seq !== loadSeq || taskId !== props.taskId) return
     if (res.code === 0) applyTask(res.data)
   } catch (e) {
     // 保留 props 中的已有值，错误由拦截器提示
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

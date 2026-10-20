@@ -139,6 +139,9 @@ func (h *FSHandler) OpenDialog(c *gin.Context) {
 	case errors.Is(err, nativedialog.ErrUnsupported):
 		ErrorResponse(c, http.StatusNotImplemented, 50101, "原生对话框不可用，请使用路径选择器")
 		return
+	case errors.Is(err, nativedialog.ErrBusy):
+		ErrorResponse(c, http.StatusConflict, 40902, "已有文件选择框打开，请先完成当前选择")
+		return
 	case err != nil:
 		logger.Log.Warnf("[API FS] native dialog failed: %v", err)
 		ErrorResponse(c, http.StatusInternalServerError, -1, "打开原生对话框失败: "+err.Error())

@@ -20,6 +20,8 @@ const (
 	previewMaxScanLines = 100000
 	// previewMaxFiles 预览展开的文件数上限，避免超大目录拖垮请求。
 	previewMaxFiles = 200
+	// previewDeadline 预览总时间预算，超时返回已扫描部分并标记 Truncated。
+	previewDeadline = 20 * time.Second
 	// previewEstimatedLogsPerSecond 估算耗时使用的保守吞吐（行/秒）。
 	previewEstimatedLogsPerSecond = 25000
 )
@@ -100,9 +102,10 @@ func (s *Service) PreviewImport(taskID string, items []FileUploadItem) (*ImportP
 	deviceTotals := make(map[string]int64)
 	var globalStart, globalEnd time.Time
 	seenConflict := make(map[string]bool)
+	startedAt := time.Now()
 
 	for index, item := range items {
-		if index >= previewMaxFiles {
+		if index >= previewMaxFiles || time.Since(startedAt) > previewDeadline {
 			preview.Truncated = true
 			break
 		}

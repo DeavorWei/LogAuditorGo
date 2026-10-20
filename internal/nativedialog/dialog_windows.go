@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 
@@ -68,7 +69,15 @@ func (platformOpener) OpenFiles(opts Options) ([]string, error) {
 	return showDialog(opts, false)
 }
 
+var dialogBusy int32
+
 func showDialog(opts Options, folder bool) ([]string, error) {
+	// 单飞：COM modal 叠加会阻塞多个 goroutine，且用户无法分辨归属。
+	if !atomic.CompareAndSwapInt32(&dialogBusy, 0, 1) {
+		return nil, ErrBusy
+	}
+	defer atomic.StoreInt32(&dialogBusy, 0)
+
 	// COM STA：对话框必须在初始化过 COM 的线程上显示，且线程需锁定避免
 	// Go runtime 在调用前后把 goroutine 迁移到别的 OS 线程。
 	runtime.LockOSThread()
@@ -81,7 +90,7 @@ func showDialog(opts Options, folder bool) ([]string, error) {
 	}
 	defer procCoUninitialize.Call()
 
-	var dialogPtr uintptr
+	var dialogPtr unsafe.Pointer
 	hr, _, _ = procCoCreateInst.Call(
 		uintptr(unsafe.Pointer(&clsidFileOpenDialog)),
 		0,
@@ -89,10 +98,10 @@ func showDialog(opts Options, folder bool) ([]string, error) {
 		uintptr(unsafe.Pointer(&iidFileOpenDialog)),
 		uintptr(unsafe.Pointer(&dialogPtr)),
 	)
-	if int32(hr) < 0 || dialogPtr == 0 {
+	if int32(hr) < 0 || dialogPtr == nil {
 		return nil, fmt.Errorf("%w: CoCreateInstance failed (0x%08x)", ErrUnsupported, uint32(hr))
 	}
-	dialog := (*fileOpenDialog)(unsafe.Pointer(dialogPtr))
+	dialog := (*fileOpenDialog)(dialogPtr)
 	defer dialog.release()
 
 	var current uint32
@@ -131,11 +140,11 @@ func showDialog(opts Options, folder bool) ([]string, error) {
 	}
 
 	if folder {
-		var itemPtr uintptr
-		if hr := dialog.getResult(&itemPtr); int32(hr) < 0 || itemPtr == 0 {
+		var itemPtr unsafe.Pointer
+		if hr := dialog.getResult(&itemPtr); int32(hr) < 0 || itemPtr == nil {
 			return nil, fmt.Errorf("get dialog result failed (0x%08x)", uint32(hr))
 		}
-		item := (*shellItem)(unsafe.Pointer(itemPtr))
+		item := (*shellItem)(itemPtr)
 		defer item.release()
 		path, err := item.displayName()
 		if err != nil {
@@ -144,11 +153,11 @@ func showDialog(opts Options, folder bool) ([]string, error) {
 		return []string{path}, nil
 	}
 
-	var arrayPtr uintptr
-	if hr := dialog.getResults(&arrayPtr); int32(hr) < 0 || arrayPtr == 0 {
+	var arrayPtr unsafe.Pointer
+	if hr := dialog.getResults(&arrayPtr); int32(hr) < 0 || arrayPtr == nil {
 		return nil, fmt.Errorf("get dialog results failed (0x%08x)", uint32(hr))
 	}
-	array := (*shellItemArray)(unsafe.Pointer(arrayPtr))
+	array := (*shellItemArray)(arrayPtr)
 	defer array.release()
 
 	var count uint32
@@ -158,11 +167,11 @@ func showDialog(opts Options, folder bool) ([]string, error) {
 
 	paths := make([]string, 0, count)
 	for i := uint32(0); i < count; i++ {
-		var itemPtr uintptr
-		if hr := array.getItemAt(i, &itemPtr); int32(hr) < 0 || itemPtr == 0 {
+		var itemPtr unsafe.Pointer
+		if hr := array.getItemAt(i, &itemPtr); int32(hr) < 0 || itemPtr == nil {
 			continue
 		}
-		item := (*shellItem)(unsafe.Pointer(itemPtr))
+		item := (*shellItem)(itemPtr)
 		path, err := item.displayName()
 		item.release()
 		if err == nil && path != "" {
@@ -255,12 +264,12 @@ func (d *fileOpenDialog) setFileTypes(specs []comFilterSpec) int32 {
 	return int32(r)
 }
 
-func (d *fileOpenDialog) getResult(out *uintptr) int32 {
+func (d *fileOpenDialog) getResult(out *unsafe.Pointer) int32 {
 	r, _, _ := syscall.SyscallN(d.vtbl.GetResult, uintptr(unsafe.Pointer(d)), uintptr(unsafe.Pointer(out)))
 	return int32(r)
 }
 
-func (d *fileOpenDialog) getResults(out *uintptr) int32 {
+func (d *fileOpenDialog) getResults(out *unsafe.Pointer) int32 {
 	r, _, _ := syscall.SyscallN(d.vtbl.GetResults, uintptr(unsafe.Pointer(d)), uintptr(unsafe.Pointer(out)))
 	return int32(r)
 }
@@ -291,7 +300,7 @@ func (a *shellItemArray) getCount(out *uint32) int32 {
 	return int32(r)
 }
 
-func (a *shellItemArray) getItemAt(index uint32, out *uintptr) int32 {
+func (a *shellItemArray) getItemAt(index uint32, out *unsafe.Pointer) int32 {
 	r, _, _ := syscall.SyscallN(a.vtbl.GetItemAt, uintptr(unsafe.Pointer(a)), uintptr(index), uintptr(unsafe.Pointer(out)))
 	return int32(r)
 }

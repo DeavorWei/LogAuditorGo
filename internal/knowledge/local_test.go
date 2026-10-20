@@ -115,6 +115,10 @@ func TestLocalKnowledgePriorityAndCSV(t *testing.T) {
 	if !strings.Contains(csvText, "PEER_BACKWARD") || !strings.Contains(csvText, "module,brief,product") {
 		t.Fatalf("unexpected csv: %s", csvText)
 	}
+	// 版本映射必须随列表/导出返回，否则 CSV 往返会丢产品/版本范围
+	if !strings.Contains(csvText, "CE16800") || !strings.Contains(csvText, "V200R025C00") {
+		t.Fatalf("csv lost version mapping: %s", csvText)
+	}
 	importCSV := "module,brief,product,version,severity,entry_type,message,description,cause,action,impact,reference\n" +
 		"OSPF,NBR_CHG,通用,,3,LOG,,本地 OSPF 邻居变化,邻居震荡,检查链路,,https://example.local/ospf\n" +
 		"BROKEN,,通用,,4,LOG,,,,,,,"

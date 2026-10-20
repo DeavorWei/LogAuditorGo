@@ -4,7 +4,7 @@
     <WorkbenchHeader
       ref="headerRef"
       v-show="!workbenchUIStore.isImmersive"
-      @task-change="handleTaskChange"
+      @task-change="handleTaskChangeAndRoute"
       @new-task="goToNewTask"
       @task-deleted="handleTaskDeleted"
       @refresh-logs="fetchLogs"
@@ -183,7 +183,7 @@
 </template>
 
 <script setup>
-import { ref, provide, watch, onMounted } from 'vue'
+import { ref, provide, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { useTaskStore } from '@/stores/task'
@@ -545,9 +545,25 @@ watch(() => selectedLog.value?.id, () => {
   routeSyncTimer = setTimeout(syncQueryToRoute, 250)
 })
 
+// 浏览器前进/后退或手改 URL 时，按新 query 重新应用筛选并查询。
+watch(() => route.query, () => {
+  if (!currentTaskId.value) return
+  const before = JSON.stringify(filterStore.toLogQueryBody(1, 1))
+  applyRouteQueryFilters()
+  if (JSON.stringify(filterStore.toLogQueryBody(1, 1)) !== before) {
+    fetchLogs()
+  }
+}, { deep: true })
+
+onBeforeUnmount(() => {
+  if (routeSyncTimer) clearTimeout(routeSyncTimer)
+})
+
 // 9. 视图模式与路由联动
 watch(currentViewMode, async (newMode) => {
   if (!currentTaskId.value) return
+  if (routeSyncTimer) clearTimeout(routeSyncTimer)
+  routeSyncTimer = setTimeout(syncQueryToRoute, 300)
   if (newMode === VIEW_MODE.LOGS) {
     await fetchLogs()
     await taskStore.fetchTaskFiles(currentTaskId.value)
@@ -556,8 +572,18 @@ watch(currentViewMode, async (newMode) => {
 
 watch(() => route.params.id, async (newId, oldId) => {
   if (newId === oldId) return
-  if (newId) await handleTaskChange(newId)
+  // 切换任务时 handleTaskChange 已先更新 store，再由这里 replace URL；
+  // 避免 URL 变化反向触发第二次全量加载。
+  if (newId && newId !== currentTaskId.value) await handleTaskChange(newId)
 })
+
+// 筛选项/视图切换后统一写回 URL；Header 切换任务时也同步地址栏。
+const handleTaskChangeAndRoute = async (taskId) => {
+  await handleTaskChange(taskId)
+  if (taskId && route.params.id !== taskId) {
+    await router.replace({ path: `/audit/${taskId}`, query: route.query })
+  }
+}
 
 // 同一组件实例内从 /audit/:id 切换到 /audit/new 时不会重新 mount，
 // 这里补齐"新建向导"的打开逻辑。
@@ -571,7 +597,22 @@ watch(() => route.path, (path) => {
 onMounted(async () => {
   await featureStore.fetchFeatures()
   await fetchTasks()
-  if (currentTaskId.value) await handleTaskChange(currentTaskId.value)
+  // 路由是任务选择的唯一真源：深链接/刷新/新标签页必须按 :id 加载，
+  // 不能沿用 store 中上一次的任务。
+  const routeTaskId = typeof route.params.id === 'string' ? route.params.id : ''
+  if (routeTaskId) {
+    const target = taskStore.taskList.find((item) => item.task_id === routeTaskId)
+    if (!target) {
+      ElMessage.error('任务不存在或已被删除')
+      router.replace('/tasks')
+      return
+    }
+    taskStore.currentTaskId = routeTaskId
+    taskStore.currentTask = target
+    await handleTaskChange(routeTaskId)
+  } else if (currentTaskId.value) {
+    await handleTaskChange(currentTaskId.value)
+  }
   // 三个入口统一到向导：/audit/new 打开工作台即进入"新建任务"向导
   if (route.path === '/audit/new') {
     importCreateMode.value = true

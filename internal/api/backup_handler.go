@@ -34,8 +34,20 @@ func (h *SystemHandler) backupOptions() backup.Options {
 	}
 }
 
+// backupDataDir 返回数据目录；未初始化时返回空串，调用方按 500 处理。
+func backupDataDir() string {
+	if config.GlobalConfig == nil {
+		return ""
+	}
+	return strings.TrimSpace(config.GlobalConfig.Storage.DataDir)
+}
+
 // CreateBackup 创建一键备份；长任务运行期间返回 409。
 func (h *SystemHandler) CreateBackup(c *gin.Context) {
+	if backupDataDir() == "" {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "配置未初始化，无法创建备份")
+		return
+	}
 	if progress.GetHub().RunningCount() > 0 {
 		ErrorResponse(c, http.StatusConflict, 40901, "有长任务正在运行，请等待完成后再备份（避免备份不一致）")
 		return
@@ -50,7 +62,12 @@ func (h *SystemHandler) CreateBackup(c *gin.Context) {
 
 // ListBackups 列出备份。
 func (h *SystemHandler) ListBackups(c *gin.Context) {
-	items, err := backup.List(config.GlobalConfig.Storage.DataDir)
+	dataDir := backupDataDir()
+	if dataDir == "" {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "配置未初始化")
+		return
+	}
+	items, err := backup.List(dataDir)
 	if err != nil {
 		ErrorResponse(c, http.StatusInternalServerError, -1, err.Error())
 		return
@@ -60,8 +77,13 @@ func (h *SystemHandler) ListBackups(c *gin.Context) {
 
 // DeleteBackup 删除备份。
 func (h *SystemHandler) DeleteBackup(c *gin.Context) {
+	dataDir := backupDataDir()
+	if dataDir == "" {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "配置未初始化")
+		return
+	}
 	name := strings.TrimSpace(c.Param("name"))
-	if err := backup.Delete(config.GlobalConfig.Storage.DataDir, name); err != nil {
+	if err := backup.Delete(dataDir, name); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, err.Error())
 		return
 	}
@@ -71,7 +93,7 @@ func (h *SystemHandler) DeleteBackup(c *gin.Context) {
 // DownloadBackup 下载备份文件。
 func (h *SystemHandler) DownloadBackup(c *gin.Context) {
 	name := strings.TrimSpace(c.Param("name"))
-	archivePath, err := backup.ArchivePath(config.GlobalConfig.Storage.DataDir, name)
+	archivePath, err := backup.ArchivePath(backupDataDir(), name)
 	if err != nil {
 		ErrorResponse(c, http.StatusNotFound, -1, "备份不存在或格式非法")
 		return
@@ -86,6 +108,11 @@ func (h *SystemHandler) DownloadBackup(c *gin.Context) {
 
 // RestoreBackup 准备恢复（下次启动生效）。
 func (h *SystemHandler) RestoreBackup(c *gin.Context) {
+	dataDir := backupDataDir()
+	if dataDir == "" {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "配置未初始化")
+		return
+	}
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -93,7 +120,7 @@ func (h *SystemHandler) RestoreBackup(c *gin.Context) {
 		ErrorResponse(c, http.StatusBadRequest, -1, "name is required")
 		return
 	}
-	if err := backup.PrepareRestore(config.GlobalConfig.Storage.DataDir, body.Name); err != nil {
+	if err := backup.PrepareRestore(dataDir, body.Name); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "恢复准备失败: "+err.Error())
 		return
 	}
@@ -102,6 +129,10 @@ func (h *SystemHandler) RestoreBackup(c *gin.Context) {
 
 // DownloadDiagnostics 下载诊断包（配置 + 最近日志 + 运行状态）。
 func (h *SystemHandler) DownloadDiagnostics(c *gin.Context) {
+	if backupDataDir() == "" {
+		ErrorResponse(c, http.StatusInternalServerError, -1, "配置未初始化")
+		return
+	}
 	opts := h.backupOptions()
 	meta := gin.H{
 		"app":         "LogAuditorGo",

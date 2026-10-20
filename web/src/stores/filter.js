@@ -210,6 +210,7 @@ export const useFilterStore = defineStore('filter', () => {
     const f = filters.value
     let n = 0
     if (f.keyword) n++
+    if (f.module) n++
     if (f.severity !== null && f.severity !== undefined) n++
     if (f.matched !== null && f.matched !== undefined) n++
     if (f.deviceId) n++

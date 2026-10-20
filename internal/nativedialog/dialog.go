@@ -16,6 +16,8 @@ var (
 	ErrUnsupported = errors.New("native file dialog is not supported on this platform")
 	// ErrCanceled 用户取消了对话框。
 	ErrCanceled = errors.New("native dialog canceled")
+	// ErrBusy 已有另一个原生对话框打开（COM modal 不能并发叠加）。
+	ErrBusy = errors.New("another native dialog is already open")
 )
 
 // Options 对话框选项。

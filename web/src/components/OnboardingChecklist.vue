@@ -1,5 +1,5 @@
 <template>
-  <el-card v-if="store.checklistVisible" shadow="never" class="checklist-card">
+  <el-card v-if="store.loaded && store.checklistVisible" shadow="never" class="checklist-card">
     <template #header>
       <div class="checklist-header">
         <div class="title">

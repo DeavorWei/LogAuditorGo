@@ -2,7 +2,6 @@ package api
 
 import (
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -80,7 +79,7 @@ func SetupRouter(
 		// ARCH-08: 原实现在来源不被允许时兜底回 `Access-Control-Allow-Origin: *`，
 		// 等于对任意网站放开了本服务全部数据（任务、知识库、配置）的读写。
 		// 未通过校验的来源直接不设置 ACAO 头，浏览器会按同源策略拦截响应。
-		if origin != "" && isAllowedOrigin(origin, c.Request.Host) {
+		if origin != "" && isAllowedOrigin(origin) {
 			c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 			c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 			c.Writer.Header().Add("Vary", "Origin")
@@ -310,8 +309,11 @@ func SetupRouter(
 	return r
 }
 
-// isAllowedOrigin 校验跨域来源是否属于受信本地回环域或匹配服务端主机
-func isAllowedOrigin(origin, host string) bool {
+// isAllowedOrigin 仅允许本机回环来源。
+//
+// 不能把 Origin 与请求 Host 相等作为放行条件：DNS rebinding 场景下
+// evil.com 可解析到 127.0.0.1，Host/Origin 同时为 evil.com，浏览器会拿到 ACAO。
+func isAllowedOrigin(origin string) bool {
 	if origin == "" {
 		return true
 	}
@@ -320,17 +322,5 @@ func isAllowedOrigin(origin, host string) bool {
 		return false
 	}
 	hostname := strings.ToLower(u.Hostname())
-	if hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1" {
-		return true
-	}
-	if host != "" {
-		hostOnly := host
-		if h, _, err := net.SplitHostPort(host); err == nil {
-			hostOnly = h
-		}
-		if strings.EqualFold(hostname, hostOnly) {
-			return true
-		}
-	}
-	return false
+	return hostname == "localhost" || hostname == "127.0.0.1" || hostname == "::1"
 }

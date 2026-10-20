@@ -661,7 +661,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('logauditorgo:reopen-progress', handleReopenRequest)
-  stopTracking()
+  // 不在这里 stopTracking：轮询会在任务进入终态时自行结束并同步 progressStore，
+  // 否则页面切换后 store 中的 job 永远 running，顶栏徽标无法清理、备份被永久 409。
 })
 </script>
 

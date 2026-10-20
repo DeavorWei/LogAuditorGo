@@ -11,6 +11,9 @@ import (
 )
 
 // HistogramBucket 单个时间桶的严重度堆叠计数。
+// insightMaxRows 直方图/聚合单次读取上限，避免百万行任务或并发请求放大内存。
+const insightMaxRows = 300000
+
 type HistogramBucket struct {
 	Start   time.Time `json:"start"`
 	End     time.Time `json:"end"`
@@ -35,6 +38,9 @@ type LogHistogram struct {
 func (s *Service) GetLogHistogram(taskID string, req model.LogQueryRequestBody, buckets int) (*LogHistogram, error) {
 	if !isValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	if _, err := s.GetTaskByID(taskID); err != nil {
+		return nil, fmt.Errorf("task not found: %w", err)
 	}
 	if buckets <= 0 {
 		buckets = 60
@@ -93,8 +99,11 @@ func (s *Service) GetLogHistogram(taskID string, req model.LogQueryRequestBody, 
 		Severity  int
 	}
 	var rows []row
-	if err := query.Select("timestamp, severity").Scan(&rows).Error; err != nil {
+	if err := query.Select("timestamp, severity").Limit(insightMaxRows + 1).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("query histogram rows failed: %w", err)
+	}
+	if len(rows) > insightMaxRows {
+		return nil, fmt.Errorf("筛选结果超过 %d 行，请缩小时间范围后重试", insightMaxRows)
 	}
 	for _, item := range rows {
 		ts := parseSQLTime(item.Timestamp)
@@ -145,6 +154,9 @@ func (s *Service) GetAggregatedLogs(taskID string, req model.LogQueryRequestBody
 	if !isValidTaskID(taskID) {
 		return nil, fmt.Errorf("invalid task id: %s", taskID)
 	}
+	if _, err := s.GetTaskByID(taskID); err != nil {
+		return nil, fmt.Errorf("task not found: %w", err)
+	}
 	if windowSeconds <= 0 {
 		windowSeconds = 300
 	}
@@ -179,8 +191,11 @@ func (s *Service) GetAggregatedLogs(taskID string, req model.LogQueryRequestBody
 	}
 	var rows []row
 	if err := query.Select("id, timestamp, module, brief, hostname, severity").
-		Order("timestamp ASC, id ASC").Scan(&rows).Error; err != nil {
+		Order("timestamp ASC, id ASC").Limit(insightMaxRows + 1).Scan(&rows).Error; err != nil {
 		return nil, fmt.Errorf("query aggregated logs failed: %w", err)
+	}
+	if len(rows) > insightMaxRows {
+		return nil, fmt.Errorf("筛选结果超过 %d 行，请缩小时间范围后重试", insightMaxRows)
 	}
 	if len(rows) == 0 {
 		return []AggregatedLogGroup{}, nil
@@ -250,6 +265,9 @@ func (s *Service) GetAggregatedLogs(taskID string, req model.LogQueryRequestBody
 func (s *Service) CountCommentLogs(taskID string) (int64, error) {
 	if !isValidTaskID(taskID) {
 		return 0, fmt.Errorf("invalid task id: %s", taskID)
+	}
+	if _, err := s.GetTaskByID(taskID); err != nil {
+		return 0, fmt.Errorf("task not found: %w", err)
 	}
 	taskDB, _, err := storage.GetOrCreateTaskDB(s.taskDir, taskID)
 	if err != nil {

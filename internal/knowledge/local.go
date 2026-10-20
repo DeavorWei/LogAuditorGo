@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/csv"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -78,6 +79,11 @@ func normalizeLocalInput(in LocalKnowledgeInput) (LocalKnowledgeInput, error) {
 // 本地知识与官方知识同表（source=local），并强制写入一条版本映射，
 // 避免被"删除文档后的孤儿知识清理"误删（方案审视 §2.1）。
 func (s *Service) UpsertLocalKnowledge(in LocalKnowledgeInput) (*model.Knowledge, error) {
+	return s.upsertLocalKnowledge(in, true)
+}
+
+// upsertLocalKnowledge 内部实现；indexNow=false 供 CSV 批量导入统一重建索引。
+func (s *Service) upsertLocalKnowledge(in LocalKnowledgeInput, indexNow bool) (*model.Knowledge, error) {
 	normalized, err := normalizeLocalInput(in)
 	if err != nil {
 		return nil, err
@@ -86,7 +92,7 @@ func (s *Service) UpsertLocalKnowledge(in LocalKnowledgeInput) (*model.Knowledge
 	var existing model.Knowledge
 	findErr := s.db.Where("source = ? AND UPPER(module) = ? AND UPPER(brief) = ?",
 		"local", normalized.Module, strings.ToUpper(normalized.Brief)).First(&existing).Error
-	if findErr != nil && findErr != gorm.ErrRecordNotFound {
+	if findErr != nil && !errors.Is(findErr, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("query local knowledge failed: %w", findErr)
 	}
 
@@ -130,13 +136,15 @@ func (s *Service) UpsertLocalKnowledge(in LocalKnowledgeInput) (*model.Knowledge
 		ProductVersion: normalized.ProductVersion,
 	}}
 
-	if s.indexer != nil {
-		if err := s.indexer.IndexKnowledge([]model.Knowledge{entity}); err != nil {
-			logger.Log.Warnf("[Knowledge] index local knowledge %d failed: %v", entity.ID, err)
+	if indexNow {
+		if s.indexer != nil {
+			if err := s.indexer.IndexKnowledge([]model.Knowledge{entity}); err != nil {
+				logger.Log.Warnf("[Knowledge] index local knowledge %d failed: %v", entity.ID, err)
+			}
 		}
-	}
-	if s.matchEngine != nil {
-		s.matchEngine.Reload()
+		if s.matchEngine != nil {
+			s.matchEngine.Reload()
+		}
 	}
 	return &entity, nil
 }
@@ -200,9 +208,11 @@ func (s *Service) UpdateLocalKnowledge(id uint, in LocalKnowledgeInput) (*model.
 
 // ListLocalKnowledge 列出本地知识，支持关键词模糊过滤。
 func (s *Service) ListLocalKnowledge(keyword string) ([]model.Knowledge, error) {
-	query := s.db.Where("source = ?", "local")
+	query := s.db.Where("source = ?", "local").Preload("Versions")
 	if kw := strings.TrimSpace(keyword); kw != "" {
-		pattern := "%" + strings.ReplaceAll(strings.ReplaceAll(kw, "%", "\\%"), "_", "\\_") + "%"
+		// 先转义反斜杠，否则含 \ 的关键词会破坏 LIKE ESCAPE 语义
+		escaped := strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(kw)
+		pattern := "%" + escaped + "%"
 		query = query.Where("module LIKE ? ESCAPE '\\' OR brief LIKE ? ESCAPE '\\' OR description LIKE ? ESCAPE '\\'",
 			pattern, pattern, pattern)
 	}
@@ -265,8 +275,9 @@ func (s *Service) ExportLocalCSV() (string, error) {
 			version = k.Versions[0].ProductVersion
 		}
 		_ = writer.Write([]string{
-			k.Module, k.Brief, product, version, strconv.Itoa(k.Severity), string(k.EntryType),
-			k.Message, k.Description, k.Cause, k.Action, k.Impact, k.ReferenceURL,
+			csvFormulaSafe(k.Module), csvFormulaSafe(k.Brief), csvFormulaSafe(product), csvFormulaSafe(version),
+			strconv.Itoa(k.Severity), string(k.EntryType), csvFormulaSafe(k.Message), csvFormulaSafe(k.Description),
+			csvFormulaSafe(k.Cause), csvFormulaSafe(k.Action), csvFormulaSafe(k.Impact), csvFormulaSafe(k.ReferenceURL),
 		})
 	}
 	writer.Flush()
@@ -274,6 +285,18 @@ func (s *Service) ExportLocalCSV() (string, error) {
 		return "", err
 	}
 	return buf.String(), nil
+}
+
+// csvFormulaSafe 防止本地知识导出后被 Excel 当作公式执行（= + - @ 开头）。
+func csvFormulaSafe(value string) string {
+	if value == "" {
+		return value
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	}
+	return value
 }
 
 // LocalImportResult CSV 导入结果（逐行容错，不整批失败）。
@@ -299,6 +322,7 @@ func (s *Service) ImportLocalCSV(content string) (*LocalImportResult, error) {
 	}
 
 	result := &LocalImportResult{Errors: []string{}}
+	indexed := make([]model.Knowledge, 0)
 	start := 0
 	if len(rows[0]) > 0 && strings.EqualFold(strings.TrimSpace(rows[0][0]), "module") {
 		start = 1
@@ -343,11 +367,13 @@ func (s *Service) ImportLocalCSV(content string) (*LocalImportResult, error) {
 			"local", strings.ToUpper(strings.TrimSpace(input.Module)), strings.ToUpper(strings.TrimSpace(input.Brief))).
 			First(&existing).Error == nil
 
-		if _, upsertErr := s.UpsertLocalKnowledge(input); upsertErr != nil {
+		entity, upsertErr := s.upsertLocalKnowledge(input, false)
+		if upsertErr != nil {
 			result.Failed++
 			result.Errors = append(result.Errors, fmt.Sprintf("第 %d 行：%v", lineNo, upsertErr))
 			continue
 		}
+		indexed = append(indexed, *entity)
 		if exists {
 			result.Updated++
 		} else {
@@ -355,6 +381,17 @@ func (s *Service) ImportLocalCSV(content string) (*LocalImportResult, error) {
 		}
 	}
 
+	// 批量导入只在结束时重建一次索引/刷新一次匹配引擎，避免逐行全量 Reload。
+	if len(indexed) > 0 {
+		if s.indexer != nil {
+			if err := s.indexer.IndexKnowledge(indexed); err != nil {
+				logger.Log.Warnf("[Knowledge] batch index local knowledge failed: %v", err)
+			}
+		}
+		if s.matchEngine != nil {
+			s.matchEngine.Reload()
+		}
+	}
 	return result, nil
 }
 
@@ -376,7 +413,7 @@ func (s *Service) CreateOverride(module, brief string, knowledgeID uint) (*model
 
 	var override model.KnowledgeOverride
 	err := s.db.Where("UPPER(module) = ? AND UPPER(brief) = ?", module, strings.ToUpper(brief)).First(&override).Error
-	if err != nil && err != gorm.ErrRecordNotFound {
+	if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	override.Module = module

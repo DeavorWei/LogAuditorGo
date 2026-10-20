@@ -34,6 +34,7 @@ func (h *KnowledgeHandler) ListLocalKnowledge(c *gin.Context) {
 
 // CreateLocalKnowledge 新建本地知识。
 func (h *KnowledgeHandler) CreateLocalKnowledge(c *gin.Context) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
 	var input knowledge.LocalKnowledgeInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
@@ -53,6 +54,7 @@ func (h *KnowledgeHandler) UpdateLocalKnowledge(c *gin.Context) {
 	if !ok {
 		return
 	}
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
 	var input knowledge.LocalKnowledgeInput
 	if err := c.ShouldBindJSON(&input); err != nil {
 		ErrorResponse(c, http.StatusBadRequest, -1, "Invalid request body: "+err.Error())
@@ -81,6 +83,8 @@ func (h *KnowledgeHandler) DeleteLocalKnowledge(c *gin.Context) {
 
 // ImportLocalCSV 通过 CSV 文本批量导入本地知识。
 func (h *KnowledgeHandler) ImportLocalCSV(c *gin.Context) {
+	// CSV 批量导入可能较大，但 2MB 已足够数千行，避免无界内存占用
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, 2<<20)
 	var body struct {
 		Content string `json:"content"`
 	}

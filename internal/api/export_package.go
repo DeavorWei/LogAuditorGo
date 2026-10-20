@@ -3,6 +3,7 @@ package api
 import (
 	"archive/zip"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -88,6 +89,10 @@ func (h *TaskHandler) ExportEvidencePackage(c *gin.Context) {
 		})
 		if streamErr != nil {
 			logger.Log.Errorf("[API Tasks] evidence package CSV stream failed: %v", streamErr)
+			// 已经 200 流式输出，无法改状态码；在包内显式标记，避免接收方误以为 CSV 完整。
+			if marker, markerErr := zw.Create("EXPORT_ERROR.txt"); markerErr == nil {
+				_, _ = fmt.Fprintf(marker, "logs.csv 导出不完整（流式写入中断）：%v\n请重新导出。\n", streamErr)
+			}
 		}
 	}
 
